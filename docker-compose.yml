@@ -133,7 +133,7 @@ services:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
       SOAR_DRY_RUN: "true"
-      CASE_SERVICE_URL: ""
+      CASE_SERVICE_URL: http://case-service:8000
     depends_on:
       postgres:
         condition: service_healthy
@@ -141,6 +141,40 @@ services:
         condition: service_healthy
     ports:
       - "8006:8000"
+
+  case-service:
+    build:
+      context: .
+      dockerfile: backend/services/case-service/Dockerfile
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      SOAR_SERVICE_URL: http://soar-service:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8007:8000"
+
+  purple-service:
+    build:
+      context: .
+      dockerfile: backend/services/purple-service/Dockerfile
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      SIEM_SERVICE_URL: http://siem-service:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8008:8000"
 
   frontend:
     build:
@@ -153,6 +187,8 @@ services:
       - vuln-service
       - siem-service
       - soar-service
+      - case-service
+      - purple-service
     ports:
       - "5173:5173"
 

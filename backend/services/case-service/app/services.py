@@ -1,0 +1,116 @@
+"""Business logic for case-service: CRUD de casos con SLA por prioridad,
+timeline de auditoria, e importacion de PendingCase desde soar-service
+(polling best-effort, ver app/main.py)."""
+import os
+from datetime import datetime, timedelta, timezone
+import httpx
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+from sqlalchemy.ext.asyncio import AsyncSession
+from backend.shared.logging import configure_logging
+from app.models import Case, CaseTimelineEntry, CaseStatus, SLA_HOURS_BY_PRIORITY
+
+logger = configure_logging("case-service")
+SOAR_SERVICE_URL = os.getenv("SOAR_SERVICE_URL", "http://soar-service:8000")
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+async def _add_timeline_entry(db: AsyncSession, case_id: str, actor: str, action: str, notes: str = "") -> None:
+    db.add(CaseTimelineEntry(case_id=case_id, actor=actor, action=action, notes=notes))
+    await db.flush()
+
+
+async def create_case(db: AsyncSession, payload, actor: str = "") -> Case:
+    sla_due_at = _now() + timedelta(hours=SLA_HOURS_BY_PRIORITY[payload.priority])
+    case = Case(**payload.model_dump(), sla_due_at=sla_due_at)
+    db.add(case)
+    await db.flush()
+    await _add_timeline_entry(db, case.id, actor or payload.source, "case.created", f"Prioridad: {payload.priority.value}")
+    await db.refresh(case, attribute_names=["timeline"])
+    return case
+
+
+async def list_cases(db: AsyncSession, status_filter: str | None = None, priority: str | None = None, assignee: str | None = None) -> list[Case]:
+    query = select(Case).options(selectinload(Case.timeline))
+    if status_filter:
+        query = query.where(Case.status == status_filter)
+    if priority:
+        query = query.where(Case.priority == priority)
+    if assignee:
+        query = query.where(Case.assignee == assignee)
+    result = await db.execute(query.order_by(Case.created_at.desc()))
+    return list(result.scalars().all())
+
+
+async def get_case(db: AsyncSession, case_id: str) -> Case | None:
+    result = await db.execute(select(Case).options(selectinload(Case.timeline)).where(Case.id == case_id))
+    return result.scalar_one_or_none()
+
+
+async def update_case(db: AsyncSession, case: Case, payload, actor: str) -> Case:
+    changes = payload.model_dump(exclude_unset=True)
+    old_status = case.status
+    for field, value in changes.items():
+        setattr(case, field, value)
+    if "status" in changes and changes["status"] != old_status:
+        if changes["status"] in (CaseStatus.resolved, CaseStatus.closed) and case.resolved_at is None:
+            case.resolved_at = _now()
+        await _add_timeline_entry(db, case.id, actor, "case.status_changed", f"{old_status.value} -> {changes['status'].value}")
+    if changes:
+        await _add_timeline_entry(db, case.id, actor, "case.updated", ", ".join(changes.keys()))
+    await db.flush()
+    await db.refresh(case, attribute_names=["timeline"])
+    return case
+
+
+async def add_timeline_entry(db: AsyncSession, case: Case, payload, actor: str) -> Case:
+    await _add_timeline_entry(db, case.id, actor, payload.action, payload.notes)
+    await db.flush()
+    await db.refresh(case, attribute_names=["timeline"])
+    return case
+
+
+async def import_pending_cases_from_soar(db: AsyncSession) -> tuple[int, int]:
+    """Trae los PendingCase que soar-service no pudo crear directamente
+    (porque case-service todavia no existia) y los materializa como Case
+    aca. Idempotente por alert_id: si ya existe un caso con ese alert_id y
+    source='soar-import', se saltea."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{SOAR_SERVICE_URL}/pending-cases")
+            resp.raise_for_status()
+            pending = resp.json()
+    except httpx.HTTPError as exc:
+        logger.warning("no se pudo consultar pending-cases de soar-service", extra={"error": str(exc)})
+        return 0, 0
+
+    imported, skipped = 0, 0
+    for item in pending:
+        alert_id = item.get("alert_id")
+        if alert_id:
+            existing = await db.execute(
+                select(Case).where(Case.alert_id == alert_id, Case.source == "soar-import")
+            )
+            if existing.scalar_one_or_none() is not None:
+                skipped += 1
+                continue
+
+        sla_due_at = _now() + timedelta(hours=SLA_HOURS_BY_PRIORITY.get(item.get("priority", "medium"), 24))
+        case = Case(
+            title=item.get("title", "Caso importado de SOAR"),
+            description=item.get("description", ""),
+            priority=item.get("priority", "medium"),
+            alert_id=alert_id,
+            source="soar-import",
+            sla_due_at=sla_due_at,
+        )
+        db.add(case)
+        await db.flush()
+        await _add_timeline_entry(db, case.id, "soar-service", "case.imported", "Importado desde pending-cases de soar-service")
+        imported += 1
+
+    await db.flush()
+    return imported, skipped

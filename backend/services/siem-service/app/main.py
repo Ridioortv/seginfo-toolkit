@@ -103,6 +103,17 @@ async def update_rule(
     return rule
 
 
+@app.get("/internal/rule-tags")
+async def internal_rule_tags(db: AsyncSession = Depends(get_db)):
+    """Endpoint interno (sin auth de usuario -- pensado para llamadas
+    servicio-a-servicio dentro de la red de docker-compose, ej.
+    purple-service) que expone solo id/nombre/tags de reglas habilitadas,
+    para que purple-service pueda calcular cobertura de deteccion contra
+    tecnicas MITRE ATT&CK sin exponer el detalle completo de la regla."""
+    rules = await services.list_rules(db, enabled_only=True)
+    return [{"id": r.id, "name": r.name, "tags": r.tags} for r in rules]
+
+
 @app.get("/alerts", response_model=list[AlertOut])
 async def list_alerts(
     status_filter: str | None = None,
