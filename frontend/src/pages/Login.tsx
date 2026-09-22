@@ -1,5 +1,7 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { login } from "../services/api";
+import { useAuthStore } from "../store/auth";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -7,6 +9,8 @@ export default function Login() {
   const [totpCode, setTotpCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const setTokens = useAuthStore((s) => s.setTokens);
+  const navigate = useNavigate();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -14,8 +18,8 @@ export default function Login() {
     setError(null);
     try {
       const tokens = await login(email, password, totpCode || undefined);
-      localStorage.removeItem("sentinelops_access_token"); // placeholder until store wiring lands
-      console.log("login ok", tokens.token_type);
+      setTokens(tokens.access_token, tokens.refresh_token);
+      navigate("/");
     } catch {
       setError("Credenciales invalidas o MFA requerido.");
     } finally {
