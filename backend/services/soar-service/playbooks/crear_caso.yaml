@@ -1,0 +1,10 @@
+name: Crear caso de incidente
+description: >
+  Para cualquier alerta de severidad media o superior que no tenga un
+  playbook de contencion mas especifico, abre un caso de incidente para
+  triage manual del equipo SOC.
+min_severity: medium
+rule_tags: []
+steps:
+  - action: create_case
+    params: {}

@@ -1,0 +1,12 @@
+name: Bloquear IP maliciosa
+description: >
+  Ante una alerta de severidad alta o critica con una IP de origen
+  identificada, bloquea esa IP en el perimetro (dry-run por defecto, ver
+  app/actions/block_ip.py -- se habilita un conector real cuando exista
+  integration-service).
+min_severity: high
+rule_tags: []
+steps:
+  - action: block_ip
+    params:
+      field: source.ip

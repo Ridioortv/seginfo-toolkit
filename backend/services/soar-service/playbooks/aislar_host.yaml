@@ -1,0 +1,14 @@
+name: Aislar host comprometido
+description: >
+  Ante una alerta critica asociada a un host, lo aisla de la red (dry-run
+  por defecto, ver app/actions/isolate_host.py) y ademas abre un caso para
+  que el equipo de respuesta haga seguimiento.
+min_severity: critical
+rule_tags: []
+steps:
+  - action: isolate_host
+    params:
+      field: host.name
+  - action: create_case
+    params:
+      priority: critical
