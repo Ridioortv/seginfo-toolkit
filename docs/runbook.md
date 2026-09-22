@@ -12,6 +12,13 @@ make logs                   # seguir logs de todos los servicios
 make down                   # apagar
 ```
 
+En Windows, sin terminal: `SentinelOps - Iniciar.exe` / `SentinelOps -
+Detener.exe` en la raiz del repo hacen lo mismo que `make up` / `make
+down`, mas la verificacion de que Docker Desktop este instalado y
+corriendo y la apertura automatica del dashboard (ver
+`launcher/README.md`). Siguen necesitando Docker Desktop instalado -- no
+reemplazan a Docker, solo automatizan los comandos.
+
 Verificar que todo levanto: cada servicio expone `GET /health` en su puerto
 (ver tabla de puertos en el `README.md` de la raiz). Un `curl` rapido:
 

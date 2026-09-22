@@ -46,6 +46,15 @@ make up
 Esto levanta Postgres, Redis, OpenSearch y los 11 microservicios backend + el
 frontend con `docker-compose.yml`. Ver la tabla de puertos abajo.
 
+### En Windows, sin usar la linea de comandos
+
+Doble click en `SentinelOps - Iniciar.exe` (raiz del repo): revisa que
+Docker Desktop este instalado y corriendo, levanta todo con Docker Compose
+y abre el dashboard solo. `SentinelOps - Detener.exe` para todo sin borrar
+los datos. Siguen necesitando Docker Desktop instalado -- ver
+[`launcher/README.md`](./launcher/README.md) para el detalle y como
+recompilarlos.
+
 ## Servicios y puertos (docker-compose)
 
 | Servicio               | Puerto | Rol                                                    |
