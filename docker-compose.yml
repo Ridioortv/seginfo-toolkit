@@ -134,6 +134,7 @@ services:
       REDIS_HOST: redis
       SOAR_DRY_RUN: "true"
       CASE_SERVICE_URL: http://case-service:8000
+      INTEGRATION_SERVICE_URL: http://integration-service:8000
     depends_on:
       postgres:
         condition: service_healthy
@@ -176,6 +177,60 @@ services:
     ports:
       - "8008:8000"
 
+  report-service:
+    build:
+      context: .
+      dockerfile: backend/services/report-service/Dockerfile
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      VULN_SERVICE_URL: http://vuln-service:8000
+      SIEM_SERVICE_URL: http://siem-service:8000
+      CASE_SERVICE_URL: http://case-service:8000
+      PURPLE_SERVICE_URL: http://purple-service:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8009:8000"
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: backend/services/notification-service/Dockerfile
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      NOTIFICATION_DRY_RUN: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8010:8000"
+
+  integration-service:
+    build:
+      context: .
+      dockerfile: backend/services/integration-service/Dockerfile
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      INTEGRATION_DRY_RUN: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8011:8000"
+
   frontend:
     build:
       context: ./frontend
@@ -189,6 +244,9 @@ services:
       - soar-service
       - case-service
       - purple-service
+      - report-service
+      - notification-service
+      - integration-service
     ports:
       - "5173:5173"
 

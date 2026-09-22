@@ -10,40 +10,51 @@ motores de ejecucion ofensiva ni integracion C2 (ver docs/architecture.md, secci
 - [x] Fase 2: asset-service + scan-service (orquestacion de escaneres defensivos) + vuln-service
 - [x] Fase 3: siem-service + soar-service
 - [x] Fase 4: case-service + purple-service (metricas/gap-analysis, sin motor ofensivo)
-- [ ] Fase 5: report-service + notification-service + integration-service
+- [x] Fase 5: report-service + notification-service + integration-service
 - [ ] Fase 6: K8s + Terraform + CI/CD completo + documentacion final
 
 ## Ultima corrida
 - Fecha: 2026-09-22
-- Fase completada: 4
-- Proxima fase: 5
-- Notas: case-service (gestion de incidentes estilo ITSM/kanban: prioridad con
-  SLA calculado automaticamente por tabla SLA_HOURS_BY_PRIORITY (critical=4h,
-  high=8h, medium=24h, low=72h), timeline de auditoria por caso, cierre con
-  resolved_at automatico, e importacion best-effort de PendingCase generados
-  por soar-service via POST /import/soar-pending con dedupe por alert_id+source)
-  y purple-service (gap analysis de cobertura de deteccion MITRE ATT&CK -- SOLO
-  analiza datos, nunca ejecuta tecnicas: un catalogo curado de 12 tecnicas de
-  referencia en app/attack_data.py se cruza contra las reglas Sigma habilitadas
-  de siem-service, consultadas via un nuevo endpoint interno sin auth de usuario
-  GET /internal/rule-tags pensado solo para llamadas servicio-a-servicio dentro
-  de la red de docker-compose; el matching busca tags con convencion
-  'attack.tXXXX' y calcula cobertura global -- GET /coverage/overall, metrica de
-  dashboard -- y por ejercicio declarado -- POST /exercises/{id}/coverage,
-  persistiendo el resultado en el propio ejercicio). Se conecto CASE_SERVICE_URL
-  en soar-service ahora que case-service existe (antes estaba vacio). Se
-  agregaron case-service (puerto 8007) y purple-service (puerto 8008) a
-  docker-compose.yml siguiendo el mismo patron de Dockerfile/build-context que
-  el resto, y se actualizo el depends_on de frontend. Validado con py_compile
-  (todos los .py nuevos/modificados, sin errores) y docker-compose.yml parseado
-  como YAML valido con pyyaml (12 servicios, docker no disponible en esta
-  maquina de automatizacion para correr `docker compose config` con builds
-  reales).
+- Fase completada: 5
+- Proxima fase: 6
+- Notas Fase 5: report-service (reportes ejecutivos/de cumplimiento generados
+  100% agregando datos ya existentes en otros servicios -- vuln-service,
+  siem-service, case-service, purple-service -- reenviando el token del
+  usuario que pide el reporte, nunca con credenciales de servicio elevadas;
+  si una fuente no responde esa seccion queda vacia con su error registrado,
+  nunca se inventan datos; exportable como JSON o CSV via
+  GET /reports/{id}/export). notification-service (canales configurables
+  email/Slack-webhook/webhook-generico; por defecto en modo DRY-RUN
+  -- NOTIFICATION_DRY_RUN=true, mismo patron que SOAR_DRY_RUN -- que registra
+  la notificacion que se enviaria sin llamar de verdad a la URL/SMTP que
+  configure el operador). integration-service (conectores GENERICOS tipo
+  webhook REST de contencion -- firewall/EDR -- sin SDKs propietarios de
+  ningun vendor; por defecto en modo DRY-RUN -- INTEGRATION_DRY_RUN=true --
+  que tampoco llama a ningun sistema real; expone endpoints internos sin
+  auth de usuario /internal/actions/block-ip y /internal/actions/isolate-host
+  pensados para llamadas servicio-a-servicio desde soar-service). Se
+  actualizaron las acciones block_ip/isolate_host de soar-service para que,
+  solo cuando SOAR_DRY_RUN=false, deleguen en integration-service (que a su
+  vez sigue en dry-run hasta que un operador configure un conector real) --
+  cierra el ciclo dry-run-por-defecto en dos capas independientes, ninguna
+  ejecuta nada real sin que un humano cambie explicitamente ambas variables
+  de entorno Y configure un conector. Se agregaron report-service (8009),
+  notification-service (8010) e integration-service (8011) a
+  docker-compose.yml con el mismo patron de Dockerfile/build-context, y se
+  actualizo el depends_on de frontend. Validado con py_compile (todo
+  backend/, sin errores) y docker-compose.yml parseado como YAML valido con
+  pyyaml (15 servicios).
+
 - Pendiente: el token de GitHub usado por esta automatizacion no tiene permiso
   'Workflows', asi que el workflow de CI (.github/workflows/ci.yml) no se pudo
   subir. Si el usuario agrega ese permiso al token, una proxima corrida puede
   subirlo (esto se resuelve a fondo en la Fase 6, que cubre CI/CD). El frontend
   todavia no tiene vistas para activos/escaneos/vulnerabilidades/SIEM/SOAR/
-  Casos/PurpleTeam -- esto esta contemplado para la Fase 6 (expansion del
-  frontend). Fase 5 (report-service, notification-service, integration-service)
-  queda pendiente para la proxima corrida.
+  Casos/PurpleTeam/Reportes/Notificaciones/Integraciones -- esto esta
+  contemplado para la Fase 6 (expansion del frontend). Ningun conector de
+  firewall/EDR real esta configurado todavia en integration-service (ni
+  deberia estarlo sin que el usuario/operador lo decida explicitamente) --
+  la plataforma queda en modo 100% dry-run/simulado en ambas capas
+  (SOAR_DRY_RUN e INTEGRATION_DRY_RUN) por defecto. Fase 6 (K8s, Terraform,
+  CI/CD completo, expansion de frontend, documentacion final) queda
+  pendiente para la proxima corrida.

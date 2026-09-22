@@ -1,7 +1,13 @@
 """Accion 'block_ip': bloqueo perimetral de una IP de origen marcada en la
-alerta. En modo dry-run (default) solo registra la intencion; un conector
-real de firewall se enchufaria aca en el futuro via integration-service."""
+alerta. En modo dry-run (default) solo registra la intencion. Si
+SOAR_DRY_RUN=false, delega en integration-service (Fase 5), que a su vez
+tiene su propio modo dry-run por defecto (INTEGRATION_DRY_RUN) hasta que un
+operador configure un conector de firewall real."""
+import os
+import httpx
 from app.actions.base import ActionExecutor, ActionResult, dry_run_enabled
+
+INTEGRATION_SERVICE_URL = os.getenv("INTEGRATION_SERVICE_URL", "http://integration-service:8000")
 
 
 class BlockIpAction(ActionExecutor):
@@ -20,13 +26,25 @@ class BlockIpAction(ActionExecutor):
                 details={"ip": ip},
             )
 
-        # Sin conector real configurado (integration-service, Fase 5): no se
-        # ejecuta ninguna accion contra infraestructura real todavia.
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(f"{INTEGRATION_SERVICE_URL}/internal/actions/block-ip", json={"ip": ip})
+                response.raise_for_status()
+                result = response.json()
+        except httpx.HTTPError as exc:
+            return ActionResult(
+                success=False,
+                simulated=False,
+                message=f"No se pudo contactar a integration-service para bloquear {ip}: {exc}",
+                details={"ip": ip},
+            )
+
         return ActionResult(
-            success=False,
-            simulated=False,
-            message=f"No hay un conector de firewall real configurado para bloquear {ip}",
-            details={"ip": ip},
+            success=result.get("status") in ("executed", "simulated"),
+            simulated=result.get("status") == "simulated",
+            message=f"integration-service reporto status='{result.get('status')}' para el bloqueo de {ip}"
+            + (f" ({result.get('error')})" if result.get("error") else ""),
+            details={"ip": ip, "integration_result": result},
         )
 
 
