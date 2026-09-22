@@ -60,12 +60,19 @@ motores de ejecucion ofensiva ni integracion C2 (ver docs/architecture.md, secci
   limpiar por una restriccion de borrado de archivos de esta maquina de
   automatizacion -- no afecta al repo, node_modules esta en .gitignore).
 
-- Pendiente: el token de GitHub usado por esta automatizacion todavia no
-  tiene permiso 'Workflows', asi que .github/workflows/ci.yml se subio en
-  este mismo push -- si el push llegara a fallar por este motivo en una
-  corrida futura (por ejemplo si alguien regenera el token sin ese
-  permiso), la correccion ya conocida es sacar ese archivo del commit y
-  pedirle a Manu que agregue 'Workflows: Read and write' al token. El CI
+- Pendiente: el token de GitHub usado por esta automatizacion no tiene
+  permiso 'Workflows' -- el push de este commit fue rechazado por GitHub
+  ("refusing to allow a Personal Access Token to create or update
+  workflow ... without workflow scope") hasta sacar
+  .github/workflows/ci.yml del commit. El archivo quedo escrito en disco
+  (en la carpeta conectada, sin commitear) con el pipeline completo
+  (py_compile del backend, build+typecheck del frontend, validacion de
+  docker-compose.yml, build de cada imagen Docker); para subirlo, Manu
+  puede agregarle el permiso 'Workflows: Read and write' al token (en
+  GitHub, Settings del fine-grained PAT) y correr `git add
+  .github/workflows/ci.yml && git commit -m "Agrega CI" && git push`
+  desde su PC, o pedirle a una proxima corrida automatica que lo haga una
+  vez tenga ese permiso. El CI
   todavia no hace push de las imagenes Docker a ningun registry (falta
   decidir cual -- GHCR es la opcion mas simple porque no requiere
   credenciales de AWS -- y agregar el login+push al job `docker-build` de
