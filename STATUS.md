@@ -19,3 +19,7 @@ motores de ejecucion ofensiva ni integracion C2 (ver docs/architecture.md, secci
 - Proxima fase: 2
 - Notas: repo inicializado, auth-service con JWT + TOTP scaffold, frontend Vite+React
   con login funcional contra auth-service, docker-compose con postgres/redis/auth/frontend.
+- Pendiente: el token de GitHub usado por esta automatizacion no tiene permiso
+  'Workflows', asi que el workflow de CI (.github/workflows/ci.yml) no se pudo subir.
+  Si el usuario agrega ese permiso al token, la siguiente corrida puede subirlo
+  (esto se resuelve a fondo en la Fase 6, que cubre CI/CD).
