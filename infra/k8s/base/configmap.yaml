@@ -1,0 +1,52 @@
+# Configuracion NO sensible, compartida por todos los microservicios.
+# Los nombres de host (postgres, redis, opensearch, <servicio>-service)
+# son los nombres de Service de Kubernetes dentro del namespace
+# 'sentinelops' -- exactamente el mismo patron de resolucion de nombres
+# que docker-compose usa entre contenedores.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentinelops-config
+  namespace: sentinelops
+data:
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "INFO"
+
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "sentinelops"
+  POSTGRES_USER: "sentinelops"
+
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+
+  OPENSEARCH_HOST: "opensearch"
+
+  JWT_ALGORITHM: "HS256"
+  ACCESS_TOKEN_EXPIRE_MINUTES: "15"
+  REFRESH_TOKEN_EXPIRE_DAYS: "7"
+  MFA_ISSUER_NAME: "SentinelOps"
+
+  EPSS_API_URL: "https://api.first.org/data/v1/epss"
+  CISA_KEV_URL: "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
+
+  # URLs de servicio a servicio (nombres de Service de k8s, puerto interno
+  # 8000 en todos los microservicios -- ver cada Dockerfile).
+  AUTH_SERVICE_URL: "http://auth-service:8000"
+  ASSET_SERVICE_URL: "http://asset-service:8000"
+  SCAN_SERVICE_URL: "http://scan-service:8000"
+  VULN_SERVICE_URL: "http://vuln-service:8000"
+  SIEM_SERVICE_URL: "http://siem-service:8000"
+  SOAR_SERVICE_URL: "http://soar-service:8000"
+  CASE_SERVICE_URL: "http://case-service:8000"
+  PURPLE_SERVICE_URL: "http://purple-service:8000"
+  REPORT_SERVICE_URL: "http://report-service:8000"
+  NOTIFICATION_SERVICE_URL: "http://notification-service:8000"
+  INTEGRATION_SERVICE_URL: "http://integration-service:8000"
+
+  # Doble capa de dry-run -- ver docs/architecture.md y STATUS.md Fase 5.
+  # Cambiar a "false" es una decision explicita del operador, nunca el
+  # valor por defecto de este manifiesto.
+  SOAR_DRY_RUN: "true"
+  INTEGRATION_DRY_RUN: "true"
+  NOTIFICATION_DRY_RUN: "true"

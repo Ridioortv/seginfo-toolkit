@@ -22,17 +22,20 @@ function makeClient(baseURL: string): AxiosInstance {
 // Cada microservicio corre en su propio puerto (ver docker-compose.yml);
 // en produccion detras de un API gateway/reverse proxy estas URLs se
 // reemplazan por variables de entorno VITE_*_SERVICE_URL en build time.
-export const authApi = makeClient(serviceUrl("VITE_AUTH_SERVICE_URL", 8001));
-export const assetApi = makeClient(serviceUrl("VITE_ASSET_SERVICE_URL", 8002));
-export const scanApi = makeClient(serviceUrl("VITE_SCAN_SERVICE_URL", 8003));
-export const vulnApi = makeClient(serviceUrl("VITE_VULN_SERVICE_URL", 8004));
-export const siemApi = makeClient(serviceUrl("VITE_SIEM_SERVICE_URL", 8005));
-export const soarApi = makeClient(serviceUrl("VITE_SOAR_SERVICE_URL", 8006));
-export const caseApi = makeClient(serviceUrl("VITE_CASE_SERVICE_URL", 8007));
-export const purpleApi = makeClient(serviceUrl("VITE_PURPLE_SERVICE_URL", 8008));
-export const reportApi = makeClient(serviceUrl("VITE_REPORT_SERVICE_URL", 8009));
-export const notificationApi = makeClient(serviceUrl("VITE_NOTIFICATION_SERVICE_URL", 8010));
-export const integrationApi = makeClient(serviceUrl("VITE_INTEGRATION_SERVICE_URL", 8011));
+// Mismo esquema de nombres que ya definia .env.example en Fase 1
+// (VITE_API_BASE_URL, VITE_ASSET_API_BASE_URL, etc.) -- se completan aca
+// las variables para los servicios agregados en Fases 3-5.
+export const authApi = makeClient(serviceUrl("VITE_API_BASE_URL", 8001));
+export const assetApi = makeClient(serviceUrl("VITE_ASSET_API_BASE_URL", 8002));
+export const scanApi = makeClient(serviceUrl("VITE_SCAN_API_BASE_URL", 8003));
+export const vulnApi = makeClient(serviceUrl("VITE_VULN_API_BASE_URL", 8004));
+export const siemApi = makeClient(serviceUrl("VITE_SIEM_API_BASE_URL", 8005));
+export const soarApi = makeClient(serviceUrl("VITE_SOAR_API_BASE_URL", 8006));
+export const caseApi = makeClient(serviceUrl("VITE_CASE_API_BASE_URL", 8007));
+export const purpleApi = makeClient(serviceUrl("VITE_PURPLE_API_BASE_URL", 8008));
+export const reportApi = makeClient(serviceUrl("VITE_REPORT_API_BASE_URL", 8009));
+export const notificationApi = makeClient(serviceUrl("VITE_NOTIFICATION_API_BASE_URL", 8010));
+export const integrationApi = makeClient(serviceUrl("VITE_INTEGRATION_API_BASE_URL", 8011));
 
 export interface TokenPair {
   access_token: string;

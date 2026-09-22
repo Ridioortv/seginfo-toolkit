@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: sentinelops
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  # secret.yaml no se versiona (ver .gitignore de esta carpeta) -- copiar
+  # secret.yaml.example a secret.yaml y completar antes de aplicar.
+  - secret.yaml
+  - postgres.yaml
+  - redis.yaml
+  - opensearch.yaml
+  - auth-service.yaml
+  - asset-service.yaml
+  - scan-service.yaml
+  - vuln-service.yaml
+  - siem-service.yaml
+  - soar-service.yaml
+  - case-service.yaml
+  - purple-service.yaml
+  - report-service.yaml
+  - notification-service.yaml
+  - integration-service.yaml
+  - frontend.yaml
+  - ingress.yaml

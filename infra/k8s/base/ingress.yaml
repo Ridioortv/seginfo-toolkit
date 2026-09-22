@@ -1,0 +1,107 @@
+# Ingress de ejemplo (asume un ingress-controller tipo nginx ya instalado
+# en el cluster). Cada microservicio se expone bajo su propio prefijo de
+# path para que el frontend (o un cliente externo) pueda llamarlos a
+# traves de un unico host/TLS -- en vez de exponer 12 puertos distintos
+# como en docker-compose. Ajustar 'host' al dominio real antes de aplicar.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sentinelops
+  namespace: sentinelops
+  annotations:
+    nginx.ingress.controller/rewrite-target: /
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - sentinelops.example.com
+      secretName: sentinelops-tls
+  rules:
+    - host: sentinelops.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+          - path: /api/auth
+            pathType: Prefix
+            backend:
+              service:
+                name: auth-service
+                port:
+                  number: 8000
+          - path: /api/assets
+            pathType: Prefix
+            backend:
+              service:
+                name: asset-service
+                port:
+                  number: 8000
+          - path: /api/scans
+            pathType: Prefix
+            backend:
+              service:
+                name: scan-service
+                port:
+                  number: 8000
+          - path: /api/vulnerabilities
+            pathType: Prefix
+            backend:
+              service:
+                name: vuln-service
+                port:
+                  number: 8000
+          - path: /api/siem
+            pathType: Prefix
+            backend:
+              service:
+                name: siem-service
+                port:
+                  number: 8000
+          - path: /api/soar
+            pathType: Prefix
+            backend:
+              service:
+                name: soar-service
+                port:
+                  number: 8000
+          - path: /api/cases
+            pathType: Prefix
+            backend:
+              service:
+                name: case-service
+                port:
+                  number: 8000
+          - path: /api/purple
+            pathType: Prefix
+            backend:
+              service:
+                name: purple-service
+                port:
+                  number: 8000
+          - path: /api/reports
+            pathType: Prefix
+            backend:
+              service:
+                name: report-service
+                port:
+                  number: 8000
+          - path: /api/notifications
+            pathType: Prefix
+            backend:
+              service:
+                name: notification-service
+                port:
+                  number: 8000
+          - path: /api/integrations
+            pathType: Prefix
+            backend:
+              service:
+                name: integration-service
+                port:
+                  number: 8000
