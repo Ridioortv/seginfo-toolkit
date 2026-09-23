@@ -17,16 +17,19 @@ instalacion on-prem necesita poder consultarlo sin credenciales previas
 mas que su propia license_key, y la respuesta viene firmada (nunca
 autenticada por sesion) para que ningun intermediario pueda alterarla
 sin que el cliente lo detecte."""
+import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
-from app import db
+from app import db, paypal
 from app.signing import sign_payload
+
+logger = logging.getLogger("licensing-server")
 
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
 DEFAULT_PERIOD_DAYS = 30
@@ -82,6 +85,31 @@ class ExtendRequest(BaseModel):
     days: int = Field(default=DEFAULT_PERIOD_DAYS, ge=1)
 
 
+class PaypalLinkRequest(BaseModel):
+    plan_id: str | None = Field(default=None, description="Si se omite, usa PAYPAL_PLAN_ID")
+
+
+class PaypalLinkOut(BaseModel):
+    subscription_id: str
+    approval_url: str
+
+
+def _extend_expiry(license_key: str, days: int) -> None:
+    """Logica compartida por el endpoint admin y el webhook de PayPal --
+    se extiende desde la fecha de vencimiento ACTUAL (nunca desde
+    'ahora'), asi que renovar unos dias antes de que venza (o que el
+    cobro recurrente de PayPal llegue un poco antes) no le hace perder
+    al cliente los dias que le quedaban. Si ya esta vencida, arranca de
+    nuevo desde ahora."""
+    row = db.get_client(license_key)
+    if row is None:
+        raise LookupError(license_key)
+    current_expiry = datetime.fromisoformat(row["subscription_expires_at"])
+    base = max(current_expiry, _now())
+    new_expiry = (base + timedelta(days=days)).isoformat()
+    db.set_expiry(license_key, new_expiry)
+
+
 @app.post("/admin/clients", response_model=ClientOut, status_code=status.HTTP_201_CREATED)
 def create_client(payload: ClientCreate, _: None = Depends(require_admin)):
     license_key = payload.license_key or secrets.token_urlsafe(24)
@@ -100,21 +128,82 @@ def list_clients(_: None = Depends(require_admin)):
 
 @app.post("/admin/clients/{license_key}/extend", response_model=ClientOut)
 def extend_client(license_key: str, payload: ExtendRequest, _: None = Depends(require_admin)):
-    row = db.get_client(license_key)
-    if row is None:
+    try:
+        _extend_expiry(license_key, payload.days)
+    except LookupError:
         raise HTTPException(status_code=404, detail="license_key desconocida")
-    current_expiry = datetime.fromisoformat(row["subscription_expires_at"])
-    # Se extiende desde la fecha de vencimiento ACTUAL (nunca desde "ahora"),
-    # asi que renovar unos dias antes de que venza no le hace perder al
-    # cliente los dias que le quedaban. Si ya esta vencida, arranca de
-    # nuevo desde ahora (si no, un cliente que dejo de pagar hace 6 meses
-    # y renueva hoy quedaria "vencido" igual, sumando 30 dias a una fecha
-    # ya vieja en vez de tener 30 dias reales desde hoy).
-    base = max(current_expiry, _now())
-    new_expiry = (base + timedelta(days=payload.days)).isoformat()
-    db.set_expiry(license_key, new_expiry)
-    row = db.get_client(license_key)
-    return ClientOut(**dict(row))
+    return ClientOut(**dict(db.get_client(license_key)))
+
+
+@app.post("/admin/clients/{license_key}/paypal-subscription-link", response_model=PaypalLinkOut)
+async def paypal_subscription_link(license_key: str, payload: PaypalLinkRequest, _: None = Depends(require_admin)):
+    """Genera el link de PayPal que le mandas al cliente para que apruebe
+    la suscripcion de $250/30 dias A TU cuenta de PayPal. Cuando lo
+    aprueba, PayPal factura y dispara BILLING.SUBSCRIPTION.ACTIVATED
+    contra /webhooks/paypal, que extiende la licencia solo."""
+    if db.get_client(license_key) is None:
+        raise HTTPException(status_code=404, detail="license_key desconocida -- creala primero con POST /admin/clients")
+    if not paypal.is_configured():
+        raise HTTPException(status_code=503, detail="PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET no configurados en este servidor")
+    try:
+        subscription_id, approval_url = await paypal.create_subscription_approval_link(license_key, payload.plan_id)
+    except paypal.PayPalError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    db.set_paypal_subscription_id(license_key, subscription_id)
+    return PaypalLinkOut(subscription_id=subscription_id, approval_url=approval_url)
+
+
+@app.post("/webhooks/paypal", status_code=status.HTTP_204_NO_CONTENT)
+async def paypal_webhook(request: Request):
+    """PayPal le pega aca en cada evento de las suscripciones (pago
+    recibido, cancelacion, etc -- ver app/paypal.py::PAYMENT_RECEIVED_EVENTS
+    para cuales efectivamente extienden una licencia). Publico por
+    definicion (PayPal no manda tu ADMIN_TOKEN), asi que la unica
+    proteccion real es la verificacion de firma -- sin ella, cualquiera
+    podria pegarle a esta URL con un event_type inventado y renovarse
+    gratis."""
+    if not paypal.is_configured():
+        raise HTTPException(status_code=503, detail="PayPal no esta configurado en este servidor")
+
+    event = await request.json()
+    verified = await paypal.verify_webhook_signature(dict(request.headers), event)
+    if not verified:
+        logger.warning("webhook de PayPal con firma invalida o no verificable -- ignorado")
+        raise HTTPException(status_code=401, detail="firma de PayPal invalida")
+
+    event_type = event.get("event_type", "")
+    if event_type not in paypal.PAYMENT_RECEIVED_EVENTS:
+        # Verificado pero no es un evento de pago (cancelacion, etc) --
+        # se ignora a proposito, ver el docstring de PAYMENT_RECEIVED_EVENTS.
+        return
+
+    method, value = paypal.resolve_license_key_lookup(event)
+    if not value:
+        logger.warning("webhook de PayPal (%s) sin custom_id ni subscription id -- no se puede resolver el cliente", event_type)
+        return
+
+    row = db.get_client(value) if method == "license_key" else db.get_client_by_paypal_subscription_id(value)
+    if row is None:
+        logger.warning("webhook de PayPal (%s) no corresponde a ningun cliente conocido (%s=%s)", event_type, method, value)
+        return
+
+    license_key = row["license_key"]
+    resource = event.get("resource", {}) or {}
+    if method == "license_key" and resource.get("id"):
+        # Primer pago (BILLING.SUBSCRIPTION.ACTIVATED): todavia no
+        # teniamos el subscription_id guardado si el link se genero
+        # fuera de /admin/clients/.../paypal-subscription-link -- se
+        # backfillea aca para que los PROXIMOS cobros recurrentes
+        # (PAYMENT.SALE.COMPLETED, que solo traen billing_agreement_id)
+        # puedan resolver el cliente.
+        db.set_paypal_subscription_id(license_key, resource["id"])
+
+    try:
+        _extend_expiry(license_key, DEFAULT_PERIOD_DAYS)
+    except LookupError:
+        return
+    db.append_note(license_key, f"PayPal {event_type} -- +{DEFAULT_PERIOD_DAYS} dias")
+    logger.info("licencia extendida via webhook de PayPal", extra={"license_key": license_key, "event_type": event_type})
 
 
 @app.post("/admin/clients/{license_key}/revoke", response_model=ClientOut)
