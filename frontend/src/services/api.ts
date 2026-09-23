@@ -1,9 +1,46 @@
-import axios, { AxiosInstance } from "axios";
+import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig } from "axios";
 import { useAuthStore } from "../store/auth";
 
 function serviceUrl(envVar: string, port: number): string {
   const fromEnv = (import.meta.env as Record<string, string | undefined>)[envVar];
   return fromEnv ?? `http://localhost:${port}`;
+}
+
+// El access_token dura poco a proposito (15 min por defecto, ver
+// ACCESS_TOKEN_EXPIRE_MINUTES en backend/shared/security.py) -- sin este
+// refresh automatico, cualquier sesion de mas de 15 minutos terminaba
+// viendo "Token invalido o expirado" en cada pagina hasta cerrar sesion y
+// volver a entrar.
+const authBaseURL = serviceUrl("VITE_API_BASE_URL", 8001);
+
+let refreshPromise: Promise<string> | null = null;
+
+// Pide un access_token nuevo con el refresh_token guardado. Usa un axios
+// "pelado" (sin los interceptores de abajo) para no entrar en loop si
+// /auth/refresh mismo devolviera 401, y cachea la promesa en curso para
+// que varios requests que fallan al mismo tiempo (por ejemplo, al volver
+// a la pestaña despues de un rato) disparen un solo refresh en vez de uno
+// por cada uno.
+async function refreshAccessToken(): Promise<string> {
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      const refreshToken = useAuthStore.getState().refreshToken;
+      if (!refreshToken) {
+        throw new Error("No hay refresh_token guardado");
+      }
+      try {
+        const { data } = await axios.post<{ access_token: string; refresh_token: string }>(
+          `${authBaseURL}/auth/refresh`,
+          { refresh_token: refreshToken },
+        );
+        useAuthStore.getState().setTokens(data.access_token, data.refresh_token);
+        return data.access_token;
+      } finally {
+        refreshPromise = null;
+      }
+    })();
+  }
+  return refreshPromise;
 }
 
 function makeClient(baseURL: string): AxiosInstance {
@@ -16,6 +53,28 @@ function makeClient(baseURL: string): AxiosInstance {
     }
     return config;
   });
+  client.interceptors.response.use(
+    (response) => response,
+    async (error: AxiosError) => {
+      const original = error.config as (InternalAxiosRequestConfig & { _retriedAfterRefresh?: boolean }) | undefined;
+      if (error.response?.status === 401 && original && !original._retriedAfterRefresh) {
+        original._retriedAfterRefresh = true;
+        try {
+          const newAccessToken = await refreshAccessToken();
+          original.headers = original.headers ?? {};
+          (original.headers as Record<string, string>).Authorization = `Bearer ${newAccessToken}`;
+          return client(original);
+        } catch {
+          // El refresh_token tambien esta vencido (7 dias por defecto) o
+          // no existe -- no hay como recuperar la sesion sin volver a
+          // loguearse. logout() limpia el store; ProtectedRoute (que lee
+          // accessToken de forma reactiva) redirige solo a /login.
+          useAuthStore.getState().logout();
+        }
+      }
+      return Promise.reject(error);
+    },
+  );
   return client;
 }
 

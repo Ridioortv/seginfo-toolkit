@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
+from jose import JWTError
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, make_asgi_app
@@ -11,7 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.database import get_db, engine, Base, SessionLocal
 from backend.shared.logging import configure_logging
-from app.schemas import UserCreate, UserOut, LoginRequest, TokenPair, MfaEnrollResponse, MfaVerifyRequest, GoogleAuthRequest
+from backend.shared.security import decode_token
+from app.schemas import UserCreate, UserOut, LoginRequest, TokenPair, MfaEnrollResponse, MfaVerifyRequest, GoogleAuthRequest, RefreshRequest
 from app.dependencies import get_current_claims, require_role
 from app import services
 
@@ -120,6 +122,29 @@ async def google_login(payload: GoogleAuthRequest, db: AsyncSession = Depends(ge
     await services.record_audit_event(db, email, "auth.google.login")
     await db.commit()
     return TokenPair(access_token=access, refresh_token=refresh)
+
+
+@app.post("/auth/refresh", response_model=TokenPair)
+async def refresh(payload: RefreshRequest, db: AsyncSession = Depends(get_db)):
+    """Cambia un refresh_token vigente por un access_token nuevo (y un
+    refresh_token nuevo). El access_token dura poco a proposito
+    (ACCESS_TOKEN_EXPIRE_MINUTES, 15 minutos por defecto) -- sin este
+    endpoint, el usuario quedaba con 401 ("Token invalido o expirado") en
+    toda la plataforma pasados esos 15 minutos, sin otra opcion que cerrar
+    sesion y volver a entrar. El frontend llama esto automaticamente
+    (ver frontend/src/services/api.ts) apenas ve un 401."""
+    try:
+        claims = decode_token(payload.refresh_token)
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Refresh token invalido o expirado")
+    if claims.get("type") != "refresh":
+        raise HTTPException(status_code=401, detail="Tipo de token incorrecto")
+    user = await services.get_user_by_id(db, claims["sub"])
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=401, detail="Usuario no encontrado o inactivo")
+    role_name = user.role.name if user.role else "analyst"
+    access, new_refresh = services.issue_tokens(user, role_name)
+    return TokenPair(access_token=access, refresh_token=new_refresh)
 
 
 @app.post("/auth/mfa/enroll", response_model=MfaEnrollResponse)
