@@ -11,6 +11,8 @@ from app.models import Playbook, PlaybookRun, PendingCase, RunStatus
 from app.actions.block_ip import BlockIpAction
 from app.actions.isolate_host import IsolateHostAction
 from app.actions.create_case import CreateCaseAction
+from app.actions.create_ticket import CreateTicketAction
+from app.actions.notify import NotifyAction
 
 logger = configure_logging("soar-service")
 
@@ -20,6 +22,8 @@ ACTIONS = {
     "block_ip": BlockIpAction(),
     "isolate_host": IsolateHostAction(),
     "create_case": CreateCaseAction(),
+    "create_ticket": CreateTicketAction(),
+    "notify": NotifyAction(),
 }
 
 

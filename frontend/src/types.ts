@@ -233,3 +233,15 @@ export interface ActionLogOut {
   error: string;
   created_at: string;
 }
+
+export interface TicketLogOut {
+  id: string;
+  connector_id: string;
+  title: string;
+  priority: string;
+  status: string;
+  external_key: string;
+  external_url: string;
+  error: string;
+  created_at: string;
+}

@@ -37,3 +37,24 @@ class IntegrationActionLog(Base):
     status: Mapped[str] = mapped_column(String(20), default="simulated")  # executed | failed | simulated
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class TicketLog(Base):
+    """Historial de tickets abiertos en un sistema externo de ticketing
+    (ej. Jira) via un conector kind='ticketing'. Tabla nueva y separada
+    de IntegrationActionLog a proposito -- asi no hace falta un ALTER
+    TABLE sobre una tabla que ya puede existir en instalaciones
+    corriendo (create_all solo crea tablas nuevas, no agrega columnas a
+    las existentes)."""
+
+    __tablename__ = "integration_ticket_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    connector_id: Mapped[str] = mapped_column(String(36), default="")
+    title: Mapped[str] = mapped_column(String(500), default="")
+    priority: Mapped[str] = mapped_column(String(20), default="medium")
+    status: Mapped[str] = mapped_column(String(20), default="simulated")  # executed | failed | simulated
+    external_key: Mapped[str] = mapped_column(String(100), default="")
+    external_url: Mapped[str] = mapped_column(String(500), default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

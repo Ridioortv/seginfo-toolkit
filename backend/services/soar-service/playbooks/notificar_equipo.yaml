@@ -1,0 +1,12 @@
+name: Notificar al equipo SOC
+description: >
+  Para cualquier alerta de severidad media o superior, avisa por los
+  canales de notificacion habilitados (email/Slack/webhook, ver
+  notification-service) -- dry-run por defecto (NOTIFICATION_DRY_RUN),
+  ver app/actions/notify.py. No reemplaza a create_case: solo avisa, no
+  abre nada.
+min_severity: medium
+rule_tags: []
+steps:
+  - action: notify
+    params: {}

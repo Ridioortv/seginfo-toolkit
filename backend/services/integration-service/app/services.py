@@ -12,7 +12,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
-from app.models import Connector, IntegrationActionLog
+from app.models import Connector, IntegrationActionLog, TicketLog
 
 logger = configure_logging("integration-service")
 
@@ -94,4 +94,87 @@ async def isolate_host(db: AsyncSession, hostname: str, connector_id: str | None
 
 async def list_action_logs(db: AsyncSession, limit: int = 100) -> list[IntegrationActionLog]:
     result = await db.execute(select(IntegrationActionLog).order_by(IntegrationActionLog.created_at.desc()).limit(limit))
+    return list(result.scalars().all())
+
+
+async def _call_jira(connector: Connector, title: str, description: str, priority: str) -> tuple[str, str, str, str]:
+    """Devuelve (status, error, external_key, external_url). Usa la API
+    v2 de Jira (Cloud o Server/Data Center) porque acepta 'description'
+    como texto plano -- la v3 exige Atlassian Document Format, que
+    complicaria innecesariamente un conector pensado para ser generico.
+    El campo 'priority' de Jira solo se manda si el conector define
+    'priority_map': los nombres de prioridad son especificos de cada
+    instancia de Jira (varian segun el esquema configurado) y adivinarlos
+    puede tirar un 400 -- mejor omitirlo que fallar la creacion del
+    ticket por un campo secundario."""
+    base_url = connector.config.get("base_url", "").rstrip("/")
+    email = connector.config.get("email", "")
+    api_token = connector.config.get("api_token", "")
+    project_key = connector.config.get("project_key", "")
+    issue_type = connector.config.get("issue_type", "Task")
+    priority_map = connector.config.get("priority_map", {})
+
+    if not (base_url and email and api_token and project_key):
+        return (
+            "failed",
+            "el conector no tiene 'base_url'/'email'/'api_token'/'project_key' configurados",
+            "",
+            "",
+        )
+
+    fields: dict = {
+        "project": {"key": project_key},
+        "summary": title,
+        "description": description,
+        "issuetype": {"name": issue_type},
+    }
+    jira_priority = priority_map.get(priority)
+    if jira_priority:
+        fields["priority"] = {"name": jira_priority}
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0, auth=(email, api_token)) as client:
+            response = await client.post(f"{base_url}/rest/api/2/issue", json={"fields": fields})
+            response.raise_for_status()
+            data = response.json()
+        key = data.get("key", "")
+        url = f"{base_url}/browse/{key}" if key else ""
+        return "executed", "", key, url
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:300] if exc.response is not None else str(exc)
+        return "failed", detail, "", ""
+    except httpx.HTTPError as exc:
+        return "failed", str(exc), "", ""
+
+
+async def create_ticket(
+    db: AsyncSession, title: str, description: str, priority: str, connector_id: str | None
+) -> TicketLog:
+    connector = await _pick_connector(db, "ticketing", connector_id)
+    if connector is None:
+        status_, error, key, url, cid = (
+            "failed",
+            "no hay un conector de tipo 'ticketing' habilitado y configurado",
+            "",
+            "",
+            "",
+        )
+    elif dry_run_enabled():
+        status_, error, key, url, cid = "simulated", "", "", "", connector.id
+        logger.info("apertura de ticket simulada (dry-run)", extra={"title": title, "connector_id": connector.id})
+    else:
+        status_, error, key, url = await _call_jira(connector, title, description, priority)
+        cid = connector.id
+
+    log = TicketLog(
+        connector_id=cid, title=title, priority=priority, status=status_,
+        external_key=key, external_url=url, error=error,
+    )
+    db.add(log)
+    await db.flush()
+    return log
+
+
+async def list_ticket_logs(db: AsyncSession, limit: int = 100) -> list[TicketLog]:
+    result = await db.execute(select(TicketLog).order_by(TicketLog.created_at.desc()).limit(limit))
     return list(result.scalars().all())

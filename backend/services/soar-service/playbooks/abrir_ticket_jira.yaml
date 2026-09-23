@@ -1,0 +1,13 @@
+name: Abrir ticket en Jira
+description: >
+  Para alertas de severidad alta o critica, abre un ticket en el sistema
+  de ticketing configurado (ej. Jira, via un conector kind='ticketing'
+  en integration-service) -- dry-run por defecto (INTEGRATION_DRY_RUN).
+  Si no hay ningun conector de ticketing configurado, la accion queda
+  registrada como 'failed' con el motivo, sin romper el resto del
+  playbook. Ver app/actions/create_ticket.py.
+min_severity: high
+rule_tags: []
+steps:
+  - action: create_ticket
+    params: {}

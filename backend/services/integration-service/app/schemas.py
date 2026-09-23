@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Literal
 from pydantic import BaseModel, Field
 
-ConnectorKind = Literal["firewall", "edr"]
+ConnectorKind = Literal["firewall", "edr", "ticketing"]
 
 
 class ConnectorCreate(BaseModel):
@@ -41,6 +41,28 @@ class ActionLogOut(BaseModel):
     action: str
     target: str
     status: str
+    error: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CreateTicketRequest(BaseModel):
+    title: str
+    description: str = ""
+    priority: str = "medium"
+    connector_id: str | None = None
+
+
+class TicketLogOut(BaseModel):
+    id: str
+    connector_id: str
+    title: str
+    priority: str
+    status: str
+    external_key: str
+    external_url: str
     error: str
     created_at: datetime
 

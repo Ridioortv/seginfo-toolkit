@@ -191,6 +191,50 @@ scheduler de report-service como cada regla usan un timezone explicito
 la zona horaria del sistema si no se le pasa una, y eso puede fallar en la
 imagen Debian "slim" del contenedor.
 
+## Integracion con Jira y Slack desde SOAR
+
+integration-service ahora soporta un tercer tipo de conector,
+`ticketing` (ej. Jira), ademas de `firewall`/`edr`. Un conector de Jira
+se crea desde "Integraciones" (o `POST /connectors`, rol admin) con:
+
+```json
+{
+  "base_url": "https://tuempresa.atlassian.net",
+  "email": "soc@tuempresa.com",
+  "api_token": "...",
+  "project_key": "SEC",
+  "issue_type": "Task",
+  "priority_map": { "critical": "Highest", "high": "High" }
+}
+```
+
+`api_token` es un token de API de Atlassian (no la contraseña de la
+cuenta). `priority_map` es opcional -- sin el, el ticket se crea sin
+campo de prioridad (los nombres de prioridad son especificos de cada
+instancia de Jira y ponerlos mal tira un 400).
+
+Slack (y email) ya se resuelven con notification-service: un canal
+`slack_webhook` (con `config.webhook_url` = la Incoming Webhook URL de
+Slack) o `email` alcanza; no hace falta nada nuevo en integration-service
+para eso.
+
+Para que un playbook de SOAR dispare esto automaticamente hay dos
+acciones nuevas disponibles en sus `steps` (ver "SOAR" en el frontend
+para crear un playbook, o los YAML de ejemplo en
+`backend/services/soar-service/playbooks/`):
+
+- `create_ticket`: abre un ticket via el conector `ticketing` habilitado
+  (`abrir_ticket_jira.yaml`, min_severity high).
+- `notify`: notifica a todos los canales habilitados de
+  notification-service (`notificar_equipo.yaml`, min_severity medium).
+
+Ambas respetan la misma cadena de dry-run por defecto que el resto de
+SOAR: quedan simuladas mientras `SOAR_DRY_RUN` (soar-service),
+`INTEGRATION_DRY_RUN` (integration-service) o `NOTIFICATION_DRY_RUN`
+(notification-service) sigan en `true` -- hay que desactivar
+explicitamente el nivel correspondiente para que la accion real (crear
+el ticket en Jira / mandar el mensaje a Slack) se ejecute.
+
 ## Backups
 
 - **Postgres**: es la unica fuente de verdad para casi todos los servicios

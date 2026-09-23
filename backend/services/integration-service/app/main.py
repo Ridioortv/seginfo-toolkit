@@ -14,7 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.database import get_db, engine, Base
 from backend.shared.logging import configure_logging
-from app.schemas import ConnectorCreate, ConnectorOut, BlockIpRequest, IsolateHostRequest, ActionLogOut
+from app.schemas import (
+    ConnectorCreate, ConnectorOut, BlockIpRequest, IsolateHostRequest, ActionLogOut,
+    CreateTicketRequest, TicketLogOut,
+)
 from app.dependencies import get_current_claims, require_role
 from app import services
 
@@ -84,4 +87,21 @@ async def internal_isolate_host(payload: IsolateHostRequest, db: AsyncSession = 
     log = await services.isolate_host(db, payload.hostname, payload.connector_id)
     await db.commit()
     actions_total.labels(action="isolate_host", status=log.status).inc()
+    return log
+
+
+@app.get("/tickets", response_model=list[TicketLogOut])
+async def list_tickets(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
+    return await services.list_ticket_logs(db)
+
+
+@app.post("/internal/actions/create-ticket", response_model=TicketLogOut)
+async def internal_create_ticket(payload: CreateTicketRequest, db: AsyncSession = Depends(get_db)):
+    """Endpoint interno (sin auth de usuario) para que soar-service abra
+    un ticket -- o lo simule -- en el sistema de ticketing configurado
+    (ej. Jira, via un conector kind='ticketing'; ver app/services.py
+    _call_jira)."""
+    log = await services.create_ticket(db, payload.title, payload.description, payload.priority, payload.connector_id)
+    await db.commit()
+    actions_total.labels(action="create_ticket", status=log.status).inc()
     return log

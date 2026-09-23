@@ -74,3 +74,17 @@ async def notify(
 @app.get("/logs", response_model=list[NotifyLogOut])
 async def list_logs(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
     return await services.list_logs(db)
+
+
+@app.post("/internal/notify", response_model=NotifyResult)
+async def internal_notify(payload: NotifyRequest, db: AsyncSession = Depends(get_db)):
+    """Igual que POST /notify pero sin requerir un JWT de usuario -- para
+    llamadas servicio-a-servicio dentro de la red de docker-compose (ej.
+    soar-service disparando una notificacion desde un playbook, ver
+    app/actions/notify.py de soar-service), mismo patron que los
+    endpoints /internal/actions/* de integration-service."""
+    logs = await services.notify(db, payload)
+    await db.commit()
+    for log in logs:
+        notifications_sent_total.labels(channel_type=log.channel_type, status=log.status).inc()
+    return NotifyResult(results=[NotifyLogOut.model_validate(l) for l in logs])
