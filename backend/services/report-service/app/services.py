@@ -3,13 +3,16 @@ otros servicios (vuln-service, siem-service, case-service, purple-service)
 para armar reportes ejecutivos/de cumplimiento. NUNCA inventa datos: si un
 servicio fuente no responde, esa seccion queda vacia con su error registrado
 en `errors`, y el resto del reporte se genera igual (best-effort)."""
+import base64
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
-from app.models import GeneratedReport
+from backend.shared.security import create_access_token
+from app.export import export_to_pdf
+from app.models import GeneratedReport, ReportSchedule
 
 logger = configure_logging("report-service")
 
@@ -17,6 +20,14 @@ VULN_SERVICE_URL = os.getenv("VULN_SERVICE_URL", "http://vuln-service:8000")
 SIEM_SERVICE_URL = os.getenv("SIEM_SERVICE_URL", "http://siem-service:8000")
 CASE_SERVICE_URL = os.getenv("CASE_SERVICE_URL", "http://case-service:8000")
 PURPLE_SERVICE_URL = os.getenv("PURPLE_SERVICE_URL", "http://purple-service:8000")
+NOTIFICATION_SERVICE_URL = os.getenv("NOTIFICATION_SERVICE_URL", "http://notification-service:8000")
+
+_REPORT_TITLES = {
+    "executive_summary": "Resumen ejecutivo",
+    "vulnerabilities": "Vulnerabilidades",
+    "incidents": "Incidentes",
+    "attack_coverage": "Cobertura ATT&CK",
+}
 
 
 def _now() -> datetime:
@@ -112,3 +123,104 @@ async def list_reports(db: AsyncSession, report_type: str | None = None) -> list
 async def get_report(db: AsyncSession, report_id: str) -> GeneratedReport | None:
     result = await db.execute(select(GeneratedReport).where(GeneratedReport.id == report_id))
     return result.scalar_one_or_none()
+async def create_schedule(db: AsyncSession, payload, actor: str) -> ReportSchedule:
+    schedule = ReportSchedule(
+        report_type=payload.report_type,
+        notification_channel_id=payload.notification_channel_id,
+        frequency=payload.frequency,
+        hour=payload.hour,
+        minute=payload.minute,
+        day_of_week=payload.day_of_week,
+        created_by=actor,
+    )
+    db.add(schedule)
+    await db.flush()
+    await db.refresh(schedule)
+    return schedule
+
+
+async def list_schedules(db: AsyncSession) -> list[ReportSchedule]:
+    result = await db.execute(select(ReportSchedule).order_by(ReportSchedule.created_at.desc()))
+    return list(result.scalars().all())
+
+
+async def get_schedule(db: AsyncSession, schedule_id: str) -> ReportSchedule | None:
+    return await db.get(ReportSchedule, schedule_id)
+
+
+async def set_schedule_enabled(db: AsyncSession, schedule: ReportSchedule, enabled: bool) -> ReportSchedule:
+    schedule.enabled = enabled
+    await db.flush()
+    return schedule
+
+
+async def delete_schedule(db: AsyncSession, schedule: ReportSchedule) -> None:
+    await db.delete(schedule)
+    await db.flush()
+
+
+async def run_scheduled_report(session_factory, schedule_id: str) -> None:
+    """Llamado por el scheduler en proceso (APScheduler, ver app/main.py)
+    cuando le toca disparar a una regla. No hay un usuario interactivo
+    detras de un trigger programado, asi que se minta un token de
+    servicio propio (mismo JWT_SECRET_KEY que comparten todos los
+    microservicios via el .env comun) con rol admin y subject
+    "system:report-scheduler", para poder llamar a los mismos endpoints
+    autenticados que usaria un usuario (vuln-service/siem-service/
+    case-service/purple-service). El reporte se genera igual que uno
+    manual (generate_report), se exporta a PDF (export_to_pdf) y se
+    manda por email como adjunto via notification-service -- si algo
+    falla en el camino se registra el error en last_status y NO se
+    tumba el scheduler."""
+    async with session_factory() as db:
+        schedule = await db.get(ReportSchedule, schedule_id)
+        if schedule is None or not schedule.enabled:
+            return
+        report_type = schedule.report_type
+        channel_id = schedule.notification_channel_id
+
+    service_token = create_access_token("system:report-scheduler", "admin")
+    auth_header = f"Bearer {service_token}"
+    status_note = "ok"
+    try:
+        async with session_factory() as db:
+            report = await generate_report(db, report_type, auth_header, "scheduler:report-schedule")
+            await db.commit()
+            stored_type = report.report_type
+            stored_data = report.data
+
+        pdf_bytes = export_to_pdf(stored_type, stored_data)
+        pdf_b64 = base64.b64encode(pdf_bytes).decode("ascii")
+        title = _REPORT_TITLES.get(stored_type, stored_type)
+        filename = f"reporte_{stored_type}_{_now().strftime('%Y%m%d_%H%M')}.pdf"
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{NOTIFICATION_SERVICE_URL}/notify",
+                headers={"Authorization": auth_header},
+                json={
+                    "subject": f"SentinelOps - {title} ({_now().strftime('%Y-%m-%d')})",
+                    "body": f"Reporte programado '{title}' generado automaticamente por SentinelOps. Se adjunta en PDF.",
+                    "severity": "info",
+                    "channel_ids": [channel_id],
+                    "attachments": [
+                        {
+                            "filename": filename,
+                            "content_type": "application/pdf",
+                            "content_base64": pdf_b64,
+                        }
+                    ],
+                },
+                timeout=30.0,
+            )
+            response.raise_for_status()
+    except Exception as exc:  # noqa: BLE001 -- se registra el error, nunca tumba el scheduler
+        logger.error("fallo al ejecutar reporte programado", extra={"schedule_id": schedule_id, "error": str(exc)})
+        status_note = f"error: {exc}"[:500]
+
+    async with session_factory() as db:
+        schedule = await db.get(ReportSchedule, schedule_id)
+        if schedule is not None:
+            schedule.last_run_at = _now()
+            schedule.last_status = status_note
+            await db.commit()

@@ -148,6 +148,49 @@ target (no una IP), y nuclei espera un host/URL alcanzable por HTTP -- un
 target de IP/CIDR pensado para nmap no necesariamente tiene sentido para
 esos otros dos scanners.
 
+## Reportes programados por email
+
+report-service puede generar un reporte solo (segun una regla de
+frecuencia diaria/semanal) y mandarlo por email como PDF adjunto, sin
+intervencion manual -- se crea desde la pagina "Reportes" del frontend
+("Reportes programados"). Corre con un scheduler en proceso (APScheduler,
+mismo patron que las reglas de escaneo programado de scan-service), asi
+que no hace falta infraestructura de colas extra; si el contenedor se
+reinicia, las reglas habilitadas se vuelven a cargar solas al arrancar.
+
+Requisitos para que el envio real funcione (no solo quede en dry-run):
+
+- Crear al menos un canal de notificaciones tipo `email` en
+  notification-service (`POST /channels`, `channel_type: "email"`, con
+  `config.smtp_to` = destinatario) -- se elige al crear la regla.
+- Configurar `SMTP_HOST` (y `SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/
+  `SMTP_FROM` segun el proveedor) en el `.env` de notification-service.
+  Sin `SMTP_HOST`, el envio queda registrado como `failed` con el motivo
+  ("SMTP_HOST no configurado").
+- Poner `NOTIFICATION_DRY_RUN=false` en el `.env` -- por defecto esta en
+  `true` (igual que SOAR_DRY_RUN), asi que las notificaciones (incluidos
+  los reportes programados) se registran como `simulated` sin mandar
+  nada real hasta que se cambie explicitamente.
+
+report-service llama a los demas servicios (vuln/siem/case/purple) con un
+token de servicio propio que el mismo minta (subject
+`system:report-scheduler`, rol `admin`, mismo `JWT_SECRET_KEY` compartido
+via el `.env` comun) -- no hace falta ningun usuario interactivo detras de
+una corrida programada. Si algun paso falla (un servicio fuente no
+responde, el envio de email falla, etc.), se registra en el campo
+"Ultima corrida" de la regla y NO tumba el scheduler -- la proxima corrida
+programada se intenta igual.
+
+Tambien se puede pedir el PDF de cualquier reporte ya generado a mano
+desde `GET /reports/{id}/export?format=pdf` (o el boton "PDF" en el
+historial de la pagina Reportes), sin necesidad de una regla programada.
+
+Como con las reglas de escaneo programado (ver scan-service), tanto el
+scheduler de report-service como cada regla usan un timezone explicito
+(`SCHEDULER_TIMEZONE`, default `UTC`) -- APScheduler intenta autodetectar
+la zona horaria del sistema si no se le pasa una, y eso puede fallar en la
+imagen Debian "slim" del contenedor.
+
 ## Backups
 
 - **Postgres**: es la unica fuente de verdad para casi todos los servicios

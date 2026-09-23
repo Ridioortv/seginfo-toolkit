@@ -181,6 +181,21 @@ export interface GeneratedReportOut {
   created_at: string;
 }
 
+export interface ReportScheduleOut {
+  id: string;
+  report_type: string;
+  notification_channel_id: string;
+  frequency: string;
+  hour: number;
+  minute: number;
+  day_of_week: number | null;
+  enabled: boolean;
+  created_by: string;
+  created_at: string;
+  last_run_at: string | null;
+  last_status: string;
+}
+
 export interface ChannelOut {
   id: string;
   name: string;
