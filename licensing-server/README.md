@@ -120,6 +120,7 @@ curl -X POST https://api.mercadopago.com/preapproval_plan \
   -H "Authorization: Bearer $MERCADOPAGO_ACCESS_TOKEN" -H "Content-Type: application/json" \
   -d '{
     "reason": "SentinelOps mensual",
+    "back_url": "https://tu-pagina-de-gracias-o-lo-que-sea.com",
     "auto_recurring": {
       "frequency": 30,
       "frequency_type": "days",
@@ -129,6 +130,11 @@ curl -X POST https://api.mercadopago.com/preapproval_plan \
   }'
 # -> anotá el "id" (2c9380...): ese es tu MERCADOPAGO_PLAN_ID en .env
 # (250000 es un ejemplo -- ajustalo al tipo de cambio del dia)
+# back_url es OBLIGATORIO aunque la documentacion de Mercado Pago no lo
+# marque asi -- sin el, la API devuelve 400 "Back url is required".
+# En Windows con PowerShell: "curl" es un alias de Invoke-WebRequest y
+# rompe el escapado de comillas de este comando -- usar curl.exe (asi,
+# explicito) o Invoke-RestMethod con -Headers/-Body en su lugar.
 ```
 
 ### 3. El webhook
