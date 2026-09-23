@@ -1,4 +1,5 @@
 """Pydantic request/response schemas for auth-service."""
+from datetime import datetime
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -7,9 +8,20 @@ class OrganizationOut(BaseModel):
     name: str
     slug: str
     is_active: bool
+    subscription_expires_at: datetime
+    license_last_checked_at: datetime | None = None
 
     class Config:
         from_attributes = True
+
+
+class SubscriptionExtendRequest(BaseModel):
+    """Renovacion manual de la suscripcion de una organizacion -- lo que
+    usa el operador hoy (a mano, tras confirmar un pago) hasta que el
+    servidor central de licencias este conectado a Mercado Pago; ese
+    webhook, el dia que exista, va a llamar al mismo endpoint."""
+
+    days: int = Field(default=30, ge=1, le=3650)
 
 
 class OrganizationCreate(BaseModel):

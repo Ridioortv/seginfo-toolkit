@@ -1,0 +1,71 @@
+"""Almacenamiento de este servidor: SQLite plano (stdlib, sin drivers
+async) -- el trafico esperado es minimo (unos pocos clientes haciendo
+check-in una o dos veces por dia, mas los pocos requests admin que hace
+el operador a mano), asi que Postgres seria sobre-ingenieria para lo que
+es, en el fondo, una tabla con un puñado de filas. FastAPI corre las
+rutas `def` (sync, no `async def`) en un threadpool, asi que esto no
+bloquea el event loop."""
+import os
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timezone
+
+DB_PATH = os.getenv("LICENSING_DB_PATH", "./licensing.db")
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@contextmanager
+def get_conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def init_db() -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS clients (
+                license_key TEXT PRIMARY KEY,
+                org_name TEXT NOT NULL,
+                subscription_expires_at TEXT NOT NULL,
+                notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+
+
+def create_client(license_key: str, org_name: str, expires_at_iso: str, notes: str = "") -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO clients (license_key, org_name, subscription_expires_at, notes, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (license_key, org_name, expires_at_iso, notes, _now_iso()),
+        )
+
+
+def get_client(license_key: str) -> sqlite3.Row | None:
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM clients WHERE license_key = ?", (license_key,)).fetchone()
+
+
+def list_clients() -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM clients ORDER BY created_at DESC").fetchall()
+
+
+def set_expiry(license_key: str, expires_at_iso: str) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE clients SET subscription_expires_at = ? WHERE license_key = ?",
+            (expires_at_iso, license_key),
+        )
+        return cur.rowcount > 0

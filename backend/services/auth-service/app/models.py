@@ -1,14 +1,23 @@
 """SQLAlchemy models for auth-service: organizations (tenants), users,
 roles, SSO config, audit log."""
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import String, Boolean, DateTime, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.shared.database import Base
 
+# Duracion de cada periodo de suscripcion (ver Organization.subscription_expires_at
+# y app/services.py::is_org_active) -- el modelo de negocio es "$250 USD
+# cada 30 dias, bloqueo total si no se renueva" (decision del operador).
+SUBSCRIPTION_PERIOD_DAYS = 30
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _default_subscription_expiry() -> datetime:
+    return _now() + timedelta(days=SUBSCRIPTION_PERIOD_DAYS)
 
 
 class Organization(Base):
@@ -27,6 +36,31 @@ class Organization(Base):
     slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    # --- Suscripcion / licencia (ver app/services.py::is_org_active) ---
+    # Toda organizacion nueva arranca con SUBSCRIPTION_PERIOD_DAYS (30) dias
+    # de plataforma funcional desde el momento en que se crea -- "las
+    # empresas pueden tener el software funcional desde el dia 1" (decision
+    # del operador). Pasada esa fecha sin renovar, is_org_active() corta el
+    # login/refresh de TODA la organizacion (bloqueo total, tambien decision
+    # del operador -- no un downgrade a solo-lectura). Renovar (hoy, a mano,
+    # via PUT /auth/organizations/{id}/subscription; mas adelante via el
+    # servidor central de licencias, ver backend/shared/license_check.py)
+    # simplemente empuja esta fecha para adelante.
+    subscription_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_default_subscription_expiry, nullable=False
+    )
+    # Ultima vez que este servicio confirmo la suscripcion contra el
+    # servidor central de licencias (solo se usa si LICENSE_SERVER_URL esta
+    # configurado -- ver backend/shared/license_check.py). None significa
+    # "todavia no se pudo confirmar ni una vez" (instalacion recien creada,
+    # o el servidor central nunca respondio) -- is_org_active() NO bloquea
+    # solo por esto (evita trabar una instalacion nueva por un problema de
+    # red transitorio), pero SI bloquea si ya hubo una confirmacion exitosa
+    # y luego pasaron mas de LICENSE_GRACE_DAYS sin poder repetirla -- eso
+    # cierra el hueco de "cortar la salida a internet para siempre y
+    # congelar el ultimo estado 'valido' cacheado".
+    license_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     users: Mapped[list["User"]] = relationship(back_populates="organization")
     sso_config: Mapped["SsoConfig | None"] = relationship(back_populates="organization", uselist=False)
@@ -50,12 +84,10 @@ class SsoConfig(Base):
     # proveedor los puede rotar.
     issuer: Mapped[str] = mapped_column(String(500), nullable=False)
     client_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    # NOTA DE SEGURIDAD: se guarda tal cual (no en texto claro visible por la
-    # UI -- nunca se devuelve en ningun response, ver schemas.SsoConfigOut --
-    # pero tampoco esta encriptado at-rest en esta version. Si Postgres mismo
-    # se compromete, este secret se compromete. Para produccion de verdad,
-    # cifrar esta columna con una clave de aplicacion (Fernet/KMS) es la
-    # mejora natural siguiente; se documenta la limitacion en el runbook.
+    # Se guarda cifrado (Fernet, ver backend/shared/crypto.py -- claveado por
+    # ENCRYPTION_KEY) y nunca se devuelve en ningun response (ver
+    # schemas.SsoConfigOut). Se descifra solo en el punto de uso real
+    # (app/oidc.py::exchange_code), nunca mutando este objeto ORM.
     client_secret: Mapped[str] = mapped_column(String(500), nullable=False)
     default_role: Mapped[str] = mapped_column(String(50), default="analyst")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)

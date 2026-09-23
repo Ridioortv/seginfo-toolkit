@@ -1,5 +1,6 @@
 """auth-service entrypoint: identidad, organizaciones (tenants), JWT
 issuance, MFA (TOTP), SSO empresarial (OIDC), RBAC."""
+import asyncio
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -21,6 +22,7 @@ from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
 from backend.shared.rate_limit import check_rate_limit
 from backend.shared.security import decode_token, create_token
+from backend.shared import license_check
 from app.schemas import (
     UserCreate,
     UserOut,
@@ -34,6 +36,7 @@ from app.schemas import (
     OrganizationOut,
     SsoConfigIn,
     SsoConfigOut,
+    SubscriptionExtendRequest,
 )
 from app.dependencies import get_current_claims, require_role, require_platform_admin, require_org_admin_or_platform_admin
 from app import services, oidc
@@ -46,10 +49,49 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 # frontend/src/pages/SsoCallback.tsx.
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 login_attempts_total = Counter("auth_login_attempts_total", "Login attempts", ["outcome"])
+LICENSE_CHECK_INTERVAL_HOURS = float(os.getenv("LICENSE_CHECK_INTERVAL_HOURS", "6"))
 
 
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
+
+
+async def _reject_if_org_inactive(db: AsyncSession, org, actor_email: str) -> None:
+    """402 (Payment Required) si la organizacion de este usuario no tiene
+    la suscripcion al dia -- ver services.is_org_active() para el
+    criterio exacto. Se llama en los 4 caminos que emiten tokens
+    (login, Google, SSO, refresh); bloqueo total por decision del
+    operador, no un downgrade a solo-lectura."""
+    if services.is_org_active(org):
+        return
+    login_attempts_total.labels(outcome="failure").inc()
+    await services.record_audit_event(db, actor_email, "auth.login.blocked_subscription", org.id)
+    await db.commit()
+    raise HTTPException(
+        status_code=status.HTTP_402_PAYMENT_REQUIRED,
+        detail="La suscripcion de esta organizacion no esta al dia. Contacta al administrador de la plataforma para renovarla.",
+    )
+
+
+async def _license_check_loop() -> None:
+    """Tarea de fondo: cada LICENSE_CHECK_INTERVAL_HOURS horas, refresca
+    subscription_expires_at de TODAS las organizaciones contra el
+    servidor central de licencias (ver backend/shared/license_check.py).
+    No hace nada (ni loguea) si LICENSE_SERVER_URL no esta configurado --
+    instalaciones que gestionan la suscripcion solo a mano via
+    /auth/organizations/{id}/subscription/extend."""
+    if not license_check.is_configured():
+        return
+    while True:
+        try:
+            async with SessionLocal() as session:
+                orgs = await services.list_organizations(session)
+                for org in orgs:
+                    await services.refresh_license_from_central_server(session, org.id)
+                await session.commit()
+        except Exception:
+            logger.exception("fallo inesperado en el ciclo de chequeo de licencia")
+        await asyncio.sleep(LICENSE_CHECK_INTERVAL_HOURS * 3600)
 
 
 async def _enforce_rate_limit(key: str, limit: int, window_seconds: int = 300) -> None:
@@ -90,12 +132,28 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_platform_admin BOOLEAN NOT NULL DEFAULT FALSE"
         ))
+        # Suscripcion/licencia (ver app/models.py::Organization): las
+        # organizaciones creadas antes de este cambio no tienen estas
+        # columnas -- se agregan con un default de "30 dias desde ahora"
+        # (mismo criterio que Organization.subscription_expires_at para
+        # una fila nueva) en vez de dejarlas NULL, para no bloquear de
+        # golpe a nadie que ya estaba usando la plataforma el dia que
+        # esto se despliega.
+        await conn.execute(text(
+            "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS subscription_expires_at "
+            "TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '30 days')"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS license_last_checked_at TIMESTAMPTZ"
+        ))
     async with SessionLocal() as session:
         await services.promote_first_user_to_admin_if_needed(session)
         await services.backfill_users_without_organization(session)
         await session.commit()
-    logger.info("auth-service iniciado")
+    license_task = asyncio.create_task(_license_check_loop())
+    logger.info("auth-service iniciado", extra={"license_server_configured": license_check.is_configured()})
     yield
+    license_task.cancel()
 
 
 app = FastAPI(title="SentinelOps Auth Service", version="0.1.0", lifespan=lifespan)
@@ -157,6 +215,9 @@ async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depe
         await services.record_audit_event(db, payload.email, "auth.login.failure")
         await db.commit()
         raise HTTPException(status_code=401, detail="Credenciales invalidas o MFA requerido")
+    org = await services.get_organization_by_id(db, user.organization_id) if user.organization_id else None
+    if org is not None:
+        await _reject_if_org_inactive(db, org, payload.email)
     role_name = user.role.name if user.role else "analyst"
     access, refresh = services.issue_tokens(user, role_name)
     login_attempts_total.labels(outcome="success").inc()
@@ -185,6 +246,9 @@ async def google_login(payload: GoogleAuthRequest, request: Request, db: AsyncSe
     email = claims["email"]
     full_name = claims.get("name", "")
     user = await services.get_or_create_google_user(db, email, full_name)
+    org = await services.get_organization_by_id(db, user.organization_id) if user.organization_id else None
+    if org is not None:
+        await _reject_if_org_inactive(db, org, email)
     role_name = user.role.name if user.role else "analyst"
     access, refresh = services.issue_tokens(user, role_name)
     login_attempts_total.labels(outcome="success").inc()
@@ -211,6 +275,9 @@ async def refresh(payload: RefreshRequest, db: AsyncSession = Depends(get_db)):
     user = await services.get_user_by_id(db, claims["sub"])
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Usuario no encontrado o inactivo")
+    org = await services.get_organization_by_id(db, user.organization_id) if user.organization_id else None
+    if org is not None:
+        await _reject_if_org_inactive(db, org, user.email)
     role_name = user.role.name if user.role else "analyst"
     access, new_refresh = services.issue_tokens(user, role_name)
     return TokenPair(access_token=access, refresh_token=new_refresh)
@@ -309,6 +376,52 @@ async def set_sso_config(
     return config
 
 
+# --- Suscripcion / licencia (ver app/models.py::Organization y
+# backend/shared/license_check.py para el diseño completo) ---
+
+@app.get("/auth/organizations/{org_id}/subscription", response_model=OrganizationOut)
+async def get_subscription(
+    org_id: str,
+    claims: dict = Depends(require_org_admin_or_platform_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Solo lectura -- el admin de la propia organizacion puede ver
+    cuando vence su suscripcion (para no tener que preguntarle al
+    operador), pero no puede extenderla el mismo (ver el endpoint de
+    abajo, que exige platform_admin)."""
+    org = await services.get_organization_by_id(db, org_id)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organizacion no encontrada")
+    return org
+
+
+@app.post("/auth/organizations/{org_id}/subscription/extend", response_model=OrganizationOut)
+async def extend_subscription(
+    org_id: str,
+    payload: SubscriptionExtendRequest,
+    claims: dict = Depends(require_platform_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Renovacion manual -- SOLO el operador de la plataforma (nunca el
+    admin de la propia organizacion: extender su propia suscripcion
+    "gratis" es exactamente lo que este gate existe para evitar). Es lo
+    que se usa hoy, a mano, al confirmar un pago; el dia que el webhook
+    de Mercado Pago este conectado al servidor central de licencias, ese
+    webhook llama al equivalente de esto en licensing-server (ver
+    licensing-server/app/main.py::extend_client), no a este endpoint
+    directamente -- este endpoint sigue sirviendo para instalaciones sin
+    servidor central (LICENSE_SERVER_URL vacio) o para ajustes manuales
+    puntuales."""
+    org = await services.extend_subscription(db, org_id, payload.days)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organizacion no encontrada")
+    await services.record_audit_event(
+        db, claims.get("sub", ""), "organization.subscription.extend", f"{org_id}:+{payload.days}d"
+    )
+    await db.commit()
+    return org
+
+
 # --- SSO empresarial (OIDC) ---
 #
 # state es un JWT propio de vida MUY corta (5 min, tipo "oidc_state") que
@@ -375,6 +488,7 @@ async def oidc_callback(org_slug: str, request: Request, code: str, state: str, 
         # empresa B termine autenticado como un usuario de la empresa A.
         login_attempts_total.labels(outcome="failure").inc()
         raise HTTPException(status_code=403, detail="Este email ya pertenece a otra organizacion")
+    await _reject_if_org_inactive(db, org, email)
 
     role_name = user.role.name if user.role else config.default_role
     access, refresh = services.issue_tokens(user, role_name)

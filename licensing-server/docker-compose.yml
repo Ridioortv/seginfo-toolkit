@@ -1,0 +1,27 @@
+# Compose file SEPARADO del de la plataforma principal (../docker-compose.yml)
+# a proposito: este servicio lo despliega el operador en SU PROPIA
+# infraestructura (un VPS chico alcanza -- 1 vCPU / 512MB de RAM sobra),
+# nunca en la maquina de un cliente. Correrlo desde esta misma carpeta:
+#
+#   cd licensing-server
+#   cp .env.example .env   # completar ADMIN_TOKEN y LICENSE_SIGNING_PRIVATE_KEY
+#                          # (generar el segundo con: python generate_keys.py)
+#   docker compose up -d --build
+#
+# Ver README.md para el detalle completo (incluye como poner esto detras
+# de TLS, que es imprescindible: ADMIN_TOKEN viaja en texto plano en el
+# header Authorization).
+services:
+  licensing-server:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    volumes:
+      - licensing_data:/data
+    ports:
+      - "8443:8000"
+
+volumes:
+  licensing_data:

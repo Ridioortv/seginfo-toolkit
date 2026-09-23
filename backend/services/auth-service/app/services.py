@@ -1,8 +1,10 @@
 """Business logic for auth-service: organizaciones (tenants), user auth,
 SSO (OIDC), MFA, immutable audit log."""
+import logging
 import re
 import secrets
 import hashlib
+from datetime import datetime, timedelta, timezone
 import pyotp
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
@@ -10,7 +12,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.security import hash_password, verify_password, create_access_token, create_refresh_token
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
 from backend.shared.crypto import encrypt_secret
+from backend.shared import license_check
 from app.models import User, Role, AuditLogEntry, Organization, SsoConfig
+
+logger = logging.getLogger("auth-service")
+
+# Cuanto tiempo se sigue confiando en el ultimo check-in exitoso contra el
+# servidor central de licencias si los siguientes intentos fallan (red
+# caida, servidor central abajo, etc). Pasado esto, is_org_active()
+# bloquea aunque el cache local (subscription_expires_at) diga que todavia
+# falta -- cierra el hueco de "cortar la salida a internet para siempre y
+# quedarse con el ultimo estado 'valido' cacheado indefinidamente". Ver
+# backend/shared/license_check.py para el resto del razonamiento.
+LICENSE_GRACE_DAYS = 3
 
 
 # --- Organizaciones (tenants) y SSO ---
@@ -61,6 +75,72 @@ async def create_organization(db: AsyncSession, name: str) -> Organization:
 async def list_organizations(db: AsyncSession) -> list[Organization]:
     result = await db.execute(select(Organization).order_by(Organization.created_at.asc()))
     return list(result.scalars().all())
+
+
+def is_org_active(org: Organization) -> bool:
+    """True si la organizacion puede seguir emitiendo tokens (login/
+    refresh/Google/SSO). Bloqueo total (no downgrade a solo-lectura) --
+    decision explicita del operador: al dia 30 sin renovar, se corta
+    todo. Se llama en CADA login/refresh/Google/callback SSO (ver
+    main.py) -- como los access token duran poco (15 min por defecto),
+    esto alcanza para un bloqueo practicamente inmediato sin tener que
+    agregar una verificacion cruzada contra auth-service en cada request
+    de los otros 10 microservicios."""
+    now = datetime.now(timezone.utc)
+    if org.subscription_expires_at <= now:
+        return False
+    if license_check.is_configured() and org.license_last_checked_at is not None:
+        if now - org.license_last_checked_at > timedelta(days=LICENSE_GRACE_DAYS):
+            return False
+    return True
+
+
+async def extend_subscription(db: AsyncSession, organization_id: str, days: int) -> Organization | None:
+    """Renovacion manual -- lo que usa el operador hoy hasta que el
+    servidor central de licencias este conectado a Mercado Pago (ver
+    PUT/POST /auth/organizations/{id}/subscription en main.py). Extiende
+    desde el vencimiento ACTUAL (o desde ahora si ya venció), nunca desde
+    'ahora' a secas -- mismo criterio que licensing-server/app/main.py::extend_client,
+    para que renovar un poco antes no le haga perder dias al cliente."""
+    org = await get_organization_by_id(db, organization_id)
+    if org is None:
+        return None
+    now = datetime.now(timezone.utc)
+    base = max(org.subscription_expires_at, now)
+    org.subscription_expires_at = base + timedelta(days=days)
+    await db.flush()
+    await db.refresh(org)
+    return org
+
+
+async def refresh_license_from_central_server(db: AsyncSession, organization_id: str) -> None:
+    """Se llama periodicamente (tarea de fondo en main.py::lifespan) y
+    tambien se puede llamar a mano. No hace nada si LICENSE_SERVER_URL no
+    esta configurado (instalaciones que gestionan todo via
+    extend_subscription a mano). Cualquier fallo (red, firma invalida,
+    etc) se loguea y se ignora -- NO se toca subscription_expires_at ni
+    license_last_checked_at en ese caso, para que is_org_active() siga
+    confiando en el ultimo check-in bueno (dentro de su ventana de
+    gracia) en vez de en un fallo transitorio."""
+    if not license_check.is_configured():
+        return
+    org = await get_organization_by_id(db, organization_id)
+    if org is None:
+        return
+    try:
+        valid, valid_until = await license_check.check_license()
+    except license_check.LicenseCheckError as exc:
+        logger.warning("no se pudo confirmar la licencia contra el servidor central: %s", exc)
+        return
+    org.license_last_checked_at = datetime.now(timezone.utc)
+    if valid and valid_until is not None:
+        org.subscription_expires_at = valid_until
+    elif not valid:
+        # El servidor central dice explicitamente que esta licencia no es
+        # valida (no solo "no pude confirmar") -- se corta ya, no se
+        # espera a que expire subscription_expires_at por las suyas.
+        org.subscription_expires_at = datetime.now(timezone.utc)
+    await db.flush()
 
 
 async def get_organization_by_slug(db: AsyncSession, slug: str) -> Organization | None:
