@@ -41,7 +41,8 @@ services:
       test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 15
+      retries: 30
+      start_period: 60s
 
   auth-service:
     restart: unless-stopped
@@ -127,8 +128,15 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # service_started (no service_healthy): siem-service ya tolera que
+      # OpenSearch tarde en estar listo (ver el try/except en su lifespan),
+      # asi que no tiene sentido que el resto de la plataforma (via
+      # frontend, que depende de siem-service) se quede bloqueada
+      # esperando a que OpenSearch pase su healthcheck -- que es lento y
+      # pesado en memoria, sobre todo mientras arrancan otros 14
+      # contenedores a la vez.
       opensearch:
-        condition: service_healthy
+        condition: service_started
     ports:
       - "8005:8000"
 
