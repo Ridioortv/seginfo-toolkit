@@ -7,7 +7,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
-from app.models import ScanJob, ScanStatus, ScannerType
+from app.models import ScanJob, ScanStatus, ScannerType, ScanSchedule
 from app.scanners import get_driver, DRIVERS
 
 logger = configure_logging("scan-service")
@@ -52,6 +52,80 @@ async def get_scan_job(db: AsyncSession, job_id: str) -> ScanJob | None:
 
 def scanners_status() -> dict:
     return {scanner_type.value: driver.is_available() for scanner_type, driver in DRIVERS.items()}
+
+
+async def create_schedule(db: AsyncSession, payload, actor: str) -> ScanSchedule:
+    schedule = ScanSchedule(
+        name=payload.name,
+        scanner_type=payload.scanner_type,
+        target=payload.target,
+        options=payload.options,
+        frequency=payload.frequency,
+        hour=payload.hour,
+        minute=payload.minute,
+        day_of_week=payload.day_of_week,
+        created_by=actor,
+    )
+    db.add(schedule)
+    await db.flush()
+    await db.refresh(schedule)
+    return schedule
+
+
+async def list_schedules(db: AsyncSession) -> list[ScanSchedule]:
+    result = await db.execute(select(ScanSchedule).order_by(ScanSchedule.created_at.desc()))
+    return list(result.scalars().all())
+
+
+async def get_schedule(db: AsyncSession, schedule_id: str) -> ScanSchedule | None:
+    return await db.get(ScanSchedule, schedule_id)
+
+
+async def set_schedule_enabled(db: AsyncSession, schedule: ScanSchedule, enabled: bool) -> ScanSchedule:
+    schedule.enabled = enabled
+    await db.flush()
+    return schedule
+
+
+async def delete_schedule(db: AsyncSession, schedule: ScanSchedule) -> None:
+    await db.delete(schedule)
+    await db.flush()
+
+
+async def run_scheduled_scan(session_factory, schedule_id: str) -> None:
+    """Llamado por el scheduler en proceso (APScheduler, ver app/main.py)
+    cuando le toca disparar a una regla. Crea un ScanJob nuevo -- igual que
+    si un usuario lo hubiera lanzado a mano -- y lo ejecuta con el mismo
+    codigo (execute_scan_job) que usa la creacion manual."""
+    async with session_factory() as db:
+        schedule = await db.get(ScanSchedule, schedule_id)
+        if schedule is None or not schedule.enabled:
+            return
+        job = ScanJob(
+            name=f"{schedule.name or schedule.scanner_type.value} (programado)",
+            scanner_type=schedule.scanner_type,
+            target=schedule.target,
+            options=schedule.options,
+            created_by=f"scheduler:{schedule.name or schedule.id}",
+        )
+        db.add(job)
+        schedule.last_run_at = _now()
+        await db.flush()
+        job_id = job.id
+        await db.commit()
+
+    try:
+        await execute_scan_job(session_factory, job_id)
+        status_note = "ok"
+    except Exception as exc:  # noqa: BLE001 -- se registra en la propia regla, no se pierde silenciosamente
+        logger.error("error corriendo escaneo programado", extra={"schedule_id": schedule_id, "error": str(exc)})
+        status_note = f"error: {exc}"[:500]
+
+    async with session_factory() as db:
+        schedule = await db.get(ScanSchedule, schedule_id)
+        if schedule is not None:
+            schedule.last_status = status_note
+            await db.commit()
 
 
 async def execute_scan_job(session_factory, job_id: str) -> None:

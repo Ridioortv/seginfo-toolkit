@@ -31,6 +31,23 @@ export interface ScanJobOut {
   started_at: string | null;
 }
 
+export interface ScanScheduleOut {
+  id: string;
+  name: string;
+  scanner_type: string;
+  target: string;
+  options: Record<string, unknown>;
+  frequency: string;
+  hour: number;
+  minute: number;
+  day_of_week: number | null;
+  enabled: boolean;
+  created_by: string;
+  created_at: string;
+  last_run_at: string | null;
+  last_status: string;
+}
+
 export interface VulnerabilityOut {
   id: string;
   cve_id: string | null;
