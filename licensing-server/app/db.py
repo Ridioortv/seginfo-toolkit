@@ -38,10 +38,27 @@ def init_db() -> None:
                 subscription_expires_at TEXT NOT NULL,
                 notes TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
-                paypal_subscription_id TEXT
+                paypal_subscription_id TEXT,
+                mercadopago_preapproval_id TEXT
             )
             """
         )
+        # ALTER TABLE para bases creadas antes de que existieran estas
+        # columnas -- CREATE TABLE IF NOT EXISTS no las agrega sola si
+        # la tabla ya existia de una version anterior de este archivo.
+        # SQLite no tiene "ADD COLUMN IF NOT EXISTS", asi que se intenta
+        # y se ignora el error si ya existe. Tiene que correr ANTES de
+        # crear los indices de mas abajo (si la columna no existe
+        # todavia, CREATE INDEX sobre ella falla).
+        try:
+            conn.execute("ALTER TABLE clients ADD COLUMN paypal_subscription_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE clients ADD COLUMN mercadopago_preapproval_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+
         # paypal_subscription_id se usa para encontrar que cliente
         # corresponde a un webhook de PayPal cuyo evento no trae de
         # vuelta el custom_id que le pusimos al crear la suscripcion
@@ -51,6 +68,13 @@ def init_db() -> None:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_paypal_subscription_id "
             "ON clients (paypal_subscription_id) WHERE paypal_subscription_id IS NOT NULL"
+        )
+        # Idem para Mercado Pago -- respaldo para cuando un
+        # authorized_payment no trae external_reference (ver
+        # app/mercadopago.py::resolve_license_key_lookup).
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_mercadopago_preapproval_id "
+            "ON clients (mercadopago_preapproval_id) WHERE mercadopago_preapproval_id IS NOT NULL"
         )
 
 
@@ -94,6 +118,22 @@ def set_paypal_subscription_id(license_key: str, subscription_id: str) -> bool:
         cur = conn.execute(
             "UPDATE clients SET paypal_subscription_id = ? WHERE license_key = ?",
             (subscription_id, license_key),
+        )
+        return cur.rowcount > 0
+
+
+def get_client_by_mercadopago_preapproval_id(preapproval_id: str) -> sqlite3.Row | None:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM clients WHERE mercadopago_preapproval_id = ?", (preapproval_id,)
+        ).fetchone()
+
+
+def set_mercadopago_preapproval_id(license_key: str, preapproval_id: str) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE clients SET mercadopago_preapproval_id = ? WHERE license_key = ?",
+            (preapproval_id, license_key),
         )
         return cur.rowcount > 0
 

@@ -79,12 +79,122 @@ curl -X POST https://tu-servidor:8443/admin/clients/<license_key>/revoke \
   -H "Authorization: Bearer $ADMIN_TOKEN"
 ```
 
-## Cobrar con PayPal (automático, a tu cuenta)
+## Cobrar con Mercado Pago (automático, a tu cuenta, en pesos)
 
-Los USD 250/30 días se cobran vía **PayPal Subscriptions**, a tu propia
-cuenta de PayPal -- no hace falta correr `/extend` a mano salvo que
-quieras renovar manualmente un caso puntual. El flujo completo ya está
-implementado en `app/paypal.py` + los endpoints
+Gateway activo por ahora: los clientes pagan en **ARS**, a tu propia
+cuenta de Mercado Pago, vía **Preapproval** (suscripciones). El flujo
+completo está implementado en `app/mercadopago.py` + los endpoints
+`POST /admin/clients/{license_key}/mercadopago-subscription-link` y
+`POST /webhooks/mercadopago`. A diferencia de PayPal, Mercado Pago no
+tiene un endpoint para verificar la firma del webhook por vos -- este
+servidor la calcula a mano (HMAC-SHA256, ver el docstring de
+`verify_webhook_signature` en `app/mercadopago.py`) y, aun verificada,
+**siempre** vuelve a pedirle el recurso completo a la API de Mercado
+Pago antes de extender nada (nunca confía en el cuerpo del webhook).
+
+Para dejarlo funcionando hacen falta 3 pasos, todos una sola vez (no
+por cliente):
+
+### 1. Access token de tu aplicación
+
+En https://www.mercadopago.com.ar/developers/panel/app creá (o
+abrí) tu aplicación -- te da un access token de **prueba** (para
+probar sin plata real, con las tarjetas/usuarios de test que da el
+panel) y otro de **producción**. A diferencia de PayPal es el mismo
+token el que decide sandbox o no (no hay una URL distinta). Completá
+en `.env`:
+
+```
+MERCADOPAGO_ACCESS_TOKEN=TEST-...   # el de produccion recien cuando probaste todo el flujo abajo
+```
+
+### 2. El plan de suscripción en ARS cada 30 días
+
+Se crea una sola vez (después todos los clientes se suscriben al mismo
+plan). Elegí el monto en pesos que corresponda a los USD 250 (al tipo
+de cambio que prefieras -- este servidor no hace esa conversión sola,
+la fijás vos al crear el plan):
+
+```bash
+curl -X POST https://api.mercadopago.com/preapproval_plan \
+  -H "Authorization: Bearer $MERCADOPAGO_ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "reason": "SentinelOps mensual",
+    "auto_recurring": {
+      "frequency": 30,
+      "frequency_type": "days",
+      "transaction_amount": 250000,
+      "currency_id": "ARS"
+    }
+  }'
+# -> anotá el "id" (2c9380...): ese es tu MERCADOPAGO_PLAN_ID en .env
+# (250000 es un ejemplo -- ajustalo al tipo de cambio del dia)
+```
+
+### 3. El webhook
+
+En el panel de tu aplicación -> Webhooks -> Configurar notificaciones,
+URL `https://tu-servidor/webhooks/mercadopago`, con al menos estos
+eventos tildados: **Suscripciones** (`subscription_preapproval`) y
+**Pagos de suscripciones** (`subscription_authorized_payment`). El
+panel te muestra ahí la "clave secreta" -- eso va en
+`MERCADOPAGO_WEBHOOK_SECRET` de `.env`.
+
+Sin `MERCADOPAGO_WEBHOOK_SECRET` configurado, `/webhooks/mercadopago`
+rechaza cualquier evento (no puede verificar sin él) -- es
+intencional.
+
+### Onboarding de cada cliente nuevo
+
+```bash
+# 1) crear el cliente en este servidor (igual que hoy)
+curl -X POST https://tu-servidor:8443/admin/clients \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"org_name": "ACME SA", "days": 30}'
+# -> guarda la license_key para el .env de ESE cliente
+
+# 2) generar el link de suscripción de Mercado Pago para ese cliente
+# (payer_email es el mail con el que el cliente tiene/crea su cuenta de MP)
+curl -X POST https://tu-servidor:8443/admin/clients/<license_key>/mercadopago-subscription-link \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"payer_email": "cliente@acme.com"}'
+# -> devuelve init_point: se lo mandás al cliente
+```
+
+Cuando el cliente abre `init_point` y aprueba en Mercado Pago (con su
+propia cuenta/tarjeta), Mercado Pago te factura a vos y dispara
+`subscription_preapproval` contra `/webhooks/mercadopago`, que
+reconfirma el estado "authorized" contra la API y extiende la licencia
+solo. Cada 30 días, Mercado Pago vuelve a cobrar automáticamente y
+dispara `subscription_authorized_payment`, que reconfirma el cobro
+("processed") y extiende otros 30 días. Si el cliente cancela la
+suscripción en Mercado Pago, no se dispara ningún cobro nuevo -- el
+periodo ya pagado sigue corriendo hasta que venza (`is_org_active()`
+bloquea en el día 30 como siempre), no se corta antes.
+
+Si preferís seguir usando `/admin/clients/{id}/extend` a mano para
+algún caso (renovar manualmente, cortesía, etc.), sigue funcionando
+igual -- Mercado Pago es un camino automático en paralelo, no
+reemplaza esos endpoints.
+
+**Nota:** los nombres exactos de algunos campos de la API de Mercado
+Pago (sobre todo en `authorized_payments`) pudieron cambiar desde que
+se escribió esto -- antes de cobrar en producción, probá el flujo
+completo una vez con el access token de **prueba** y un plan de bajo
+monto, y confirmá en los logs (`docker compose logs -f
+licensing-server`) que la licencia se extiende sola tras aprobar.
+
+## Cobrar con PayPal (automático, a tu cuenta, en USD)
+
+Gateway alternativo, ya implementado pero no el que estás usando por
+ahora (elegiste Mercado Pago). Si más adelante querés cobrar en USD a
+clientes fuera de Argentina, esto ya está listo para activar sin
+tocar el resto de la arquitectura -- corre en paralelo al de Mercado
+Pago, cada cliente puede tener su propio link de cualquiera de los
+dos. Los USD 250/30 días se cobrarían vía **PayPal Subscriptions**, a
+tu propia cuenta de PayPal -- no hace falta correr `/extend` a mano
+salvo que quieras renovar manualmente un caso puntual. El flujo
+completo ya está implementado en `app/paypal.py` + los endpoints
 `POST /admin/clients/{license_key}/paypal-subscription-link` y
 `POST /webhooks/paypal`. Para dejarlo funcionando hacen falta 3 pasos,
 todos una sola vez (no por cliente):
