@@ -14,6 +14,16 @@ RUN touch backend/__init__.py
 
 ENV PYTHONPATH=/app
 
+# No corre como root dentro del contenedor: si un endpoint tuviera una
+# vulnerabilidad de escritura/ejecucion de archivos (path traversal, una
+# RCE en una dependencia de terceros, etc), correr como root le da a un
+# atacante mas margen -- y en un escenario de escape de contenedor, ser
+# root tambien del lado de afuera. UID/GID fijos (1001) para que el build
+# sea reproducible entre servicios.
+RUN groupadd -r -g 1001 sentinelops && useradd -r -u 1001 -g sentinelops -M -s /usr/sbin/nologin sentinelops \
+    && chown -R sentinelops:sentinelops /app
+USER sentinelops
+
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
     CMD curl -f http://localhost:8000/health || exit 1
 
