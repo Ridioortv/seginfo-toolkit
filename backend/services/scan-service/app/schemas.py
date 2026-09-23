@@ -1,8 +1,9 @@
 """Pydantic schemas for scan-service."""
 from datetime import datetime
 from typing import Literal
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from app.models import ScannerType, ScanStatus
+from app.target_validation import validate_target
 
 ScanFrequency = Literal["daily", "weekly"]
 
@@ -13,6 +14,11 @@ class ScanJobCreate(BaseModel):
     target: str = Field(..., min_length=1, description="Host, CIDR o referencia de imagen segun el scanner")
     asset_id: str | None = None
     options: dict = Field(default_factory=dict)
+
+    @field_validator("target")
+    @classmethod
+    def _validate_target(cls, v: str) -> str:
+        return validate_target(v)
 
 
 class Finding(BaseModel):
@@ -36,6 +42,11 @@ class ScanScheduleCreate(BaseModel):
     hour: int = Field(default=3, ge=0, le=23)
     minute: int = Field(default=0, ge=0, le=59)
     day_of_week: int | None = Field(default=None, ge=0, le=6, description="0=lunes .. 6=domingo, requerido si frequency='weekly'")
+
+    @field_validator("target")
+    @classmethod
+    def _validate_target(cls, v: str) -> str:
+        return validate_target(v)
 
     @model_validator(mode="after")
     def _weekly_needs_day(self) -> "ScanScheduleCreate":
@@ -124,6 +135,11 @@ class AgentScanJobCreate(BaseModel):
     scanner_type: Literal["nmap"] = "nmap"
     target: str = Field(..., min_length=1)
     options: dict = Field(default_factory=dict)
+
+    @field_validator("target")
+    @classmethod
+    def _validate_target(cls, v: str) -> str:
+        return validate_target(v)
 
 
 class AgentScanJobOut(BaseModel):

@@ -12,9 +12,46 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
+from backend.shared.crypto import encrypt_secret, decrypt_secret
 from app.models import Connector, IntegrationActionLog, TicketLog
 
 logger = configure_logging("integration-service")
+
+# Claves de 'config' que son credenciales (no URLs, headers ni otros datos
+# de conexion) -- se cifran en la base (ver _encrypt_secret_fields) y se
+# ocultan en cualquier respuesta de la API (ver redact_connector_config).
+# Antes se guardaban y devolvian en texto plano: cualquier usuario
+# autenticado de la organizacion (no solo un admin) podia leer /connectors
+# y ver el api_key/api_token real de firewall/EDR/Jira, y cualquiera con
+# acceso de lectura a la base podia leerlos de ahi directamente.
+_SECRET_CONFIG_KEYS = ("api_key", "api_token")
+
+
+def _encrypt_secret_fields(config: dict) -> dict:
+    out = dict(config)
+    for key in _SECRET_CONFIG_KEYS:
+        if out.get(key):
+            out[key] = encrypt_secret(out[key])
+    return out
+
+
+def _decrypt_secret_fields(config: dict) -> dict:
+    out = dict(config)
+    for key in _SECRET_CONFIG_KEYS:
+        if out.get(key):
+            out[key] = decrypt_secret(out[key])
+    return out
+
+
+def redact_connector_config(config: dict) -> dict:
+    """Para cualquier respuesta HTTP (ConnectorOut) -- nunca se devuelve el
+    valor cifrado ni, mucho menos, el plano. Mismo criterio que
+    SsoConfigOut en auth-service (que jamas incluye client_secret)."""
+    out = dict(config)
+    for key in _SECRET_CONFIG_KEYS:
+        if out.get(key):
+            out[key] = "••••••••"
+    return out
 
 
 def dry_run_enabled() -> bool:
@@ -28,7 +65,7 @@ def _now() -> datetime:
 async def create_connector(db: AsyncSession, payload, organization_id: str) -> Connector:
     connector = Connector(
         organization_id=organization_id, name=payload.name, kind=payload.kind,
-        config=payload.config, enabled=payload.enabled,
+        config=_encrypt_secret_fields(payload.config), enabled=payload.enabled,
     )
     db.add(connector)
     await db.flush()
@@ -73,7 +110,10 @@ async def _call_connector(connector: Connector, action: str, payload: dict) -> t
     headers = {}
     header_name = connector.config.get("header_name")
     if header_name and connector.config.get("api_key"):
-        headers[header_name] = connector.config["api_key"]
+        # api_key esta cifrado en la base (ver _encrypt_secret_fields) --
+        # se descifra aca, en el momento exacto de uso, sin tocar
+        # connector.config (evita persistir el texto plano de vuelta).
+        headers[header_name] = decrypt_secret(connector.config["api_key"])
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(f"{base_url.rstrip('/')}/{action}", json=payload, headers=headers)
@@ -136,7 +176,9 @@ async def _call_jira(connector: Connector, title: str, description: str, priorit
     ticket por un campo secundario."""
     base_url = connector.config.get("base_url", "").rstrip("/")
     email = connector.config.get("email", "")
-    api_token = connector.config.get("api_token", "")
+    # api_token esta cifrado en la base -- se descifra solo aca, en el
+    # momento exacto de uso (ver _encrypt_secret_fields/_decrypt_secret_fields).
+    api_token = decrypt_secret(connector.config.get("api_token", ""))
     project_key = connector.config.get("project_key", "")
     issue_type = connector.config.get("issue_type", "Task")
     priority_map = connector.config.get("priority_map", {})

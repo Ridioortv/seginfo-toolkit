@@ -31,6 +31,7 @@ from urllib.parse import urlencode
 import httpx
 from jose import jwt as jose_jwt
 from jose.exceptions import JWTError as JoseJWTError
+from backend.shared.crypto import decrypt_secret
 from app.models import SsoConfig
 
 _CACHE_TTL_SECONDS = 3600
@@ -100,7 +101,12 @@ async def exchange_code(config: SsoConfig, code: str, redirect_uri: str) -> dict
                     "code": code,
                     "redirect_uri": redirect_uri,
                     "client_id": config.client_id,
-                    "client_secret": config.client_secret,
+                    # config.client_secret esta cifrado en la base (ver
+                    # app/services.py::upsert_sso_config) -- se descifra
+                    # aca, en el momento exacto de uso, y nunca se escribe
+                    # el resultado de vuelta en el objeto ORM (eso
+                    # persistiria el texto plano en el proximo commit).
+                    "client_secret": decrypt_secret(config.client_secret),
                 },
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )

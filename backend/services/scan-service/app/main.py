@@ -14,6 +14,7 @@ from apscheduler.jobstores.base import JobLookupError
 from sqlalchemy import text
 from backend.shared.database import get_db, engine, Base, SessionLocal
 from backend.shared.logging import configure_logging
+from backend.shared.cors import get_cors_origins
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import (
     ScanJobCreate,
@@ -105,7 +106,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="SentinelOps Scan Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )

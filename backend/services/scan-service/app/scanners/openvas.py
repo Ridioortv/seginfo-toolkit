@@ -35,6 +35,12 @@ class OpenVasDriver(ScannerDriver):
             )
 
         socket_path = options.get("gvm_socket") or os.getenv("GVM_SOCKET_PATH") or "/run/gvmd/gvmd.sock"
+        # target se interpola directo en este XML/filtro GMP -- es seguro
+        # solo porque ScanJobCreate/ScanScheduleCreate (app/schemas.py) ya
+        # lo validaron con target_validation.validate_target(), que
+        # restringe el charset a algo que no puede contener comillas ni
+        # '<'/'>'. Si algun caller nuevo llega a esta funcion sin pasar
+        # por esos schemas, hay que validar el target ahi tambien.
         get_targets_cmd = [
             "gvm-cli", "socket", "--socketpath", socket_path,
             "--xml", f"<get_vulns filter='rows=200 host={target}'/>",

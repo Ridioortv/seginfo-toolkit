@@ -3,10 +3,33 @@ import os
 from datetime import datetime, timedelta, timezone
 from jose import jwt
 
+# Los dos valores "de fabrica" que trae .env.example -- el launcher
+# (launcher/cmd/iniciar/main.go::ensureEnvFile) genera un JWT_SECRET_KEY
+# random en el primer arranque de cada instalacion en vez de copiar
+# .env.example tal cual, precisamente para que esto nunca pase en una
+# instalacion real. Pero si alguien reconstruye el .env a mano, o corre
+# una version vieja del launcher que todavia copiaba el ejemplo literal,
+# CUALQUIERA que tenga una copia del instalador (todo cliente que pago,
+# y quien sea que la filtre) conoce este valor y puede firmar un JWT
+# valido para esa instalacion -- incluyendo uno con platform_admin=True.
+# Por eso se verifica en el import de este modulo (se ejecuta en el
+# arranque de los 11 microservicios) y no solo en un lugar.
+_KNOWN_PLACEHOLDER_SECRETS = {"dev-secret-change-me", "changeme-generate-a-long-random-secret"}
+
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "dev-secret-change-me")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.getenv("REFRESH_TOKEN_EXPIRE_DAYS", "7"))
+
+if ENVIRONMENT != "development" and JWT_SECRET_KEY in _KNOWN_PLACEHOLDER_SECRETS:
+    raise RuntimeError(
+        "JWT_SECRET_KEY sigue en su valor de ejemplo con ENVIRONMENT != 'development'. "
+        "Esto firmaria tokens que cualquiera con una copia de .env.example podria forjar "
+        "(incluyendo un token de platform_admin). Genera un secreto random propio para "
+        "esta instalacion (el launcher lo hace solo en el primer arranque -- si ves este "
+        "error es porque .env se creo o edito a mano) antes de arrancar en este modo."
+    )
 
 _pwd_context = None
 

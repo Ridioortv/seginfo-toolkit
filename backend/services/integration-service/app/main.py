@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from backend.shared.database import get_db, engine, Base
 from backend.shared.logging import configure_logging
+from backend.shared.cors import get_cors_origins
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import (
     ConnectorCreate, ConnectorOut, BlockIpRequest, IsolateHostRequest, ActionLogOut,
@@ -54,7 +55,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="SentinelOps Integration Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -74,12 +75,26 @@ async def create_connector(
 ):
     connector = await services.create_connector(db, payload, org_id_from_claims(claims))
     await db.commit()
+    # config ya se guardo cifrado (services.create_connector), pero ademas
+    # se redacta aca antes de devolverlo por HTTP -- ni el admin que lo
+    # acaba de crear necesita que la API le repita el api_key/api_token de
+    # vuelta (los cargo el/ella misma en el request que acabamos de
+    # procesar). Ver services.redact_connector_config.
+    connector.config = services.redact_connector_config(connector.config)
     return connector
 
 
 @app.get("/connectors", response_model=list[ConnectorOut])
 async def list_connectors(kind: str | None = None, claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
-    return await services.list_connectors(db, org_id_from_claims(claims), kind)
+    # get_current_claims (no require_role("admin")): cualquier usuario
+    # autenticado de la organizacion puede LISTAR conectores (los
+    # necesita, por ejemplo, para elegir un connector_id al disparar una
+    # accion de contencion) -- pero no debe ver credenciales de otros,
+    # asi que se redactan aca antes de responder.
+    connectors = await services.list_connectors(db, org_id_from_claims(claims), kind)
+    for c in connectors:
+        c.config = services.redact_connector_config(c.config)
+    return connectors
 
 
 @app.get("/actions", response_model=list[ActionLogOut])

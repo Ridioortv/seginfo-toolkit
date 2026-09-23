@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.database import get_db, engine, Base, SessionLocal
 from backend.shared.logging import configure_logging
+from backend.shared.cors import get_cors_origins
+from backend.shared.rate_limit import check_rate_limit
 from backend.shared.security import decode_token, create_token
 from app.schemas import (
     UserCreate,
@@ -43,6 +45,22 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 # frontend/src/pages/SsoCallback.tsx.
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 login_attempts_total = Counter("auth_login_attempts_total", "Login attempts", ["outcome"])
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+async def _enforce_rate_limit(key: str, limit: int, window_seconds: int = 300) -> None:
+    """429 si se supero el limite -- ver backend/shared/rate_limit.py.
+    window_seconds=300 (5 min) por defecto en todos los usos de este
+    modulo: alcanza para frenar fuerza bruta sostenida sin molestar a un
+    usuario real que se equivoca la contraseña un par de veces."""
+    if not await check_rate_limit(key, limit, window_seconds):
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiados intentos. Espera unos minutos antes de volver a intentar.",
+        )
 
 
 @asynccontextmanager
@@ -82,7 +100,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="SentinelOps Auth Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -125,7 +143,12 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
 
 
 @app.post("/auth/login", response_model=TokenPair)
-async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    # Dos limites en paralelo: por IP (frena a un atacante probando muchas
+    # cuentas, o muchas passwords contra una) y por email (frena fuerza
+    # bruta distribuida en varias IPs contra UNA cuenta puntual).
+    await _enforce_rate_limit(f"login:ip:{_client_ip(request)}", limit=20)
+    await _enforce_rate_limit(f"login:email:{payload.email.lower()}", limit=10)
     user = await services.authenticate(db, payload.email, payload.password, payload.totp_code)
     if user is None:
         login_attempts_total.labels(outcome="failure").inc()
@@ -141,12 +164,13 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
 
 
 @app.post("/auth/google", response_model=TokenPair)
-async def google_login(payload: GoogleAuthRequest, db: AsyncSession = Depends(get_db)):
+async def google_login(payload: GoogleAuthRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Login o registro con Google: el frontend manda el credential (ID token)
     que devuelve Google Identity Services; lo validamos contra los servers de
     Google (firma + audiencia == nuestro client id) antes de confiar en el
     email. No hay password ni MFA en este camino porque Google ya verifico
     al usuario."""
+    await _enforce_rate_limit(f"google_login:ip:{_client_ip(request)}", limit=20)
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=503, detail="Login con Google no esta configurado en este servidor (falta GOOGLE_CLIENT_ID)")
     try:
@@ -200,6 +224,11 @@ async def mfa_enroll(claims: dict = Depends(get_current_claims), db: AsyncSessio
 
 @app.post("/auth/mfa/confirm")
 async def mfa_confirm(payload: MfaVerifyRequest, claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
+    # Un codigo TOTP son 6 digitos (10^6 combinaciones) y valid_window=1
+    # deja ~3 codigos validos en cualquier momento -- sin limite, alguien
+    # con un access_token robado/filtrado podria intentar habilitar MFA
+    # con un codigo adivinado en vez del real.
+    await _enforce_rate_limit(f"mfa_confirm:user:{claims['sub']}", limit=10)
     user = await db.get(services.User, claims["sub"])
     ok = await services.confirm_mfa(db, user, payload.totp_code)
     await db.commit()

@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.security import hash_password, verify_password, create_access_token, create_refresh_token
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
+from backend.shared.crypto import encrypt_secret
 from app.models import User, Role, AuditLogEntry, Organization, SsoConfig
 
 
@@ -72,6 +73,13 @@ async def get_organization_by_id(db: AsyncSession, org_id: str) -> Organization 
 
 
 async def get_sso_config(db: AsyncSession, organization_id: str) -> SsoConfig | None:
+    # OJO: esto devuelve el objeto ORM tal cual esta en la base -- si
+    # config.enabled es True, config.client_secret esta CIFRADO. No
+    # descifrar aca (mutando el atributo) porque un `await db.commit()`
+    # posterior en el mismo request (ej. en el callback de OIDC) volveria
+    # a escribir el texto plano en la base, destruyendo el cifrado. El
+    # descifrado se hace solo en el punto de uso real, ver
+    # app/oidc.py::exchange_code.
     result = await db.execute(select(SsoConfig).where(SsoConfig.organization_id == organization_id))
     return result.scalar_one_or_none()
 
@@ -86,7 +94,12 @@ async def upsert_sso_config(
         db.add(config)
     config.issuer = issuer.rstrip("/")
     config.client_id = client_id
-    config.client_secret = client_secret
+    # client_secret se guarda cifrado (Fernet, ver backend/shared/crypto.py)
+    # -- antes se guardaba en texto plano en la base, asi que quien tuviera
+    # acceso de lectura a la base (un backup filtrado, una inyeccion SQL en
+    # cualquier otro endpoint, un admin de infraestructura del cliente)
+    # podia leer el client_secret de Azure AD/Okta/etc de esa organizacion.
+    config.client_secret = encrypt_secret(client_secret)
     config.default_role = default_role
     config.enabled = enabled
     await db.flush()
