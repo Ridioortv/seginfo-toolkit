@@ -3,6 +3,7 @@ import { siemApi } from "../services/api";
 import type { AlertOut, SigmaRuleOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { SeverityBadge, StatusBadge } from "../components/Badge";
+import { connectionErrorDetail } from "../utils/errors";
 
 export default function Siem() {
   const alerts = useQuery({
@@ -21,7 +22,12 @@ export default function Siem() {
       <div className="panel">
         <h2>Alertas</h2>
         {alerts.isLoading && <p className="empty-hint">Cargando...</p>}
-        {alerts.isError && <p className="error-text">No se pudo conectar con siem-service.</p>}
+        {alerts.isError && (
+          <p className="error-text">
+            No se pudo conectar con siem-service.{" "}
+            <span className="error-detail">{connectionErrorDetail(alerts.error)}</span>
+          </p>
+        )}
         {alerts.data && (
           <table className="data-table">
             <thead>

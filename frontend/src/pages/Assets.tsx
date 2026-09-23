@@ -3,6 +3,7 @@ import { assetApi } from "../services/api";
 import type { AssetOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { SeverityBadge } from "../components/Badge";
+import { connectionErrorDetail } from "../utils/errors";
 
 export default function Assets() {
   const assets = useQuery({
@@ -15,7 +16,12 @@ export default function Assets() {
       <PageHeader title="Activos" subtitle="Inventario de activos monitoreados por la plataforma" />
       <div className="panel">
         {assets.isLoading && <p className="empty-hint">Cargando...</p>}
-        {assets.isError && <p className="error-text">No se pudo conectar con asset-service.</p>}
+        {assets.isError && (
+          <p className="error-text">
+            No se pudo conectar con asset-service.{" "}
+            <span className="error-detail">{connectionErrorDetail(assets.error)}</span>
+          </p>
+        )}
         {assets.data && (
           <table className="data-table">
             <thead>

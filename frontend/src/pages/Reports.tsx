@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { reportApi } from "../services/api";
 import type { GeneratedReportOut } from "../types";
 import PageHeader from "../components/PageHeader";
+import { connectionErrorDetail } from "../utils/errors";
 
 const REPORT_TYPES = [
   { value: "executive_summary", label: "Resumen ejecutivo" },
@@ -59,7 +60,12 @@ export default function Reports() {
             {generate.isPending ? "Generando..." : "Generar reporte"}
           </button>
         </div>
-        {generate.isError && <p className="error-text">No se pudo generar el reporte.</p>}
+        {generate.isError && (
+          <p className="error-text">
+            No se pudo generar el reporte.{" "}
+            <span className="error-detail">{connectionErrorDetail(generate.error)}</span>
+          </p>
+        )}
       </div>
 
       <div className="panel">

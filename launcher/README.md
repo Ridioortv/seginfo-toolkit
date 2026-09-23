@@ -5,9 +5,14 @@ Codigo fuente (Go) de los dos ejecutables que viven en la raiz del repo:
 - `SentinelOps - Iniciar.exe`: revisa que Docker Desktop este instalado y
   corriendo (intenta abrirlo si no lo esta), crea `.env` a partir de
   `.env.example` si es la primera vez, corre
-  `docker compose up -d --build`, espera a que auth-service responda en
-  `/health`, y abre el dashboard (`http://localhost:5173`) en el
-  navegador por defecto.
+  `docker compose up -d --build`, espera a que los 11 microservicios
+  backend Y el frontend respondan en su `/health` (o su URL, en el caso
+  del frontend) -- no alcanza con que Docker diga que el contenedor
+  arranco, porque uno puede arrancar y morirse enseguida -- y solo si
+  todos responden abre el dashboard (`http://localhost:5173`) en el
+  navegador por defecto. Si alguno no responde a tiempo, muestra su log
+  real (`docker compose logs`) para que se pueda diagnosticar sin abrir
+  una terminal aparte.
 - `SentinelOps - Detener.exe`: corre `docker compose down` (no borra los
   datos -- los volumenes, como el de Postgres, se conservan).
 

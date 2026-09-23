@@ -3,6 +3,7 @@ import { vulnApi } from "../services/api";
 import type { VulnerabilityOut, VulnerabilityStatsOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { SeverityBadge } from "../components/Badge";
+import { connectionErrorDetail } from "../utils/errors";
 
 export default function Vulnerabilities() {
   const stats = useQuery({
@@ -35,7 +36,12 @@ export default function Vulnerabilities() {
 
       <div className="panel">
         {vulns.isLoading && <p className="empty-hint">Cargando...</p>}
-        {vulns.isError && <p className="error-text">No se pudo conectar con vuln-service.</p>}
+        {vulns.isError && (
+          <p className="error-text">
+            No se pudo conectar con vuln-service.{" "}
+            <span className="error-detail">{connectionErrorDetail(vulns.error)}</span>
+          </p>
+        )}
         {vulns.data && (
           <table className="data-table">
             <thead>

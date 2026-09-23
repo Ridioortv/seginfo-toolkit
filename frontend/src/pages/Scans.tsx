@@ -4,6 +4,7 @@ import { scanApi } from "../services/api";
 import type { ScanJobOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { StatusBadge } from "../components/Badge";
+import { connectionErrorDetail } from "../utils/errors";
 
 type ScannerType = "nmap" | "trivy" | "nuclei" | "openvas";
 type NetworkScope = "lan" | "man" | "wan" | "custom";
@@ -150,7 +151,12 @@ export default function Scans() {
 
       <div className="panel">
         {scans.isLoading && <p className="empty-hint">Cargando...</p>}
-        {scans.isError && <p className="error-text">No se pudo conectar con scan-service.</p>}
+        {scans.isError && (
+          <p className="error-text">
+            No se pudo conectar con scan-service.{" "}
+            <span className="error-detail">{connectionErrorDetail(scans.error)}</span>
+          </p>
+        )}
         {scans.data && (
           <table className="data-table">
             <thead>

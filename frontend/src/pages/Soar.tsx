@@ -3,6 +3,7 @@ import { soarApi } from "../services/api";
 import type { PlaybookOut, PlaybookRunOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { StatusBadge } from "../components/Badge";
+import { connectionErrorDetail } from "../utils/errors";
 
 export default function Soar() {
   const playbooks = useQuery({
@@ -23,7 +24,12 @@ export default function Soar() {
 
       <div className="panel">
         <h2>Playbooks</h2>
-        {playbooks.isError && <p className="error-text">No se pudo conectar con soar-service.</p>}
+        {playbooks.isError && (
+          <p className="error-text">
+            No se pudo conectar con soar-service.{" "}
+            <span className="error-detail">{connectionErrorDetail(playbooks.error)}</span>
+          </p>
+        )}
         {playbooks.data && (
           <table className="data-table">
             <thead>
