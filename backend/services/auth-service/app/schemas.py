@@ -6,7 +6,11 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(min_length=12)
     full_name: str = ""
-    role_name: str = "analyst"
+    # role_name NO es parte del payload publico a proposito: si lo fuera,
+    # cualquiera podria auto-registrarse como admin. El primer usuario que
+    # exista en la base se promueve a admin automaticamente (ver el
+    # lifespan de main.py); todos los siguientes entran como "analyst" y
+    # un admin los puede ascender despues.
 
 
 class UserOut(BaseModel):

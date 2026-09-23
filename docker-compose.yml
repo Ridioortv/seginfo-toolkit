@@ -1,5 +1,6 @@
 services:
   postgres:
+    restart: unless-stopped
     image: postgres:16-alpine
     env_file: .env
     environment:
@@ -17,6 +18,7 @@ services:
       retries: 10
 
   redis:
+    restart: unless-stopped
     image: redis:7-alpine
     ports:
       - "6379:6379"
@@ -27,6 +29,7 @@ services:
       retries: 10
 
   opensearch:
+    restart: unless-stopped
     image: opensearchproject/opensearch:2.16.0
     environment:
       - discovery.type=single-node
@@ -41,6 +44,7 @@ services:
       retries: 15
 
   auth-service:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: backend/services/auth-service/Dockerfile
@@ -57,6 +61,7 @@ services:
       - "8001:8000"
 
   asset-service:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: backend/services/asset-service/Dockerfile
@@ -73,6 +78,7 @@ services:
       - "8002:8000"
 
   scan-service:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: backend/services/scan-service/Dockerfile
@@ -89,6 +95,7 @@ services:
       - "8003:8000"
 
   vuln-service:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: backend/services/vuln-service/Dockerfile
@@ -105,6 +112,7 @@ services:
       - "8004:8000"
 
   siem-service:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: backend/services/siem-service/Dockerfile
@@ -125,6 +133,7 @@ services:
       - "8005:8000"
 
   soar-service:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: backend/services/soar-service/Dockerfile
@@ -144,6 +153,7 @@ services:
       - "8006:8000"
 
   case-service:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: backend/services/case-service/Dockerfile
@@ -161,6 +171,7 @@ services:
       - "8007:8000"
 
   purple-service:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: backend/services/purple-service/Dockerfile
@@ -178,6 +189,7 @@ services:
       - "8008:8000"
 
   report-service:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: backend/services/report-service/Dockerfile
@@ -198,6 +210,7 @@ services:
       - "8009:8000"
 
   notification-service:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: backend/services/notification-service/Dockerfile
@@ -215,6 +228,7 @@ services:
       - "8010:8000"
 
   integration-service:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: backend/services/integration-service/Dockerfile
@@ -232,6 +246,7 @@ services:
       - "8011:8000"
 
   frontend:
+    restart: unless-stopped
     build:
       context: ./frontend
     env_file: .env

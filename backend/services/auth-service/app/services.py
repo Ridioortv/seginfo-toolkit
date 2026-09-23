@@ -1,7 +1,7 @@
 """Business logic for auth-service: user auth, MFA, immutable audit log."""
 import hashlib
 import pyotp
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.security import hash_password, verify_password, create_access_token, create_refresh_token
@@ -25,13 +25,39 @@ async def get_or_create_role(db: AsyncSession, name: str) -> Role:
     return role
 
 
-async def create_user(db: AsyncSession, email: str, password: str, full_name: str, role_name: str) -> User:
+async def create_user(db: AsyncSession, email: str, password: str, full_name: str, role_name: str = "analyst") -> User:
+    """role_name solo lo pasa codigo interno de confianza (el bootstrap de
+    admin, un futuro endpoint admin-only para crear usuarios). El endpoint
+    publico /auth/register nunca lo expone -- ver comentario en schemas.py."""
     role = await get_or_create_role(db, role_name)
     user = User(email=email, hashed_password=hash_password(password), full_name=full_name, role_id=role.id)
     db.add(user)
     await db.flush()
     await db.refresh(user)
     return user
+
+
+async def count_users(db: AsyncSession) -> int:
+    result = await db.execute(select(func.count()).select_from(User))
+    return result.scalar_one()
+
+
+async def promote_first_user_to_admin_if_needed(db: AsyncSession) -> None:
+    """Bootstrap: si ya hay usuarios pero ninguno es admin todavia (tipico
+    en una base nueva, o en esta migrando desde antes de que existiera este
+    chequeo), el usuario mas antiguo se asciende a admin automaticamente.
+    Es idempotente -- una vez que existe un admin, no vuelve a tocar nada."""
+    if await count_users(db) == 0:
+        return
+    admin_role = await get_or_create_role(db, "admin")
+    result = await db.execute(select(func.count()).select_from(User).where(User.role_id == admin_role.id))
+    if result.scalar_one() > 0:
+        return
+    result = await db.execute(select(User).order_by(User.created_at.asc()).limit(1))
+    first_user = result.scalar_one_or_none()
+    if first_user is not None:
+        first_user.role_id = admin_role.id
+        await db.flush()
 
 
 async def get_or_create_google_user(db: AsyncSession, email: str, full_name: str) -> User:

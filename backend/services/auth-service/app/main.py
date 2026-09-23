@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, make_asgi_app
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.shared.database import get_db, engine, Base
+from backend.shared.database import get_db, engine, Base, SessionLocal
 from backend.shared.logging import configure_logging
 from app.schemas import UserCreate, UserOut, LoginRequest, TokenPair, MfaEnrollResponse, MfaVerifyRequest, GoogleAuthRequest
 from app.dependencies import get_current_claims, require_role
@@ -34,6 +34,9 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             "ALTER TABLE users ALTER COLUMN hashed_password DROP NOT NULL"
         ))
+    async with SessionLocal() as session:
+        await services.promote_first_user_to_admin_if_needed(session)
+        await session.commit()
     logger.info("auth-service iniciado")
     yield
 
@@ -55,15 +58,24 @@ async def health():
 
 @app.post("/auth/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
 async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
+    """Auto-registro publico: siempre crea el usuario como "analyst". Si es
+    el primer usuario que existe en toda la base, el lifespan lo asciende a
+    admin automaticamente la proxima vez que arranque el servicio (o ya lo
+    hizo si esto es lo primero que corre)."""
     existing = await services.get_user_by_email(db, payload.email)
     if existing:
         raise HTTPException(status_code=400, detail="El email ya esta registrado")
-    user = await services.create_user(db, payload.email, payload.password, payload.full_name, payload.role_name)
+    user = await services.create_user(db, payload.email, payload.password, payload.full_name)
+    await services.promote_first_user_to_admin_if_needed(db)
     await services.record_audit_event(db, payload.email, "user.register")
     await db.commit()
+    # Recargar con el rol ya resuelto (create_user no lo trae eager-loaded,
+    # y promote_first_user_to_admin_if_needed puede haberlo cambiado).
+    user = await services.get_user_by_email(db, payload.email)
+    role_name = user.role.name if user.role else "analyst"
     return UserOut(
         id=user.id, email=user.email, full_name=user.full_name,
-        role_name=payload.role_name, is_active=user.is_active, mfa_enabled=user.mfa_enabled,
+        role_name=role_name, is_active=user.is_active, mfa_enabled=user.mfa_enabled,
     )
 
 

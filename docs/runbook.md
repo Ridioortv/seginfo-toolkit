@@ -30,10 +30,17 @@ done
 
 ## Primer usuario admin
 
-auth-service no tiene un seed de usuario por defecto. Registrar el primer
-usuario con `POST /auth/register` en auth-service (puerto 8001) y asignarle
-rol `admin` directamente en la base (o agregar ese paso a `make seed` cuando
-exista un script de seed real).
+auth-service asciende automaticamente a `admin` al primer usuario que
+exista en toda la base (por password o por Google), la primera vez que el
+servicio arranca despues de que ese usuario se creo -- no hace falta tocar
+la base a mano. Los siguientes usuarios que se registren o entren con
+Google quedan como `analyst`; un admin los puede ascender despues (todavia
+no hay un endpoint dedicado para eso -- por ahora es un UPDATE directo en
+la tabla `roles`/`users`, o pedimoslo si se necesita).
+
+Por seguridad, `POST /auth/register` (el registro publico) ya no acepta
+que el que se registra elija su propio rol -- si lo aceptara, cualquiera
+podria auto-asignarse `admin`.
 
 ## Login/registro con Google (opcional)
 
