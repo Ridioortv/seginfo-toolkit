@@ -45,8 +45,22 @@ def create_token(subject: str, expires_delta: timedelta, extra_claims: dict | No
     return jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
 
 
-def create_access_token(subject: str, role: str) -> str:
-    return create_token(subject, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES), {"role": role, "type": "access"})
+def create_access_token(subject: str, role: str, org_id: str | None = None, platform_admin: bool = False) -> str:
+    # org_id es opcional (default None) a proposito: los JWT de servicio-a-
+    # servicio que ya existian (ej. "system:report-scheduler" en
+    # report-service) siguen llamando esta funcion con solo (subject, role)
+    # y no se rompen. Cuando esta presente, viaja como claim "org_id" y es
+    # lo que el resto de los microservicios usan para filtrar sus tablas por
+    # tenant (ver <servicio>/app/dependencies.py::get_current_org_id).
+    # platform_admin viaja como claim "platform_admin" y solo lo usa
+    # auth-service (para permitir crear/listar organizaciones) -- por eso
+    # tiene default False, ningun otro llamador necesita tocarlo.
+    extra = {"role": role, "type": "access"}
+    if org_id is not None:
+        extra["org_id"] = org_id
+    if platform_admin:
+        extra["platform_admin"] = True
+    return create_token(subject, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES), extra)
 
 
 def create_refresh_token(subject: str) -> str:

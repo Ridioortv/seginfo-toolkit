@@ -1,4 +1,5 @@
-"""SQLAlchemy models for auth-service: users, roles, audit log."""
+"""SQLAlchemy models for auth-service: organizations (tenants), users,
+roles, SSO config, audit log."""
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import String, Boolean, DateTime, ForeignKey
@@ -8,6 +9,59 @@ from backend.shared.database import Base
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class Organization(Base):
+    """Un tenant. Cada usuario pertenece a exactamente una organizacion, y el
+    id de esta se propaga como claim 'org_id' en el JWT (ver
+    backend/shared/security.py) para que el resto de los microservicios
+    puedan filtrar sus propias tablas por tenant sin volver a golpear a
+    auth-service en cada request. `slug` es lo que aparece en la URL del
+    login SSO (/auth/oidc/{slug}/login) -- nunca se expone el id interno ahi
+    para no filtrar UUIDs en URLs que la gente puede compartir/bookmarkear."""
+
+    __tablename__ = "organizations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    users: Mapped[list["User"]] = relationship(back_populates="organization")
+    sso_config: Mapped["SsoConfig | None"] = relationship(back_populates="organization", uselist=False)
+
+
+class SsoConfig(Base):
+    """Configuracion de SSO empresarial (OIDC) de UNA organizacion. Se separa
+    de Organization (en vez de columnas sueltas ahi) porque no toda org la
+    tiene configurada, y asi el 99% de las filas de Organization no cargan
+    un client_secret potencialmente vacio/basura. Solo OIDC por ahora (no
+    SAML) -- ver docs/runbook.md, seccion SSO, para el motivo."""
+
+    __tablename__ = "sso_configs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), unique=True, nullable=False)
+    # Issuer del proveedor OIDC (ej. "https://login.microsoftonline.com/<tenant>/v2.0"
+    # para Azure AD/Entra ID). El discovery document se resuelve como
+    # f"{issuer}/.well-known/openid-configuration" en tiempo de request (ver
+    # app/oidc.py) -- no se guardan los endpoints resueltos porque el
+    # proveedor los puede rotar.
+    issuer: Mapped[str] = mapped_column(String(500), nullable=False)
+    client_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # NOTA DE SEGURIDAD: se guarda tal cual (no en texto claro visible por la
+    # UI -- nunca se devuelve en ningun response, ver schemas.SsoConfigOut --
+    # pero tampoco esta encriptado at-rest en esta version. Si Postgres mismo
+    # se compromete, este secret se compromete. Para produccion de verdad,
+    # cifrar esta columna con una clave de aplicacion (Fernet/KMS) es la
+    # mejora natural siguiente; se documenta la limitacion en el runbook.
+    client_secret: Mapped[str] = mapped_column(String(500), nullable=False)
+    default_role: Mapped[str] = mapped_column(String(50), default="analyst")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    organization: Mapped["Organization"] = relationship(back_populates="sso_config")
 
 
 class Role(Base):
@@ -24,6 +78,14 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    # unique=True (no compuesto con organization_id) a proposito: el email
+    # sigue siendo el identificador de login global, exactamente como antes
+    # de que existiera multi-tenancy -- dos organizaciones NO pueden tener
+    # cada una un usuario con el mismo email. Simplifica /auth/login (no
+    # hace falta que el usuario indique su organizacion aparte del email) y
+    # evita el caso raro de una persona con la misma casilla en dos tenants
+    # distintos, que de todos modos no aplica al modelo de negocio actual
+    # (una empresa = un dominio de email = una organizacion).
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
     full_name: Mapped[str] = mapped_column(String(255), default="")
@@ -31,10 +93,25 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     mfa_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Aparte del rol (permisos), esta bandera es la unica cosa que puede
+    # crear organizaciones nuevas o ver el listado de todas -- ver
+    # dependencies.require_platform_admin. Deliberadamente NO es un "role"
+    # mas: mezclar "administra su propia empresa" con "administra la
+    # plataforma entera (todas las empresas)" en el mismo campo `role` iba a
+    # ser una fuente segura de bugs de aislamiento entre tenants.
+    is_platform_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
     role_id: Mapped[str] = mapped_column(ForeignKey("roles.id"))
     role: Mapped["Role"] = relationship(back_populates="users")
+
+    # Nullable a nivel de columna SQL a proposito (instalaciones existentes
+    # migran con un ALTER TABLE que no puede rellenar esto atomicamente para
+    # filas viejas en el mismo paso -- ver el lifespan de main.py, que crea
+    # una organizacion "default" y hace el backfill ahi mismo). A nivel de
+    # aplicacion, todo usuario nuevo SIEMPRE recibe una organization_id.
+    organization_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"), nullable=True)
+    organization: Mapped["Organization | None"] = relationship(back_populates="users")
 
 
 class AuditLogEntry(Base):

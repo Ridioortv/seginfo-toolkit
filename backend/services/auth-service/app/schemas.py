@@ -2,6 +2,53 @@
 from pydantic import BaseModel, EmailStr, Field
 
 
+class OrganizationOut(BaseModel):
+    id: str
+    name: str
+    slug: str
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
+
+class OrganizationCreate(BaseModel):
+    """Crea una organizacion nueva Y su primer usuario admin en un solo
+    paso -- deliberadamente no hay auto-registro publico de organizaciones
+    (a diferencia de /auth/register, que crea un usuario suelto): abrir eso
+    significaria que cualquiera puede crear una "empresa" nueva sin
+    ninguna verificacion. Solo un platform_admin puede llamar este
+    endpoint (ver require_platform_admin en dependencies.py)."""
+
+    name: str = Field(..., min_length=1)
+    admin_email: EmailStr
+    admin_password: str = Field(min_length=12)
+    admin_full_name: str = ""
+
+
+class SsoConfigIn(BaseModel):
+    issuer: str = Field(..., min_length=1, description="Issuer OIDC del proveedor, ej. https://login.microsoftonline.com/<tenant>/v2.0")
+    client_id: str = Field(..., min_length=1)
+    client_secret: str = Field(..., min_length=1)
+    default_role: str = "analyst"
+    enabled: bool = True
+
+
+class SsoConfigOut(BaseModel):
+    """NUNCA incluye client_secret -- una vez guardado, no se vuelve a
+    mostrar por API (igual que la api key de un agente de escaneo remoto).
+    Si hace falta cambiarlo, se sobreescribe con SsoConfigIn de nuevo."""
+
+    organization_id: str
+    issuer: str
+    client_id: str
+    default_role: str
+    enabled: bool
+
+    class Config:
+        from_attributes = True
+
+
 class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(min_length=12)
@@ -20,6 +67,7 @@ class UserOut(BaseModel):
     role_name: str
     is_active: bool
     mfa_enabled: bool
+    organization_id: str | None = None
 
     class Config:
         from_attributes = True
