@@ -12,11 +12,14 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -245,8 +248,47 @@ func tryStartDockerDesktop() {
 	_ = exec.Command("cmd", "/c", "start", "", "Docker Desktop").Start()
 }
 
-// ensureEnvFile copia .env.example a .env en el primer uso, para que la
-// plataforma tenga algo con que arrancar sin pasos manuales.
+// randomHexSecret genera un secreto hexadecimal criptograficamente
+// aleatorio de numBytes bytes (numBytes*2 caracteres hex) usando
+// crypto/rand (nunca math/rand, que es predecible y NO apto para
+// secretos).
+func randomHexSecret(numBytes int) string {
+	b := make([]byte, numBytes)
+	if _, err := rand.Read(b); err != nil {
+		fatal("No se pudo generar un secreto aleatorio (crypto/rand): %v", err)
+	}
+	return hex.EncodeToString(b)
+}
+
+// generatedSecretKeys son las variables de .env.example cuyo valor de
+// ejemplo ("changeme...") NUNCA debe llegar a usarse en una instalacion
+// real -- cada una se reemplaza por un secreto random propio de ESTA
+// instalacion, generado una sola vez (la primera vez que se crea .env;
+// una vez que el archivo existe, ensureEnvFile no lo vuelve a tocar).
+//
+// Por que esto importa: antes, ensureEnvFile copiaba .env.example BYTE
+// POR BYTE. Como este programa se distribuye empaquetado (un .rar) a
+// todos los clientes, TODOS terminaban con el MISMO JWT_SECRET_KEY, la
+// MISMA POSTGRES_PASSWORD y la MISMA ENCRYPTION_KEY -- cualquiera con
+// una copia del instalador (todo cliente que pago, y quien sea que la
+// filtre) podia firmar un JWT valido para la instalacion de OTRO
+// cliente (incluyendo uno con platform_admin=true, ver
+// backend/shared/security.py), conectarse directo a su Postgres
+// expuesto en el puerto 5432, o descifrar el client_secret de SSO y las
+// credenciales de sus conectores de contencion/ticketing (ver
+// backend/shared/crypto.py).
+var generatedSecretKeys = map[string]func() string{
+	"JWT_SECRET_KEY":    func() string { return randomHexSecret(32) }, // 256 bits
+	"POSTGRES_PASSWORD": func() string { return randomHexSecret(24) }, // 192 bits, alcanza y sobra para un password de DB
+	"ENCRYPTION_KEY":    func() string { return randomHexSecret(32) }, // 256 bits, ver backend/shared/crypto.py
+}
+
+// ensureEnvFile crea .env a partir de .env.example en el primer uso, con
+// los secretos de generatedSecretKeys reemplazados por valores
+// aleatorios propios de esta instalacion (nunca copia esas lineas tal
+// cual). El resto de las variables (URLs, flags de dry-run, etc) se
+// copian sin tocar -- no son secretos, y cambiarlas es responsabilidad
+// del operador si hace falta.
 func ensureEnvFile(projectDir string) {
 	envPath := filepath.Join(projectDir, ".env")
 	if _, err := os.Stat(envPath); err == nil {
@@ -257,11 +299,28 @@ func ensureEnvFile(projectDir string) {
 	if err != nil {
 		fatal("No se encontro .env ni .env.example en %s -- ¿esta este programa\nen la raiz del repo, junto a docker-compose.yml?", projectDir)
 	}
-	if err := os.WriteFile(envPath, data, 0o644); err != nil {
+
+	lines := strings.Split(string(data), "\n")
+	generated := make([]string, 0, len(generatedSecretKeys))
+	for i, line := range lines {
+		for key, gen := range generatedSecretKeys {
+			if strings.HasPrefix(line, key+"=") {
+				lines[i] = key + "=" + gen()
+				generated = append(generated, key)
+			}
+		}
+	}
+	out := strings.Join(lines, "\n")
+
+	// 0o600 (no 0o644): .env ya no tiene solo valores de demo, tiene
+	// secretos reales generados recien arriba -- no hay motivo para que
+	// otros usuarios de la misma maquina puedan leerlo.
+	if err := os.WriteFile(envPath, []byte(out), 0o600); err != nil {
 		fatal("No se pudo crear .env: %v", err)
 	}
-	fmt.Println("Primera vez: se creo .env a partir de .env.example (valores de demo,")
-	fmt.Println("no para produccion -- ver docs/runbook.md).")
+	fmt.Println("Primera vez: se creo .env a partir de .env.example, con secretos nuevos")
+	fmt.Println("generados al azar para esta instalacion (" + strings.Join(generated, ", ") + ") --")
+	fmt.Println("no se reusan entre instalaciones. Ver docs/runbook.md para mas detalle.")
 }
 
 func runStreaming(name string, args ...string) error {

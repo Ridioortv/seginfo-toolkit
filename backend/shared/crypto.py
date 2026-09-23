@@ -29,6 +29,30 @@ from cryptography.fernet import Fernet, InvalidToken
 # produccion.
 _DEV_ENCRYPTION_KEY = "dev-encryption-key-change-me"
 
+# Mismo criterio que _KNOWN_PLACEHOLDER_SECRETS en backend/shared/security.py
+# (ver ese modulo para el razonamiento completo): si alguien reconstruye
+# el .env a mano, o corre una version vieja del launcher que todavia
+# copiaba .env.example literal, ENCRYPTION_KEY podria terminar siendo un
+# valor publico y conocido -- lo que dejaria el client_secret de SSO y
+# las credenciales de los conectores "cifradas" con una clave que
+# cualquiera con el instalador tambien conoce (cifrado de adorno, no
+# real). Se verifica al importar el modulo (arranque de auth-service e
+# integration-service) para fallar temprano en vez de en el primer uso.
+_KNOWN_PLACEHOLDER_ENCRYPTION_KEYS = {_DEV_ENCRYPTION_KEY, "changeme-generate-a-long-random-secret"}
+
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+_ENCRYPTION_SECRET = os.getenv("ENCRYPTION_KEY", _DEV_ENCRYPTION_KEY)
+
+if ENVIRONMENT != "development" and _ENCRYPTION_SECRET in _KNOWN_PLACEHOLDER_ENCRYPTION_KEYS:
+    raise RuntimeError(
+        "ENCRYPTION_KEY sigue en un valor de ejemplo con ENVIRONMENT != 'development'. "
+        "El client_secret de SSO y las credenciales de los conectores de contencion/ticketing "
+        "quedarian 'cifrados' con una clave que cualquiera con una copia de .env.example "
+        "tambien conoce. Genera un secreto random propio para esta instalacion (el launcher lo "
+        "hace solo en el primer arranque -- si ves este error es porque .env se creo o edito a "
+        "mano) antes de arrancar en este modo."
+    )
+
 
 def _fernet_key_from_secret(secret: str) -> bytes:
     digest = hashlib.sha256(secret.encode("utf-8")).digest()
@@ -36,8 +60,7 @@ def _fernet_key_from_secret(secret: str) -> bytes:
 
 
 def _get_fernet() -> Fernet:
-    secret = os.getenv("ENCRYPTION_KEY", _DEV_ENCRYPTION_KEY)
-    return Fernet(_fernet_key_from_secret(secret))
+    return Fernet(_fernet_key_from_secret(_ENCRYPTION_SECRET))
 
 
 def encrypt_secret(plaintext: str | None) -> str | None:
