@@ -13,8 +13,22 @@ from apscheduler.jobstores.base import JobLookupError
 
 from backend.shared.database import get_db, engine, Base, SessionLocal
 from backend.shared.logging import configure_logging
-from app.schemas import ScanJobCreate, ScanJobOut, ScanScheduleCreate, ScanScheduleUpdate, ScanScheduleOut
-from app.dependencies import get_current_claims, require_role
+from app.schemas import (
+    ScanJobCreate,
+    ScanJobOut,
+    ScanScheduleCreate,
+    ScanScheduleUpdate,
+    ScanScheduleOut,
+    ScanAgentCreate,
+    ScanAgentOut,
+    ScanAgentCreated,
+    AgentScanJobCreate,
+    AgentScanJobOut,
+    AgentPollResponse,
+    AgentPollJob,
+    AgentResultSubmit,
+)
+from app.dependencies import get_current_claims, require_role, get_agent_from_key
 from app import services
 
 logger = configure_logging("scan-service")
@@ -183,3 +197,95 @@ async def delete_schedule(
     await services.delete_schedule(db, schedule)
     await db.commit()
     _unregister_job(schedule_id)
+
+
+# --- Agentes de escaneo remoto ---
+# El agente (remote-agent/agent.py) corre FUERA de Docker (en la misma PC
+# o en cualquier maquina de la LAN) y hace polling hacia este puerto ya
+# publicado (8003) -- nunca al reves, asi que no hace falta abrir ningun
+# puerto de entrada en la red del cliente. Ver app/models.py::ScanAgent.
+
+@app.post("/agents", response_model=ScanAgentCreated, status_code=status.HTTP_201_CREATED)
+async def create_agent(
+    payload: ScanAgentCreate,
+    claims: dict = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    agent, api_key = await services.create_agent(db, payload, claims.get("sub", ""))
+    await db.commit()
+    logger.info("agente de escaneo remoto creado", extra={"agent_id": agent.id})
+    # api_key solo existe en texto plano en esta respuesta -- el servidor
+    # ya solo tiene su hash guardado (ver ScanAgent.key_hash).
+    return ScanAgentCreated(
+        id=agent.id, name=agent.name, created_by=agent.created_by,
+        created_at=agent.created_at, last_seen_at=agent.last_seen_at, api_key=api_key,
+    )
+
+
+@app.get("/agents", response_model=list[ScanAgentOut])
+async def list_agents(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
+    return await services.list_agents(db)
+
+
+@app.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_agent(
+    agent_id: str,
+    claims: dict = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    agent = await services.get_agent(db, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agente no encontrado")
+    await services.delete_agent(db, agent)
+    await db.commit()
+
+
+@app.post("/agent-scans", response_model=AgentScanJobOut, status_code=status.HTTP_201_CREATED)
+async def create_agent_scan(
+    payload: AgentScanJobCreate,
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
+):
+    agent = await services.get_agent(db, payload.agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agente no encontrado")
+    job = await services.create_agent_scan_job(db, payload, claims.get("sub", ""))
+    await db.commit()
+    logger.info("job de escaneo remoto creado", extra={"job_id": job.id, "agent_id": payload.agent_id})
+    return job
+
+
+@app.get("/agent-scans", response_model=list[AgentScanJobOut])
+async def list_agent_scans(
+    agent_id: str | None = None,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+):
+    return await services.list_agent_scan_jobs(db, agent_id)
+
+
+@app.post("/agents/poll", response_model=AgentPollResponse)
+async def poll_agent(agent=Depends(get_agent_from_key), db: AsyncSession = Depends(get_db)):
+    jobs = await services.poll_agent_jobs(db, agent)
+    await db.commit()
+    return AgentPollResponse(
+        jobs=[
+            AgentPollJob(id=j.id, scanner_type=j.scanner_type, target=j.target, options=j.options)
+            for j in jobs
+        ]
+    )
+
+
+@app.post("/agents/results/{job_id}", response_model=AgentScanJobOut)
+async def submit_agent_result(
+    job_id: str,
+    payload: AgentResultSubmit,
+    agent=Depends(get_agent_from_key),
+    db: AsyncSession = Depends(get_db),
+):
+    job = await services.submit_agent_result(db, agent, job_id, payload)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job no encontrado o no pertenece a este agente")
+    await db.commit()
+    logger.info("resultado de escaneo remoto recibido", extra={"job_id": job_id, "status": payload.status})
+    return job

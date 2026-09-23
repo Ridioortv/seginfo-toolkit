@@ -76,3 +76,54 @@ class ScanJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ScanAgent(Base):
+    """Un agente de escaneo remoto: un proceso liviano (ver
+    remote-agent/agent.py en la raiz del repo) que corre FUERA del
+    contenedor de scan-service -- tipicamente en la misma PC del
+    cliente pero fuera de Docker Desktop, o en cualquier maquina con
+    visibilidad real a la LAN que se quiere escanear -- y que hace
+    POLLING hacia scan-service (nunca al reves): asi no hace falta
+    abrir ningun puerto de entrada en la red del cliente para que esto
+    funcione, alcanza con que el agente pueda llegar al puerto ya
+    publicado de scan-service (8003). Se autentica con su propia api
+    key (nunca con el JWT de un usuario humano); aca solo se guarda su
+    hash (sha256 alcanza porque la propia key ya es un secreto de alta
+    entropia generado por el servidor -- no es una contraseña elegida
+    por una persona, asi que no hace falta un hash lento tipo bcrypt en
+    cada poll, que en este caso ocurre cada pocos segundos)."""
+
+    __tablename__ = "scan_agents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentScanJob(Base):
+    """Un job de escaneo para que lo ejecute un ScanAgent remoto, no el
+    propio contenedor de scan-service. Tabla separada de ScanJob a
+    proposito: no comparten ciclo de vida (a este lo ejecuta un proceso
+    externo por polling, con sus propios estados) y asi se evita tocar
+    ScanJob -- que create_all no puede alterar en instalaciones que ya
+    tengan esa tabla con datos."""
+
+    __tablename__ = "agent_scan_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    agent_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), default="")
+    scanner_type: Mapped[str] = mapped_column(String(20), default="nmap")
+    target: Mapped[str] = mapped_column(String(500), nullable=False)
+    options: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|assigned|completed|failed
+    findings: Mapped[list] = mapped_column(JSON, default=list)
+    error_message: Mapped[str] = mapped_column(String(2000), default="")
+    created_by: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

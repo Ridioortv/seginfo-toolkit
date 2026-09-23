@@ -48,6 +48,34 @@ export interface ScanScheduleOut {
   last_status: string;
 }
 
+export interface ScanAgentOut {
+  id: string;
+  name: string;
+  created_by: string;
+  created_at: string;
+  last_seen_at: string | null;
+}
+
+export interface ScanAgentCreated extends ScanAgentOut {
+  api_key: string;
+}
+
+export interface AgentScanJobOut {
+  id: string;
+  agent_id: string;
+  name: string;
+  scanner_type: string;
+  target: string;
+  options: Record<string, unknown>;
+  status: string;
+  findings: Record<string, unknown>[];
+  error_message: string;
+  created_by: string;
+  created_at: string;
+  assigned_at: string | null;
+  finished_at: string | null;
+}
+
 export interface VulnerabilityOut {
   id: string;
   cve_id: string | null;

@@ -85,3 +85,83 @@ class ScanJobOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# --- Agentes de escaneo remoto (ver app/models.py: ScanAgent, AgentScanJob) ---
+
+class ScanAgentCreate(BaseModel):
+    name: str = Field(..., min_length=1)
+
+
+class ScanAgentOut(BaseModel):
+    id: str
+    name: str
+    created_by: str
+    created_at: datetime
+    last_seen_at: datetime | None
+
+    class Config:
+        from_attributes = True
+
+
+class ScanAgentCreated(ScanAgentOut):
+    """Se devuelve SOLO en la respuesta de creacion: es la unica vez que el
+    api_key en texto plano existe en algun lado fuera de la maquina del
+    agente -- el servidor solo guarda su hash (ver ScanAgent.key_hash)."""
+
+    api_key: str
+
+
+AgentJobStatus = Literal["pending", "assigned", "completed", "failed"]
+
+
+class AgentScanJobCreate(BaseModel):
+    agent_id: str = Field(..., min_length=1)
+    name: str = ""
+    # Por ahora el agente remoto (remote-agent/agent.py) solo sabe correr
+    # nmap -- se restringe aca para no crear jobs que ningun agente pueda
+    # ejecutar. Ampliar cuando el agente soporte mas scanners.
+    scanner_type: Literal["nmap"] = "nmap"
+    target: str = Field(..., min_length=1)
+    options: dict = Field(default_factory=dict)
+
+
+class AgentScanJobOut(BaseModel):
+    id: str
+    agent_id: str
+    name: str
+    scanner_type: str
+    target: str
+    options: dict
+    status: AgentJobStatus
+    findings: list[dict]
+    error_message: str
+    created_by: str
+    created_at: datetime
+    assigned_at: datetime | None
+    finished_at: datetime | None
+
+    class Config:
+        from_attributes = True
+
+
+class AgentPollJob(BaseModel):
+    """Lo minimo que necesita el agente para ejecutar -- no se le manda la
+    fila completa de AgentScanJob (created_by, timestamps, etc no le
+    sirven de nada)."""
+
+    id: str
+    scanner_type: str
+    target: str
+    options: dict
+
+
+class AgentPollResponse(BaseModel):
+    jobs: list[AgentPollJob]
+
+
+class AgentResultSubmit(BaseModel):
+    status: Literal["completed", "failed"]
+    findings: list[dict] = Field(default_factory=list)
+    raw_output: str = ""
+    error_message: str = ""

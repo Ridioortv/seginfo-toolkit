@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { scanApi } from "../services/api";
-import type { ScanJobOut, ScanScheduleOut } from "../types";
+import type { ScanJobOut, ScanScheduleOut, ScanAgentOut, ScanAgentCreated, AgentScanJobOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
@@ -53,6 +53,12 @@ export default function Scans() {
   const [schedHour, setSchedHour] = useState(3);
   const [schedMinute, setSchedMinute] = useState(0);
 
+  const [agentName, setAgentName] = useState("");
+  const [justCreatedKey, setJustCreatedKey] = useState<{ agentName: string; apiKey: string } | null>(null);
+  const [agentJobAgentId, setAgentJobAgentId] = useState("");
+  const [agentJobName, setAgentJobName] = useState("");
+  const [agentJobTarget, setAgentJobTarget] = useState("");
+
   const scans = useQuery({
     queryKey: ["scans"],
     queryFn: async () => (await scanApi.get<ScanJobOut[]>("/scans")).data,
@@ -92,6 +98,50 @@ export default function Scans() {
   const deleteSchedule = useMutation({
     mutationFn: async (id: string) => scanApi.delete(`/scan-schedules/${id}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["scan-schedules"] }),
+  });
+
+  const agents = useQuery({
+    queryKey: ["scan-agents"],
+    queryFn: async () => (await scanApi.get<ScanAgentOut[]>("/agents")).data,
+  });
+
+  const agentScans = useQuery({
+    queryKey: ["agent-scans"],
+    queryFn: async () => (await scanApi.get<AgentScanJobOut[]>("/agent-scans")).data,
+    refetchInterval: 10_000, // los jobs de agente avanzan por polling del lado del agente, no en el momento
+  });
+
+  const createAgent = useMutation({
+    mutationFn: async () => (await scanApi.post<ScanAgentCreated>("/agents", { name: agentName })).data,
+    onSuccess: (created) => {
+      setJustCreatedKey({ agentName: created.name, apiKey: created.api_key });
+      setAgentName("");
+      queryClient.invalidateQueries({ queryKey: ["scan-agents"] });
+    },
+  });
+
+  const deleteAgent = useMutation({
+    mutationFn: async (id: string) => scanApi.delete(`/agents/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["scan-agents"] });
+      queryClient.invalidateQueries({ queryKey: ["agent-scans"] });
+    },
+  });
+
+  const createAgentScan = useMutation({
+    mutationFn: async () =>
+      (
+        await scanApi.post<AgentScanJobOut>("/agent-scans", {
+          agent_id: agentJobAgentId,
+          name: agentJobName,
+          target: agentJobTarget,
+        })
+      ).data,
+    onSuccess: () => {
+      setAgentJobName("");
+      setAgentJobTarget("");
+      queryClient.invalidateQueries({ queryKey: ["agent-scans"] });
+    },
   });
 
   const createScans = useMutation({
@@ -305,6 +355,162 @@ export default function Scans() {
           <p className="error-text">
             No se pudo conectar con scan-service.{" "}
             <span className="error-detail">{connectionErrorDetail(schedules.error)}</span>
+          </p>
+        )}
+      </div>
+
+      <div className="panel">
+        <h2>Agentes de escaneo remoto</h2>
+        <p className="empty-hint">
+          Docker Desktop aisla a los contenedores detras de NAT: scan-service no llega a la LAN real de la
+          oficina/cliente aunque este instalado ahi. Un agente (script Python liviano, ver carpeta remote-agent/ en
+          la raiz del repo) corre FUERA de Docker -- en esta PC o en cualquier otra de la LAN -- y hace polling hacia
+          este mismo puerto: no hace falta abrir ningun puerto de entrada. La api key se muestra UNA sola vez al
+          registrar el agente.
+        </p>
+
+        <div className="inline-form">
+          <input
+            placeholder="Nombre del agente (ej. PC-oficina-recepcion)"
+            value={agentName}
+            onChange={(e) => setAgentName(e.target.value)}
+          />
+          <button
+            className="btn-primary"
+            onClick={() => createAgent.mutate()}
+            disabled={createAgent.isPending || !agentName.trim()}
+          >
+            {createAgent.isPending ? "Registrando..." : "Registrar agente"}
+          </button>
+        </div>
+        {createAgent.isError && (
+          <p className="error-text">
+            No se pudo registrar el agente.{" "}
+            <span className="error-detail">{connectionErrorDetail(createAgent.error)}</span>
+          </p>
+        )}
+
+        {justCreatedKey && (
+          <div className="panel" style={{ marginTop: 8, border: "1px solid #d9a900" }}>
+            <p>
+              Agente <strong>{justCreatedKey.agentName}</strong> registrado. Copia esta api key ahora -- no se va a
+              volver a mostrar (pegala en la variable <code className="mono">AGENT_API_KEY</code> al configurar
+              remote-agent/agent.py en la maquina donde va a correr el agente):
+            </p>
+            <p className="mono" style={{ wordBreak: "break-all", userSelect: "all" }}>{justCreatedKey.apiKey}</p>
+            <button className="btn-secondary" onClick={() => setJustCreatedKey(null)}>Ya la copie</button>
+          </div>
+        )}
+
+        {agents.data && agents.data.length > 0 && (
+          <table className="data-table" style={{ marginTop: 12 }}>
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>Registrado por</th>
+                <th>Ultima vez visto</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {agents.data.map((a) => (
+                <tr key={a.id}>
+                  <td>{a.name}</td>
+                  <td>{a.created_by || "-"}</td>
+                  <td>{a.last_seen_at ? new Date(a.last_seen_at).toLocaleString() : "nunca (todavia no hizo polling)"}</td>
+                  <td>
+                    <button className="btn-link" onClick={() => deleteAgent.mutate(a.id)}>Eliminar</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {agents.isError && (
+          <p className="error-text">
+            No se pudo conectar con scan-service.{" "}
+            <span className="error-detail">{connectionErrorDetail(agents.error)}</span>
+          </p>
+        )}
+      </div>
+
+      <div className="panel">
+        <h2>Escaneos remotos</h2>
+        <p className="empty-hint">
+          Solo nmap por ahora (es lo unico que sabe correr remote-agent/agent.py). El agente elegido se lo lleva en
+          su siguiente polling y manda el resultado solo -- puede tardar unos segundos segun su intervalo de
+          polling configurado.
+        </p>
+
+        {agents.data && agents.data.length === 0 && (
+          <p className="empty-hint">No hay ningun agente registrado todavia (ver panel de arriba).</p>
+        )}
+
+        <div className="inline-form">
+          <select value={agentJobAgentId} onChange={(e) => setAgentJobAgentId(e.target.value)}>
+            <option value="">Elegir agente...</option>
+            {(agents.data ?? []).map((a) => (
+              <option key={a.id} value={a.id}>{a.name}</option>
+            ))}
+          </select>
+          <input placeholder="Nombre (opcional)" value={agentJobName} onChange={(e) => setAgentJobName(e.target.value)} />
+          <input
+            className="mono"
+            placeholder="Target (IP, CIDR, host visible desde el agente)"
+            value={agentJobTarget}
+            onChange={(e) => setAgentJobTarget(e.target.value)}
+          />
+          <button
+            className="btn-primary"
+            onClick={() => createAgentScan.mutate()}
+            disabled={createAgentScan.isPending || !agentJobAgentId || !agentJobTarget.trim()}
+          >
+            {createAgentScan.isPending ? "Creando..." : "Lanzar escaneo remoto"}
+          </button>
+        </div>
+        {createAgentScan.isError && (
+          <p className="error-text">
+            No se pudo crear el escaneo remoto.{" "}
+            <span className="error-detail">{connectionErrorDetail(createAgentScan.error)}</span>
+          </p>
+        )}
+
+        {agentScans.data && (
+          <table className="data-table" style={{ marginTop: 12 }}>
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>Agente</th>
+                <th>Target</th>
+                <th>Estado</th>
+                <th>Hallazgos</th>
+                <th>Creado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {agentScans.data.map((j) => (
+                <tr key={j.id}>
+                  <td>{j.name || "-"}</td>
+                  <td>{(agents.data ?? []).find((a) => a.id === j.agent_id)?.name ?? j.agent_id}</td>
+                  <td className="mono">{j.target}</td>
+                  <td>
+                    <StatusBadge value={j.status} />
+                    {j.error_message && <span className="error-detail">{j.error_message}</span>}
+                  </td>
+                  <td>{j.findings.length}</td>
+                  <td>{new Date(j.created_at).toLocaleString()}</td>
+                </tr>
+              ))}
+              {agentScans.data.length === 0 && (
+                <tr><td colSpan={6} className="empty-hint">Sin escaneos remotos todavia.</td></tr>
+              )}
+            </tbody>
+          </table>
+        )}
+        {agentScans.isError && (
+          <p className="error-text">
+            No se pudo conectar con scan-service.{" "}
+            <span className="error-detail">{connectionErrorDetail(agentScans.error)}</span>
           </p>
         )}
       </div>

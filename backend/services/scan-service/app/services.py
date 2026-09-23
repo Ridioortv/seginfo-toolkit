@@ -2,12 +2,14 @@
 DEFENSIVOS (solo deteccion) y reenvio de hallazgos normalizados a
 vuln-service para priorizacion (CVSS/EPSS/KEV)."""
 import os
+import secrets
+import hashlib
 from datetime import datetime, timezone
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
-from app.models import ScanJob, ScanStatus, ScanSchedule
+from app.models import ScanJob, ScanStatus, ScanSchedule, ScanAgent, AgentScanJob
 from app.scanners import get_driver, DRIVERS
 
 logger = configure_logging("scan-service")
@@ -183,3 +185,126 @@ async def _forward_findings_to_vuln_service(job: ScanJob) -> None:
             await client.post(f"{VULN_SERVICE_URL}/vulnerabilities/ingest", json=payload)
     except httpx.HTTPError as exc:
         logger.warning("no se pudo reenviar hallazgos a vuln-service", extra={"job_id": job.id, "error": str(exc)})
+
+
+# --- Agentes de escaneo remoto ---
+# La key en si (no un hash lento tipo bcrypt) es la fuente de entropia:
+# la genera el servidor con secrets.token_urlsafe, no la elige una persona,
+# asi que sha256 alcanza y es barato para chequear en cada poll (que puede
+# ocurrir cada pocos segundos por agente).
+
+def _hash_agent_key(api_key: str) -> str:
+    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+
+async def create_agent(db: AsyncSession, payload, actor: str) -> tuple[ScanAgent, str]:
+    api_key = secrets.token_urlsafe(32)
+    agent = ScanAgent(name=payload.name, key_hash=_hash_agent_key(api_key), created_by=actor)
+    db.add(agent)
+    await db.flush()
+    await db.refresh(agent)
+    return agent, api_key
+
+
+async def list_agents(db: AsyncSession) -> list[ScanAgent]:
+    result = await db.execute(select(ScanAgent).order_by(ScanAgent.created_at.desc()))
+    return list(result.scalars().all())
+
+
+async def get_agent(db: AsyncSession, agent_id: str) -> ScanAgent | None:
+    return await db.get(ScanAgent, agent_id)
+
+
+async def get_agent_by_key(db: AsyncSession, api_key: str) -> ScanAgent | None:
+    result = await db.execute(select(ScanAgent).where(ScanAgent.key_hash == _hash_agent_key(api_key)))
+    return result.scalar_one_or_none()
+
+
+async def delete_agent(db: AsyncSession, agent: ScanAgent) -> None:
+    await db.delete(agent)
+    await db.flush()
+
+
+async def create_agent_scan_job(db: AsyncSession, payload, actor: str) -> AgentScanJob:
+    job = AgentScanJob(
+        agent_id=payload.agent_id,
+        name=payload.name,
+        scanner_type=payload.scanner_type,
+        target=payload.target,
+        options=payload.options,
+        created_by=actor,
+    )
+    db.add(job)
+    await db.flush()
+    await db.refresh(job)
+    return job
+
+
+async def list_agent_scan_jobs(db: AsyncSession, agent_id: str | None = None) -> list[AgentScanJob]:
+    query = select(AgentScanJob)
+    if agent_id:
+        query = query.where(AgentScanJob.agent_id == agent_id)
+    result = await db.execute(query.order_by(AgentScanJob.created_at.desc()))
+    return list(result.scalars().all())
+
+
+async def get_agent_scan_job(db: AsyncSession, job_id: str) -> AgentScanJob | None:
+    return await db.get(AgentScanJob, job_id)
+
+
+async def poll_agent_jobs(db: AsyncSession, agent: ScanAgent, max_jobs: int = 5) -> list[AgentScanJob]:
+    """Le entrega al agente sus jobs 'pending' y los pasa a 'assigned' en el
+    mismo paso, para que un segundo poll (del mismo agente reiniciado, o de
+    una instancia duplicada por error) no se lleve el mismo job dos veces."""
+    agent.last_seen_at = _now()
+    result = await db.execute(
+        select(AgentScanJob)
+        .where(AgentScanJob.agent_id == agent.id, AgentScanJob.status == "pending")
+        .order_by(AgentScanJob.created_at.asc())
+        .limit(max_jobs)
+    )
+    jobs = list(result.scalars().all())
+    for job in jobs:
+        job.status = "assigned"
+        job.assigned_at = _now()
+    await db.flush()
+    return jobs
+
+
+async def submit_agent_result(db: AsyncSession, agent: ScanAgent, job_id: str, payload) -> AgentScanJob | None:
+    job = await db.get(AgentScanJob, job_id)
+    if job is None or job.agent_id != agent.id:
+        # Nunca se deja que un agente escriba el resultado de un job que no
+        # es suyo -- ni por error de programacion del lado del agente, ni
+        # por una key comprometida usada para adivinar ids de otro agente.
+        return None
+    job.status = payload.status
+    job.findings = payload.findings
+    job.error_message = payload.error_message[:2000]
+    job.finished_at = _now()
+    agent.last_seen_at = _now()
+    await db.flush()
+    if payload.status == "completed" and payload.findings:
+        await _forward_agent_findings_to_vuln_service(job)
+    return job
+
+
+async def _forward_agent_findings_to_vuln_service(job: AgentScanJob) -> None:
+    """Mismo patron best-effort que _forward_findings_to_vuln_service: si
+    vuln-service no responde, el job ya quedo guardado igual con sus
+    findings. asset_id siempre None aca porque un agente remoto escanea
+    targets de red (IP/CIDR), no un asset ya inventariado."""
+    payload = {
+        "scan_job_id": job.id,
+        "asset_id": None,
+        "scanner_type": job.scanner_type,
+        "findings": job.findings,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(f"{VULN_SERVICE_URL}/vulnerabilities/ingest", json=payload)
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "no se pudo reenviar hallazgos de agente remoto a vuln-service",
+            extra={"job_id": job.id, "error": str(exc)},
+        )

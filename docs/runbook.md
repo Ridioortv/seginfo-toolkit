@@ -235,6 +235,57 @@ SOAR: quedan simuladas mientras `SOAR_DRY_RUN` (soar-service),
 explicitamente el nivel correspondiente para que la accion real (crear
 el ticket en Jira / mandar el mensaje a Slack) se ejecute.
 
+## Agente de escaneo remoto
+
+**Para que sirve.** Docker Desktop (Windows/Mac) aisla a los contenedores
+detras de NAT: scan-service, corriendo adentro de Docker, no ve la LAN
+real de la oficina/cliente aunque Docker este instalado en una PC de esa
+misma red. Un escaneo nmap contra `192.168.1.0/24` lanzado desde la UI
+no encuentra nada en ese caso -- no es un bug, es una limitacion de red
+del propio Docker Desktop.
+
+**Como se resuelve.** `remote-agent/agent.py` (en la raiz del repo) es un
+script Python que corre FUERA de Docker -- en la misma PC donde esta
+SentinelOps, o en cualquier otra maquina de la LAN con visibilidad real
+a la red que se quiere escanear. El agente hace **polling** hacia
+scan-service (siempre el agente inicia la conexion, nunca al reves), asi
+que no hace falta abrir ningun puerto de entrada en la red del cliente:
+alcanza con que el agente pueda llegar, de salida, al puerto ya publicado
+de scan-service (`8003`). No hay ningun relay ni endpoint publico en
+internet -- el uso tipico es on-prem, dentro de la misma red del cliente.
+
+**Autenticacion.** El agente usa una api key propia (nunca el JWT de un
+usuario humano), enviada en el header `X-Agent-Key`. scan-service solo
+guarda el hash (sha256) de esa key -- se muestra en texto plano una unica
+vez, al registrar el agente desde la UI (pagina Escaneos -> "Agentes de
+escaneo remoto"). Sha256 alcanza aca (y no un hash lento tipo bcrypt)
+porque la propia key ya es un secreto de alta entropia generado por el
+servidor, no una contraseña elegida por una persona -- y el poll ocurre
+cada pocos segundos, asi que un hash costoso ahi si seria un problema de
+performance real.
+
+**Alcance.** El agente solo sabe correr nmap en modo deteccion
+(descubrimiento de puertos/servicios + scripts `default,safe`) -- el
+mismo comando exacto y las mismas restricciones que usa scan-service
+adentro del contenedor. Nunca ejecuta `--script vuln` ni scripts de las
+categorias `exploit`/`intrusive`.
+
+**Como se usa.**
+1. Pagina Escaneos -> "Agentes de escaneo remoto" -> "Registrar agente"
+   (requiere rol `admin`). Copiar la api key que se muestra (una sola
+   vez).
+2. En la maquina donde va a correr el agente: configurar
+   `AGENT_API_KEY` (la key del paso 1) y `SCAN_SERVICE_URL` (si el agente
+   corre en otra maquina de la LAN, usar la IP de la PC de SentinelOps
+   en vez de `localhost`) como variables de entorno, y correr
+   `python remote-agent/agent.py` (requiere Python 3.9+ y nmap instalado
+   -- ver `remote-agent/README.md` para el detalle completo, incluyendo
+   Windows).
+3. Pagina Escaneos -> "Escaneos remotos" -> elegir el agente y el target,
+   lanzar el escaneo. El agente lo recoge en su siguiente poll y manda el
+   resultado solo; los hallazgos se reenvian automaticamente a
+   vuln-service para priorizacion, igual que un escaneo normal.
+
 ## Backups
 
 - **Postgres**: es la unica fuente de verdad para casi todos los servicios
