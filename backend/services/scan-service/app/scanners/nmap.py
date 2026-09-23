@@ -15,7 +15,16 @@ class NmapDriver(ScannerDriver):
     binary_name = "nmap"
 
     async def run(self, target: str, options: dict) -> ScanResult:
-        cmd = ["nmap", "-sV", "-sC", "--script", "default,safe", "-oX", "-", target]
+        # -T4 (timing agresivo) y --host-timeout acotan cuanto se puede
+        # tardar un host que no responde -- sin esto, escanear un rango
+        # /24 entero donde casi nada contesta (tipico si el rango no es
+        # realmente accesible desde este contenedor, ver nota mas abajo)
+        # podia comerse el timeout entero de 600s por cada host lento en
+        # vez de descartarlo rapido y seguir.
+        cmd = [
+            "nmap", "-T4", "--host-timeout", "30s",
+            "-sV", "-sC", "--script", "default,safe", "-oX", "-", target,
+        ]
         ports = options.get("ports")
         if isinstance(ports, str) and ports.replace(",", "").replace("-", "").isdigit():
             cmd[1:1] = ["-p", ports]
@@ -24,11 +33,26 @@ class NmapDriver(ScannerDriver):
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
         except FileNotFoundError:
             return ScanResult(raw_output="", error="nmap no esta instalado en este contenedor")
         except asyncio.TimeoutError:
-            return ScanResult(raw_output="", error="timeout de escaneo (600s)")
+            # Sin este kill(), el proceso de nmap sigue corriendo en
+            # segundo plano dentro del contenedor aunque el job ya haya
+            # quedado marcado como fallido -- no rompe nada, pero
+            # desperdicia CPU indefinidamente en cada timeout.
+            proc.kill()
+            await proc.wait()
+            return ScanResult(
+                raw_output="",
+                error=(
+                    "timeout de escaneo (180s) -- si el target es un rango de LAN/oficina "
+                    "(ej. 192.168.x.x), recorda que este escaneo corre DENTRO del contenedor "
+                    "Docker, no en la red real de la PC: Docker Desktop aisla al contenedor "
+                    "detras de NAT, asi que no llega a los dispositivos de tu LAN salvo que "
+                    "el propio Docker corra con acceso a esa red."
+                ),
+            )
 
         raw = stdout.decode(errors="replace")
         if proc.returncode != 0:

@@ -31,6 +31,8 @@ class TrivyDriver(ScannerDriver):
         except FileNotFoundError:
             return ScanResult(raw_output="", error="trivy no esta instalado en este contenedor")
         except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
             return ScanResult(raw_output="", error="timeout de escaneo (540s)")
 
         raw = stdout.decode(errors="replace")

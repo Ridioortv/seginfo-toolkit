@@ -122,6 +122,32 @@ respondiendo en `SIEM_SERVICE_URL` (revisar esa variable de entorno) o
 ninguna regla tiene tags con la convencion `attack.tXXXX` -- ver
 `_TAG_TECHNIQUE_RE` en `purple-service/app/services.py`.
 
+**Un escaneo de un rango LAN (`192.168.x.x`, `10.x.x.x`, etc.) no encuentra
+nada, o tarda y termina en timeout**: el escaneo corre DENTRO del
+contenedor de scan-service, no en la red real de la maquina que corre
+Docker. Docker Desktop (Windows/Mac) pone al contenedor detras de NAT en
+una red propia, asi que no llega a los dispositivos de la LAN/oficina del
+usuario salvo que se le de acceso explicito a esa red (o se despliegue en
+Linux con `network_mode: host`, que Docker Desktop no soporta igual). Para
+escanear la red real de una empresa en produccion, este servicio tiene que
+correr en una maquina (o un agente) que este efectivamente conectado a esa
+red -- no alcanza con apuntar el target a un rango LAN desde una laptop con
+Docker Desktop. El driver de nmap (`app/scanners/nmap.py`) usa `-T4` y
+`--host-timeout 30s` para que un rango inalcanzable falle rapido (unos
+minutos) en vez de comerse el timeout entero por cada host que no
+responde.
+
+**"SCANNER_UNAVAILABLE" en un job**: el binario de ese scanner no esta en
+la imagen de scan-service. nmap, trivy y nuclei se instalan en el
+Dockerfile (trivy y nuclei via su release oficial, no hay paquete apt);
+openvas/gvm-cli NO se instala a proposito -- es un producto completo
+(gvmd + su propia base de datos + feed de NVTs), no un CLI suelto, asi que
+queda marcado como no disponible en vez de intentar empaquetarlo. Notar
+tambien que trivy espera un nombre de imagen o una ruta de filesystem como
+target (no una IP), y nuclei espera un host/URL alcanzable por HTTP -- un
+target de IP/CIDR pensado para nmap no necesariamente tiene sentido para
+esos otros dos scanners.
+
 ## Backups
 
 - **Postgres**: es la unica fuente de verdad para casi todos los servicios

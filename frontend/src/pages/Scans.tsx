@@ -177,7 +177,12 @@ export default function Scans() {
                   <td>{s.scanner_type}</td>
                   <td className="mono">{s.target}</td>
                   <td>{scopeOf(s)}</td>
-                  <td><StatusBadge value={s.status} /></td>
+                  <td>
+                    <StatusBadge value={s.status} />
+                    {s.error_message && (
+                      <span className="error-detail">{s.error_message}</span>
+                    )}
+                  </td>
                   <td>{s.findings.length}</td>
                   <td>{new Date(s.created_at).toLocaleString()}</td>
                 </tr>
