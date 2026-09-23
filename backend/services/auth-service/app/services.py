@@ -2,13 +2,16 @@
 import hashlib
 import pyotp
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.security import hash_password, verify_password, create_access_token, create_refresh_token
 from app.models import User, Role, AuditLogEntry
 
 
 async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
-    result = await db.execute(select(User).where(User.email == email))
+    result = await db.execute(
+        select(User).options(selectinload(User.role)).where(User.email == email)
+    )
     return result.scalar_one_or_none()
 
 
@@ -31,9 +34,29 @@ async def create_user(db: AsyncSession, email: str, password: str, full_name: st
     return user
 
 
+async def get_or_create_google_user(db: AsyncSession, email: str, full_name: str) -> User:
+    """Login/registro con Google: el token ya viene verificado por Google, asi
+    que si el email no existe se crea la cuenta directamente (sin password,
+    auth_provider='google'); si ya existe (se registro con password antes),
+    simplemente se le permite entrar tambien por Google."""
+    user = await get_user_by_email(db, email)
+    if user is not None:
+        return user
+    role = await get_or_create_role(db, "analyst")
+    user = User(email=email, hashed_password=None, full_name=full_name, role_id=role.id, auth_provider="google")
+    db.add(user)
+    await db.flush()
+    await db.refresh(user)
+    user.role = role
+    return user
+
+
 async def authenticate(db: AsyncSession, email: str, password: str, totp_code: str | None) -> User | None:
     user = await get_user_by_email(db, email)
-    if user is None or not verify_password(password, user.hashed_password):
+    # user.hashed_password puede ser None para cuentas creadas solo por
+    # Google -- no tienen password, asi que el login con email/password
+    # simplemente falla en vez de romper contra passlib.
+    if user is None or user.hashed_password is None or not verify_password(password, user.hashed_password):
         return None
     if user.mfa_enabled:
         if not totp_code or not pyotp.TOTP(user.mfa_secret).verify(totp_code, valid_window=1):

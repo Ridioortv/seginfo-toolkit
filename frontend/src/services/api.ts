@@ -43,6 +43,11 @@ export interface TokenPair {
   token_type: string;
 }
 
+export async function loginWithGoogle(credential: string): Promise<TokenPair> {
+  const { data } = await authApi.post<TokenPair>("/auth/google", { credential });
+  return data;
+}
+
 export async function login(email: string, password: string, totpCode?: string): Promise<TokenPair> {
   const { data } = await authApi.post<TokenPair>("/auth/login", {
     email,

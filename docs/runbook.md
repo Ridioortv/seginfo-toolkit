@@ -35,6 +35,31 @@ usuario con `POST /auth/register` en auth-service (puerto 8001) y asignarle
 rol `admin` directamente en la base (o agregar ese paso a `make seed` cuando
 exista un script de seed real).
 
+## Login/registro con Google (opcional)
+
+auth-service acepta un ID token de Google en `POST /auth/google` (el
+frontend lo obtiene con Google Identity Services y lo manda como
+`credential`). Si el email no existe todavia, se crea la cuenta en el
+momento con rol `analyst` y sin password (`auth_provider=google`); si ya
+existe, simplemente inicia sesion. No pasa por MFA porque Google ya
+verifico al usuario.
+
+Para activarlo:
+
+1. En https://console.cloud.google.com/apis/credentials crear una
+   credencial de tipo "ID de cliente de OAuth" -> "Aplicacion web", con
+   `http://localhost:5173` (y el dominio real en produccion) en
+   "Origenes de JavaScript autorizados".
+2. Copiar ese Client ID en **las dos** variables del `.env`:
+   `GOOGLE_CLIENT_ID` (la valida el backend) y `VITE_GOOGLE_CLIENT_ID`
+   (la usa el frontend para dibujar el boton). Es el mismo valor en
+   ambas -- el Client ID de Google es publico, no es un secreto.
+3. Reiniciar auth-service y frontend (`docker compose up -d --build`,
+   o volver a correr el launcher en Windows).
+
+Si se deja vacio, el boton de Google no aparece y el login con
+email/password sigue funcionando igual que antes.
+
 ## Habilitar MFA para un usuario
 
 `POST /auth/mfa/enroll` devuelve un secreto TOTP; el usuario lo carga en su

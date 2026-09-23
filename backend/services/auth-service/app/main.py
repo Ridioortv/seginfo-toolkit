@@ -1,17 +1,22 @@
 """auth-service entrypoint: identity, JWT issuance, MFA (TOTP), RBAC."""
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
+from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, make_asgi_app
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.database import get_db, engine, Base
 from backend.shared.logging import configure_logging
-from app.schemas import UserCreate, UserOut, LoginRequest, TokenPair, MfaEnrollResponse, MfaVerifyRequest
+from app.schemas import UserCreate, UserOut, LoginRequest, TokenPair, MfaEnrollResponse, MfaVerifyRequest, GoogleAuthRequest
 from app.dependencies import get_current_claims, require_role
 from app import services
 
 logger = configure_logging("auth-service")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 login_attempts_total = Counter("auth_login_attempts_total", "Login attempts", ["outcome"])
 
 
@@ -19,6 +24,16 @@ login_attempts_total = Counter("auth_login_attempts_total", "Login attempts", ["
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Migracion liviana para bases ya existentes (creadas antes de que
+        # existiera el login con Google): agrega auth_provider si falta y
+        # permite password nulo para cuentas que solo entran por Google.
+        # create_all no altera tablas ya creadas, por eso el ALTER a mano.
+        await conn.execute(text(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(20) NOT NULL DEFAULT 'local'"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE users ALTER COLUMN hashed_password DROP NOT NULL"
+        ))
     logger.info("auth-service iniciado")
     yield
 
@@ -64,6 +79,33 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
     access, refresh = services.issue_tokens(user, role_name)
     login_attempts_total.labels(outcome="success").inc()
     await services.record_audit_event(db, payload.email, "auth.login.success")
+    await db.commit()
+    return TokenPair(access_token=access, refresh_token=refresh)
+
+
+@app.post("/auth/google", response_model=TokenPair)
+async def google_login(payload: GoogleAuthRequest, db: AsyncSession = Depends(get_db)):
+    """Login o registro con Google: el frontend manda el credential (ID token)
+    que devuelve Google Identity Services; lo validamos contra los servers de
+    Google (firma + audiencia == nuestro client id) antes de confiar en el
+    email. No hay password ni MFA en este camino porque Google ya verifico
+    al usuario."""
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="Login con Google no esta configurado en este servidor (falta GOOGLE_CLIENT_ID)")
+    try:
+        claims = google_id_token.verify_oauth2_token(payload.credential, google_requests.Request(), GOOGLE_CLIENT_ID)
+    except ValueError:
+        login_attempts_total.labels(outcome="failure").inc()
+        raise HTTPException(status_code=401, detail="Token de Google invalido o expirado")
+    if not claims.get("email_verified", False):
+        raise HTTPException(status_code=401, detail="El email de esa cuenta de Google no esta verificado")
+    email = claims["email"]
+    full_name = claims.get("name", "")
+    user = await services.get_or_create_google_user(db, email, full_name)
+    role_name = user.role.name if user.role else "analyst"
+    access, refresh = services.issue_tokens(user, role_name)
+    login_attempts_total.labels(outcome="success").inc()
+    await services.record_audit_event(db, email, "auth.google.login")
     await db.commit()
     return TokenPair(access_token=access, refresh_token=refresh)
 

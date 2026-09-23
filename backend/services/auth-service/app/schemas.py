@@ -40,3 +40,7 @@ class MfaEnrollResponse(BaseModel):
 
 class MfaVerifyRequest(BaseModel):
     totp_code: str
+
+class GoogleAuthRequest(BaseModel):
+    credential: str
+
