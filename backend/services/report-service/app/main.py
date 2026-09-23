@@ -18,6 +18,7 @@ from sqlalchemy import text
 from backend.shared.database import get_db, engine, Base, SessionLocal
 from backend.shared.logging import configure_logging
 from backend.shared.cors import get_cors_origins
+from backend.shared.security_headers import SecurityHeadersMiddleware
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import (
     ReportRequest,
@@ -107,6 +108,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/metrics", make_asgi_app())
 
 

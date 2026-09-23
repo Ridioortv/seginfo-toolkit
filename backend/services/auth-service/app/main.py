@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.database import get_db, engine, Base, SessionLocal
 from backend.shared.logging import configure_logging
 from backend.shared.cors import get_cors_origins
+from backend.shared.security_headers import SecurityHeadersMiddleware
 from backend.shared.rate_limit import check_rate_limit
 from backend.shared.security import decode_token, create_token
 from app.schemas import (
@@ -104,6 +105,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/metrics", make_asgi_app())
 
 

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.database import get_db, SessionLocal, engine, Base
 from backend.shared.logging import configure_logging
 from backend.shared.cors import get_cors_origins
+from backend.shared.security_headers import SecurityHeadersMiddleware
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import (
     PlaybookCreate, PlaybookUpdate, PlaybookOut, PlaybookRunOut,
@@ -56,6 +57,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/metrics", make_asgi_app())
 
 
