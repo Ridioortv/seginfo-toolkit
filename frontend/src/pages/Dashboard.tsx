@@ -1,7 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
-import { vulnApi, siemApi, caseApi, purpleApi } from "../services/api";
-import type { VulnerabilityStatsOut, AlertOut, CaseOut, CoverageResult } from "../types";
+import { vulnApi, siemApi, caseApi, purpleApi, assetApi, scanApi, soarApi, notificationApi } from "../services/api";
+import type {
+  VulnerabilityStatsOut,
+  AlertOut,
+  CaseOut,
+  CoverageResult,
+  AssetOut,
+  ScanJobOut,
+  PlaybookRunOut,
+  NotifyLogOut,
+} from "../types";
 import PageHeader from "../components/PageHeader";
+import { StatusBadge } from "../components/Badge";
 
 export default function Dashboard() {
   const vulnStats = useQuery({
@@ -20,11 +30,39 @@ export default function Dashboard() {
     queryKey: ["coverage-overall"],
     queryFn: async () => (await purpleApi.get<CoverageResult>("/coverage/overall")).data,
   });
+  const assets = useQuery({
+    queryKey: ["assets", "dashboard"],
+    queryFn: async () => (await assetApi.get<AssetOut[]>("/assets")).data,
+  });
+  const scans = useQuery({
+    queryKey: ["scans", "dashboard"],
+    queryFn: async () => (await scanApi.get<ScanJobOut[]>("/scans")).data,
+  });
+  const playbookRuns = useQuery({
+    queryKey: ["playbook-runs", "dashboard"],
+    queryFn: async () => (await soarApi.get<PlaybookRunOut[]>("/runs")).data,
+  });
+  const notifyLogs = useQuery({
+    queryKey: ["notify-logs", "dashboard"],
+    queryFn: async () => (await notificationApi.get<NotifyLogOut[]>("/logs")).data,
+  });
 
   const openAlerts = alerts.data?.filter((a) => a.status === "new" || a.status === "acknowledged").length ?? 0;
   const openCases = cases.data?.filter((c) => c.status === "open" || c.status === "in_progress").length ?? 0;
   const now = new Date().toISOString();
   const breachedCases = cases.data?.filter((c) => c.sla_due_at && c.sla_due_at < now && c.status !== "resolved" && c.status !== "closed").length ?? 0;
+  const criticalAssets = assets.data?.filter((a) => a.criticality === "critical").length ?? 0;
+  const scansRunning = scans.data?.filter((s) => s.status === "running" || s.status === "pending").length ?? 0;
+
+  const recentScans = [...(scans.data ?? [])]
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, 5);
+  const recentRuns = [...(playbookRuns.data ?? [])]
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, 5);
+  const recentNotifications = [...(notifyLogs.data ?? [])]
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, 5);
 
   return (
     <div>
@@ -50,6 +88,16 @@ export default function Dashboard() {
           <span className="stat-value">{coverage.data ? `${coverage.data.coverage_pct}%` : "-"}</span>
           <span className="stat-hint">{coverage.data?.gaps.length ?? 0} tecnicas sin deteccion</span>
         </div>
+        <div className="stat-card">
+          <span className="stat-label">Activos inventariados</span>
+          <span className="stat-value">{assets.isLoading ? "-" : assets.data?.length ?? 0}</span>
+          <span className="stat-hint">{criticalAssets} criticos</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Escaneos en curso</span>
+          <span className="stat-value">{scans.isLoading ? "-" : scansRunning}</span>
+          <span className="stat-hint">de {scans.data?.length ?? 0} totales</span>
+        </div>
       </div>
 
       <div className="panel">
@@ -71,6 +119,90 @@ export default function Dashboard() {
           </ul>
         ) : (
           <p className="empty-hint">Sin datos de cobertura todavia (o sin brechas detectadas).</p>
+        )}
+      </div>
+
+      <div className="panel">
+        <h2>Escaneos recientes</h2>
+        {recentScans.length > 0 ? (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>Tipo</th>
+                <th>Estado</th>
+                <th>Fecha</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentScans.map((s) => (
+                <tr key={s.id}>
+                  <td>{s.name || s.target}</td>
+                  <td>{s.scanner_type}</td>
+                  <td><StatusBadge value={s.status} /></td>
+                  <td>{new Date(s.created_at).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p className="empty-hint">Sin escaneos todavia.</p>
+        )}
+      </div>
+
+      <div className="panel">
+        <h2>Playbooks SOAR ejecutados recientemente</h2>
+        {recentRuns.length > 0 ? (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Playbook</th>
+                <th>Estado</th>
+                <th>Disparado por</th>
+                <th>Fecha</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentRuns.map((r) => (
+                <tr key={r.id}>
+                  <td>{r.playbook_name}</td>
+                  <td><StatusBadge value={r.status} /></td>
+                  <td>{r.triggered_by || "-"}</td>
+                  <td>{new Date(r.created_at).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p className="empty-hint">Sin playbooks ejecutados todavia.</p>
+        )}
+      </div>
+
+      <div className="panel">
+        <h2>Notificaciones recientes</h2>
+        {recentNotifications.length > 0 ? (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Asunto</th>
+                <th>Canal</th>
+                <th>Estado</th>
+                <th>Fecha</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentNotifications.map((n) => (
+                <tr key={n.id}>
+                  <td>{n.subject}</td>
+                  <td>{n.channel_type}</td>
+                  <td><StatusBadge value={n.status} /></td>
+                  <td>{new Date(n.created_at).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p className="empty-hint">Sin notificaciones todavia.</p>
         )}
       </div>
     </div>
