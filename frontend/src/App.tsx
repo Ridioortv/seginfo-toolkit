@@ -13,12 +13,19 @@ import PurpleTeam from "./pages/PurpleTeam";
 import Reports from "./pages/Reports";
 import Notifications from "./pages/Notifications";
 import Integrations from "./pages/Integrations";
+import Organizations from "./pages/Organizations";
+import SsoCallback from "./pages/SsoCallback";
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
+        {/* Fuera de ProtectedRoute a proposito: llega directo desde el
+            proveedor de identidad externo (redirect de auth-service), sin
+            tokens todavia -- los guarda ella misma antes de redirigir
+            adentro de la app. Ver app/main.py::oidc_callback. */}
+        <Route path="/sso/callback" element={<SsoCallback />} />
         <Route element={<ProtectedRoute />}>
           <Route element={<Layout />}>
             <Route path="/" element={<Dashboard />} />
@@ -32,6 +39,7 @@ export default function App() {
             <Route path="/reports" element={<Reports />} />
             <Route path="/notifications" element={<Notifications />} />
             <Route path="/integrations" element={<Integrations />} />
+            <Route path="/organizations" element={<Organizations />} />
           </Route>
         </Route>
       </Routes>

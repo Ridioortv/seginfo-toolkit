@@ -273,3 +273,34 @@ export interface TicketLogOut {
   error: string;
   created_at: string;
 }
+
+// --- Organizaciones (tenants) y SSO empresarial (OIDC) ---
+// Espejo de backend/services/auth-service/app/schemas.py.
+
+export interface OrganizationOut {
+  id: string;
+  name: string;
+  slug: string;
+  is_active: boolean;
+}
+
+export interface OrganizationCreateResult {
+  organization: OrganizationOut;
+  admin_user: {
+    id: string;
+    email: string;
+    full_name: string;
+    role_name: string;
+    is_active: boolean;
+    mfa_enabled: boolean;
+    organization_id: string | null;
+  };
+}
+
+export interface SsoConfigOut {
+  organization_id: string;
+  issuer: string;
+  client_id: string;
+  default_role: string;
+  enabled: boolean;
+}

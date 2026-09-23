@@ -15,10 +15,19 @@ const NAV_ITEMS = [
   { to: "/integrations", label: "Integraciones" },
 ];
 
+// Solo un admin de organizacion (administra su propia empresa: usuarios,
+// SSO) o un platform_admin (administra la plataforma entera: crea
+// organizaciones nuevas) necesita esta pagina -- ver Organizations.tsx y
+// dependencies.py::require_platform_admin/require_org_admin_or_platform_admin.
+const ORG_NAV_ITEM = { to: "/organizations", label: "Organizaciones" };
+
 export default function Layout() {
   const claims = useAuthStore((s) => s.claims);
   const logout = useAuthStore((s) => s.logout);
   const navigate = useNavigate();
+
+  const canManageOrganizations = claims?.role === "admin" || claims?.platform_admin === true;
+  const navItems = canManageOrganizations ? [...NAV_ITEMS, ORG_NAV_ITEM] : NAV_ITEMS;
 
   function handleLogout() {
     logout();
@@ -30,7 +39,7 @@ export default function Layout() {
       <aside className="sidebar">
         <div className="sidebar-brand">SentinelOps</div>
         <nav>
-          {NAV_ITEMS.map((item) => (
+          {navItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}

@@ -5,6 +5,11 @@ import { useAuthStore } from "../store/auth";
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 
+// Mismo criterio que en services/api.ts (serviceUrl): la URL base de
+// auth-service en runtime, no en build-time, para no duplicar la logica
+// de fallback a localhost:8001.
+const AUTH_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8001";
+
 // La libreria de Google Identity Services se carga con un <script> en
 // index.html y expone window.google en runtime; no tiene tipos propios
 // instalados aca, asi que se accede de forma laxa (unknown) en vez de
@@ -28,9 +33,20 @@ export default function Login() {
   const [totpCode, setTotpCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [orgSlug, setOrgSlug] = useState("");
   const setTokens = useAuthStore((s) => s.setTokens);
   const navigate = useNavigate();
   const googleButtonRef = useRef<HTMLDivElement>(null);
+
+  function handleSsoLogin(e: React.FormEvent) {
+    e.preventDefault();
+    if (!orgSlug.trim()) return;
+    // Redirect completo del navegador (no XHR/fetch): auth-service arma la
+    // URL de autorizacion del proveedor OIDC de esta organizacion y
+    // redirige para alla; el flujo entero pasa por fuera de esta SPA hasta
+    // volver a /sso/callback con los tokens en el fragmento de la URL.
+    window.location.href = `${AUTH_BASE_URL}/auth/oidc/${encodeURIComponent(orgSlug.trim())}/login`;
+  }
 
   useEffect(() => {
     if (!GOOGLE_CLIENT_ID || !googleButtonRef.current) return;
@@ -120,6 +136,20 @@ export default function Login() {
             <div ref={googleButtonRef} />
           </div>
         )}
+
+        <div className="divider"><span>o</span></div>
+        <div className="field">
+          <label htmlFor="org-slug">SSO empresarial (tu organizacion)</label>
+          <input
+            id="org-slug"
+            value={orgSlug}
+            onChange={(e) => setOrgSlug(e.target.value)}
+            placeholder="slug de tu organizacion, ej. acme-corp"
+          />
+        </div>
+        <button className="btn-secondary" type="button" onClick={handleSsoLogin} disabled={!orgSlug.trim()}>
+          Continuar con SSO
+        </button>
       </form>
     </div>
   );

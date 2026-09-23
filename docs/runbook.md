@@ -74,6 +74,105 @@ app de MFA (Google Authenticator, Authy, etc.) y confirma con
 `POST /auth/mfa/confirm`. A partir de ahi, `POST /auth/login` exige
 `totp_code`.
 
+## Organizaciones (multi-tenancy) y SSO empresarial (OIDC)
+
+SentinelOps es multi-tenant: cada organizacion (empresa cliente) es una
+fila en `organizations` (auth-service) y todo el resto de las tablas de
+la plataforma (activos, escaneos, vulnerabilidades, alertas SIEM,
+playbooks/runs de SOAR, casos, ejercicios purple team, reportes, canales
+de notificacion, conectores) tiene una columna `organization_id` que
+aisla los datos de una organizacion de los de otra. Un usuario nunca ve
+datos de una organizacion que no es la suya, ni siquiera adivinando un
+UUID (los servicios devuelven 404, no 403, para no filtrar si un recurso
+existe en otro tenant).
+
+### platform_admin vs admin de organizacion
+
+Son dos cosas distintas (ver `backend/services/auth-service/app/dependencies.py`):
+
+- **admin** (rol normal): administra SU PROPIA organizacion -- usuarios,
+  configuracion de SSO de su empresa. Un admin de la organizacion A nunca
+  puede tocar nada de la organizacion B.
+- **platform_admin** (flag separado, `User.is_platform_admin`): administra
+  la plataforma ENTERA -- puede crear organizaciones nuevas y ver/editar
+  el SSO de cualquiera. El primer usuario que se registra en toda la base
+  se asciende automaticamente a `admin` + `platform_admin` (ver el
+  lifespan de auth-service); todos los que le siguen entran como
+  `analyst` en la organizacion "default" salvo que un platform_admin los
+  de alta en una organizacion propia.
+
+En el frontend, la pagina "Organizaciones" (`/organizations`, visible en
+el menu solo para `admin`/`platform_admin`) cubre ambos casos: gestion de
+organizaciones (solo platform_admin) y configuracion de SSO de una
+organizacion (admin de esa organizacion, o platform_admin elegiendola de
+la lista).
+
+### Dar de alta una organizacion nueva
+
+Solo un platform_admin puede hacerlo -- no hay auto-registro publico de
+organizaciones a proposito (si lo hubiera, cualquiera podria crear una
+"empresa" nueva sin ninguna verificacion). Un `POST /auth/organizations`
+(o la pagina "Organizaciones" -> "Crear organizacion nueva") crea la
+empresa y su primer usuario admin en un solo paso.
+
+### Configurar SSO (OIDC) para una organizacion
+
+Compatible con cualquier proveedor OIDC estandar: Azure AD / Microsoft
+Entra ID, Okta, Google Workspace, Keycloak, Auth0, etc.
+
+1. En el proveedor, registrar una aplicacion OIDC de tipo "Web" con el
+   redirect URI `http://<host-de-auth-service>/auth/oidc/<slug-de-la-organizacion>/callback`
+   (en local, `http://localhost:8001/auth/oidc/<slug>/callback`). El slug
+   de la organizacion es el que devuelve `GET /auth/organizations`.
+2. Pagina "Organizaciones" -> elegir la organizacion -> "Configurar SSO":
+   completar el **issuer** (la URL base OIDC del proveedor, ej.
+   `https://login.microsoftonline.com/<tenant>/v2.0`), el **client ID**,
+   el **client secret** y el **rol por defecto** para los usuarios que
+   entren por primera vez via SSO (`analyst` por defecto). Guardar con
+   "Habilitado" marcado.
+3. Los usuarios de esa organizacion ya pueden entrar sin password propia:
+   en la pantalla de login, seccion "SSO empresarial", ingresan el slug
+   de su organizacion y el navegador los manda al proveedor. Al volver,
+   `/sso/callback` guarda la sesion y entra a la app.
+
+**Notas de seguridad:**
+
+- El `client_secret` nunca se vuelve a mostrar por API una vez guardado
+  (`GET /auth/organizations/{id}/sso` no lo incluye) -- para cambiarlo,
+  se sobreescribe con un `PUT` nuevo. **Limitacion conocida:** hoy se
+  guarda en texto plano en la tabla `sso_configs` de Postgres (igual que
+  las credenciales de conectores de integration-service); si el cliente
+  lo requiere, cifrarlo a nivel de columna o moverlo a un secret manager
+  externo es trabajo pendiente, no cubierto por este repo todavia.
+- Un email que ya existe en otra organizacion no puede "entrar" a esta
+  via SSO (403) -- evita que un SSO mal configurado en la empresa B
+  autentique como si fuera un usuario de la empresa A.
+- El `state` que viaja ida y vuelta con el proveedor es un JWT propio de
+  vida corta (5 minutos) firmado con `JWT_SECRET_KEY` -- hace de
+  proteccion CSRF sin necesitar sesiones de servidor.
+
+### Playbooks globales vs por organizacion (soar-service)
+
+Los playbooks que vienen con la plataforma (sincronizados desde YAML al
+arrancar soar-service, ver `app/playbook_loader.py`) tienen
+`organization_id = NULL` a proposito -- significa "global, visible para
+todas las organizaciones", no "todavia sin migrar". Un playbook nuevo
+creado por una organizacion via `POST /playbooks` si tiene su propio
+`organization_id` y solo esa organizacion lo ve. Editar un playbook
+global (`PATCH /playbooks/{id}` sobre uno con `organization_id = NULL`)
+requiere `platform_admin` -- si no, cualquier admin de cualquier
+organizacion podria modificar sin querer un playbook que corre para
+todos los clientes.
+
+### Logs (siem-service / OpenSearch) por organizacion
+
+Cada evento normalizado que llega a `POST /logs/ingest` guarda
+`organization_id` como campo de nivel superior en el documento de
+OpenSearch (no anidado). `GET /logs/search` siempre agrega
+`{"term": {"organization_id": ...}}` a la busqueda -- un analista de una
+organizacion nunca ve logs de otra, aunque comparta el mismo indice de
+OpenSearch.
+
 ## Pasar de dry-run a acciones reales (SOAR / integraciones / notificaciones)
 
 **No hacer esto sin que el cliente lo pida explicitamente y entienda las
