@@ -5,9 +5,10 @@ from app.models import Asset, AssetGroup
 
 
 async def list_assets(
-    db: AsyncSession, environment: str | None = None, criticality: str | None = None, active_only: bool = True
+    db: AsyncSession, organization_id: str, environment: str | None = None,
+    criticality: str | None = None, active_only: bool = True,
 ) -> list[Asset]:
-    query = select(Asset)
+    query = select(Asset).where(Asset.organization_id == organization_id)
     if active_only:
         query = query.where(Asset.is_active.is_(True))
     if environment:
@@ -18,19 +19,31 @@ async def list_assets(
     return list(result.scalars().all())
 
 
-async def get_asset(db: AsyncSession, asset_id: str) -> Asset | None:
-    return await db.get(Asset, asset_id)
+async def get_asset(db: AsyncSession, asset_id: str, organization_id: str) -> Asset | None:
+    """organization_id es obligatorio (no opcional) a proposito: no existe
+    ningun caller legitimo de este servicio que necesite leer un activo sin
+    saber a que tenant pertenece -- todos los endpoints (y los otros
+    microservicios que llaman a este via HTTP) ya tienen el org_id del JWT
+    de quien esta pidiendo. Devuelve None si el activo existe pero es de
+    otra organizacion, exactamente igual que si no existiera (evita filtrar
+    por timing/existencia que el id pertenece a otro tenant)."""
+    asset = await db.get(Asset, asset_id)
+    if asset is None or asset.organization_id != organization_id:
+        return None
+    return asset
 
 
-async def get_assets_by_ids(db: AsyncSession, asset_ids: list[str]) -> list[Asset]:
+async def get_assets_by_ids(db: AsyncSession, asset_ids: list[str], organization_id: str) -> list[Asset]:
     if not asset_ids:
         return []
-    result = await db.execute(select(Asset).where(Asset.id.in_(asset_ids)))
+    result = await db.execute(
+        select(Asset).where(Asset.id.in_(asset_ids), Asset.organization_id == organization_id)
+    )
     return list(result.scalars().all())
 
 
-async def create_asset(db: AsyncSession, payload) -> Asset:
-    asset = Asset(**payload.model_dump())
+async def create_asset(db: AsyncSession, payload, organization_id: str) -> Asset:
+    asset = Asset(**payload.model_dump(), organization_id=organization_id)
     db.add(asset)
     await db.flush()
     await db.refresh(asset)
@@ -51,13 +64,15 @@ async def deactivate_asset(db: AsyncSession, asset: Asset) -> Asset:
     return asset
 
 
-async def list_groups(db: AsyncSession) -> list[AssetGroup]:
-    result = await db.execute(select(AssetGroup).order_by(AssetGroup.name))
+async def list_groups(db: AsyncSession, organization_id: str) -> list[AssetGroup]:
+    result = await db.execute(
+        select(AssetGroup).where(AssetGroup.organization_id == organization_id).order_by(AssetGroup.name)
+    )
     return list(result.scalars().all())
 
 
-async def create_group(db: AsyncSession, payload) -> AssetGroup:
-    group = AssetGroup(**payload.model_dump())
+async def create_group(db: AsyncSession, payload, organization_id: str) -> AssetGroup:
+    group = AssetGroup(**payload.model_dump(), organization_id=organization_id)
     db.add(group)
     await db.flush()
     await db.refresh(group)

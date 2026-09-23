@@ -8,6 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
+from backend.shared.security import create_access_token
+from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
 from app.models import Case, CaseTimelineEntry, CaseStatus, SLA_HOURS_BY_PRIORITY
 
 logger = configure_logging("case-service")
@@ -25,7 +27,9 @@ async def _add_timeline_entry(db: AsyncSession, case_id: str, actor: str, action
 
 async def create_case(db: AsyncSession, payload, actor: str = "") -> Case:
     sla_due_at = _now() + timedelta(hours=SLA_HOURS_BY_PRIORITY[payload.priority])
-    case = Case(**payload.model_dump(), sla_due_at=sla_due_at)
+    fields = payload.model_dump()
+    fields["organization_id"] = fields.get("organization_id") or DEFAULT_ORGANIZATION_ID
+    case = Case(**fields, sla_due_at=sla_due_at)
     db.add(case)
     await db.flush()
     await _add_timeline_entry(db, case.id, actor or payload.source, "case.created", f"Prioridad: {payload.priority.value}")
@@ -33,8 +37,11 @@ async def create_case(db: AsyncSession, payload, actor: str = "") -> Case:
     return case
 
 
-async def list_cases(db: AsyncSession, status_filter: str | None = None, priority: str | None = None, assignee: str | None = None) -> list[Case]:
-    query = select(Case).options(selectinload(Case.timeline))
+async def list_cases(
+    db: AsyncSession, organization_id: str,
+    status_filter: str | None = None, priority: str | None = None, assignee: str | None = None,
+) -> list[Case]:
+    query = select(Case).options(selectinload(Case.timeline)).where(Case.organization_id == organization_id)
     if status_filter:
         query = query.where(Case.status == status_filter)
     if priority:
@@ -45,8 +52,12 @@ async def list_cases(db: AsyncSession, status_filter: str | None = None, priorit
     return list(result.scalars().all())
 
 
-async def get_case(db: AsyncSession, case_id: str) -> Case | None:
-    result = await db.execute(select(Case).options(selectinload(Case.timeline)).where(Case.id == case_id))
+async def get_case(db: AsyncSession, case_id: str, organization_id: str) -> Case | None:
+    result = await db.execute(
+        select(Case)
+        .options(selectinload(Case.timeline))
+        .where(Case.id == case_id, Case.organization_id == organization_id)
+    )
     return result.scalar_one_or_none()
 
 
@@ -73,14 +84,22 @@ async def add_timeline_entry(db: AsyncSession, case: Case, payload, actor: str) 
     return case
 
 
-async def import_pending_cases_from_soar(db: AsyncSession) -> tuple[int, int]:
+async def import_pending_cases_from_soar(db: AsyncSession, organization_id: str) -> tuple[int, int]:
     """Trae los PendingCase que soar-service no pudo crear directamente
     (porque case-service todavia no existia) y los materializa como Case
     aca. Idempotente por alert_id: si ya existe un caso con ese alert_id y
-    source='soar-import', se saltea."""
+    source='soar-import', se saltea.
+
+    soar-service exige JWT en GET /pending-cases y filtra por
+    organization_id -- se emite un JWT de servicio-a-servicio con el mismo
+    org_id que el admin que disparo esta importacion, para traer solo los
+    casos pendientes de ESA organizacion."""
+    token = create_access_token("system:case-service", "admin", org_id=organization_id)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(f"{SOAR_SERVICE_URL}/pending-cases")
+            resp = await client.get(
+                f"{SOAR_SERVICE_URL}/pending-cases", headers={"Authorization": f"Bearer {token}"}
+            )
             resp.raise_for_status()
             pending = resp.json()
     except httpx.HTTPError as exc:
@@ -92,7 +111,10 @@ async def import_pending_cases_from_soar(db: AsyncSession) -> tuple[int, int]:
         alert_id = item.get("alert_id")
         if alert_id:
             existing = await db.execute(
-                select(Case).where(Case.alert_id == alert_id, Case.source == "soar-import")
+                select(Case).where(
+                    Case.alert_id == alert_id, Case.source == "soar-import",
+                    Case.organization_id == organization_id,
+                )
             )
             if existing.scalar_one_or_none() is not None:
                 skipped += 1
@@ -100,6 +122,7 @@ async def import_pending_cases_from_soar(db: AsyncSession) -> tuple[int, int]:
 
         sla_due_at = _now() + timedelta(hours=SLA_HOURS_BY_PRIORITY.get(item.get("priority", "medium"), 24))
         case = Case(
+            organization_id=organization_id,
             title=item.get("title", "Caso importado de SOAR"),
             description=item.get("description", ""),
             priority=item.get("priority", "medium"),

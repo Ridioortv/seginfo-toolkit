@@ -36,6 +36,13 @@ class Playbook(Base):
     __tablename__ = "playbooks"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    # NULL a proposito (no backfillea a DEFAULT_ORGANIZATION_ID como el resto
+    # de las tablas de este proyecto): los playbooks sincronizados desde YAML
+    # (ver playbook_loader.py) son plantillas built-in compartidas por TODAS
+    # las organizaciones -- NULL significa "global", no "sin organizacion
+    # asignada todavia". Un playbook creado a mano via POST /playbooks SI
+    # lleva el organization_id de quien lo creo, y solo ese tenant lo ve.
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
     min_severity: Mapped[str] = mapped_column(String(20), default="high")
@@ -53,6 +60,7 @@ class PlaybookRun(Base):
     __tablename__ = "playbook_runs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     playbook_id: Mapped[str] = mapped_column(String(36), index=True)
     playbook_name: Mapped[str] = mapped_column(String(255), default="")
     alert_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
@@ -71,6 +79,7 @@ class PendingCase(Base):
     __tablename__ = "pending_cases"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
     priority: Mapped[str] = mapped_column(String(20), default="medium")

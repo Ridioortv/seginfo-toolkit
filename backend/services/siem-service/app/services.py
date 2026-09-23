@@ -9,6 +9,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
+from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
 from app.ecs import normalize_event
 from app.sigma import evaluate_rule
 from app.models import SigmaRule, Alert, AlertStatus
@@ -24,14 +25,17 @@ def _now() -> datetime:
 
 
 async def ingest_events(db: AsyncSession, os_client, payload) -> tuple[int, int]:
+    organization_id = payload.organization_id or DEFAULT_ORGANIZATION_ID
     indexed = 0
     alerts_created = 0
 
-    rules_result = await db.execute(select(SigmaRule).where(SigmaRule.is_enabled.is_(True)))
+    rules_result = await db.execute(
+        select(SigmaRule).where(SigmaRule.organization_id == organization_id, SigmaRule.is_enabled.is_(True))
+    )
     enabled_rules = list(rules_result.scalars().all())
 
     for event_in in payload.events:
-        document = normalize_event(event_in.model_dump())
+        document = normalize_event(event_in.model_dump(), organization_id)
         await opensearch_client.index_event(os_client, document)
         indexed += 1
 
@@ -42,16 +46,17 @@ async def ingest_events(db: AsyncSession, os_client, payload) -> tuple[int, int]
                 logger.warning("regla sigma invalida, se omite", extra={"rule_id": rule.id, "error": str(exc)})
                 continue
             if matched:
-                alert = await _create_alert(db, rule, document)
+                alert = await _create_alert(db, rule, document, organization_id)
                 alerts_created += 1
-                await _notify_soar(alert)
+                await _notify_soar(alert, organization_id)
 
     await db.flush()
     return indexed, alerts_created
 
 
-async def _create_alert(db: AsyncSession, rule: SigmaRule, event: dict) -> Alert:
+async def _create_alert(db: AsyncSession, rule: SigmaRule, event: dict, organization_id: str) -> Alert:
     alert = Alert(
+        organization_id=organization_id,
         rule_id=rule.id,
         rule_name=rule.name,
         severity=rule.severity,
@@ -64,7 +69,7 @@ async def _create_alert(db: AsyncSession, rule: SigmaRule, event: dict) -> Alert
     return alert
 
 
-async def _notify_soar(alert: Alert) -> None:
+async def _notify_soar(alert: Alert, organization_id: str) -> None:
     """Best-effort: si soar-service no responde, la alerta ya quedo guardada
     igual; esto solo dispara la evaluacion automatica de playbooks."""
     payload = {
@@ -72,6 +77,7 @@ async def _notify_soar(alert: Alert) -> None:
         "rule_name": alert.rule_name,
         "severity": alert.severity.value,
         "event": alert.matched_event,
+        "organization_id": organization_id,
     }
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -80,24 +86,27 @@ async def _notify_soar(alert: Alert) -> None:
         logger.warning("no se pudo notificar a soar-service", extra={"alert_id": alert.id, "error": str(exc)})
 
 
-async def create_rule(db: AsyncSession, payload) -> SigmaRule:
-    rule = SigmaRule(**payload.model_dump())
+async def create_rule(db: AsyncSession, payload, organization_id: str) -> SigmaRule:
+    rule = SigmaRule(**payload.model_dump(), organization_id=organization_id)
     db.add(rule)
     await db.flush()
     await db.refresh(rule)
     return rule
 
 
-async def list_rules(db: AsyncSession, enabled_only: bool = False) -> list[SigmaRule]:
-    query = select(SigmaRule)
+async def list_rules(db: AsyncSession, organization_id: str, enabled_only: bool = False) -> list[SigmaRule]:
+    query = select(SigmaRule).where(SigmaRule.organization_id == organization_id)
     if enabled_only:
         query = query.where(SigmaRule.is_enabled.is_(True))
     result = await db.execute(query.order_by(SigmaRule.name))
     return list(result.scalars().all())
 
 
-async def get_rule(db: AsyncSession, rule_id: str) -> SigmaRule | None:
-    return await db.get(SigmaRule, rule_id)
+async def get_rule(db: AsyncSession, rule_id: str, organization_id: str) -> SigmaRule | None:
+    rule = await db.get(SigmaRule, rule_id)
+    if rule is None or rule.organization_id != organization_id:
+        return None
+    return rule
 
 
 async def update_rule(db: AsyncSession, rule: SigmaRule, payload) -> SigmaRule:
@@ -108,8 +117,10 @@ async def update_rule(db: AsyncSession, rule: SigmaRule, payload) -> SigmaRule:
     return rule
 
 
-async def list_alerts(db: AsyncSession, status_filter: str | None = None, severity: str | None = None) -> list[Alert]:
-    query = select(Alert)
+async def list_alerts(
+    db: AsyncSession, organization_id: str, status_filter: str | None = None, severity: str | None = None
+) -> list[Alert]:
+    query = select(Alert).where(Alert.organization_id == organization_id)
     if status_filter:
         query = query.where(Alert.status == status_filter)
     if severity:
@@ -118,8 +129,11 @@ async def list_alerts(db: AsyncSession, status_filter: str | None = None, severi
     return list(result.scalars().all())
 
 
-async def get_alert(db: AsyncSession, alert_id: str) -> Alert | None:
-    return await db.get(Alert, alert_id)
+async def get_alert(db: AsyncSession, alert_id: str, organization_id: str) -> Alert | None:
+    alert = await db.get(Alert, alert_id)
+    if alert is None or alert.organization_id != organization_id:
+        return None
+    return alert
 
 
 async def update_alert(db: AsyncSession, alert: Alert, payload, actor: str) -> Alert:
@@ -132,11 +146,11 @@ async def update_alert(db: AsyncSession, alert: Alert, payload, actor: str) -> A
     return alert
 
 
-async def search_logs(os_client, query_text: str | None, host: str | None, size: int) -> list[dict]:
-    must = []
+async def search_logs(os_client, organization_id: str, query_text: str | None, host: str | None, size: int) -> list[dict]:
+    must = [{"term": {"organization_id": organization_id}}]
     if query_text:
         must.append({"match": {"message": query_text}})
     if host:
         must.append({"term": {"host.name": host}})
-    query = {"bool": {"must": must}} if must else {"match_all": {}}
+    query = {"bool": {"must": must}}
     return await opensearch_client.search_events(os_client, query, size)

@@ -21,8 +21,9 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def create_scan_job(db: AsyncSession, payload, actor: str) -> ScanJob:
+async def create_scan_job(db: AsyncSession, payload, actor: str, organization_id: str) -> ScanJob:
     job = ScanJob(
+        organization_id=organization_id,
         name=payload.name,
         scanner_type=payload.scanner_type,
         target=payload.target,
@@ -37,9 +38,9 @@ async def create_scan_job(db: AsyncSession, payload, actor: str) -> ScanJob:
 
 
 async def list_scan_jobs(
-    db: AsyncSession, status_filter: str | None = None, scanner_type: str | None = None
+    db: AsyncSession, organization_id: str, status_filter: str | None = None, scanner_type: str | None = None
 ) -> list[ScanJob]:
-    query = select(ScanJob)
+    query = select(ScanJob).where(ScanJob.organization_id == organization_id)
     if status_filter:
         query = query.where(ScanJob.status == status_filter)
     if scanner_type:
@@ -48,16 +49,20 @@ async def list_scan_jobs(
     return list(result.scalars().all())
 
 
-async def get_scan_job(db: AsyncSession, job_id: str) -> ScanJob | None:
-    return await db.get(ScanJob, job_id)
+async def get_scan_job(db: AsyncSession, job_id: str, organization_id: str) -> ScanJob | None:
+    job = await db.get(ScanJob, job_id)
+    if job is None or job.organization_id != organization_id:
+        return None
+    return job
 
 
 def scanners_status() -> dict:
     return {scanner_type.value: driver.is_available() for scanner_type, driver in DRIVERS.items()}
 
 
-async def create_schedule(db: AsyncSession, payload, actor: str) -> ScanSchedule:
+async def create_schedule(db: AsyncSession, payload, actor: str, organization_id: str) -> ScanSchedule:
     schedule = ScanSchedule(
+        organization_id=organization_id,
         name=payload.name,
         scanner_type=payload.scanner_type,
         target=payload.target,
@@ -74,13 +79,22 @@ async def create_schedule(db: AsyncSession, payload, actor: str) -> ScanSchedule
     return schedule
 
 
-async def list_schedules(db: AsyncSession) -> list[ScanSchedule]:
-    result = await db.execute(select(ScanSchedule).order_by(ScanSchedule.created_at.desc()))
+async def list_schedules(db: AsyncSession, organization_id: str | None = None) -> list[ScanSchedule]:
+    """organization_id opcional SOLO para el uso interno del lifespan
+    (re-registrar los jobs de TODAS las organizaciones al arrancar el
+    scheduler en proceso) -- todo endpoint HTTP siempre lo pasa."""
+    query = select(ScanSchedule)
+    if organization_id is not None:
+        query = query.where(ScanSchedule.organization_id == organization_id)
+    result = await db.execute(query.order_by(ScanSchedule.created_at.desc()))
     return list(result.scalars().all())
 
 
-async def get_schedule(db: AsyncSession, schedule_id: str) -> ScanSchedule | None:
-    return await db.get(ScanSchedule, schedule_id)
+async def get_schedule(db: AsyncSession, schedule_id: str, organization_id: str) -> ScanSchedule | None:
+    schedule = await db.get(ScanSchedule, schedule_id)
+    if schedule is None or schedule.organization_id != organization_id:
+        return None
+    return schedule
 
 
 async def set_schedule_enabled(db: AsyncSession, schedule: ScanSchedule, enabled: bool) -> ScanSchedule:
@@ -104,6 +118,7 @@ async def run_scheduled_scan(session_factory, schedule_id: str) -> None:
         if schedule is None or not schedule.enabled:
             return
         job = ScanJob(
+            organization_id=schedule.organization_id,
             name=f"{schedule.name or schedule.scanner_type.value} (programado)",
             scanner_type=schedule.scanner_type,
             target=schedule.target,
@@ -179,6 +194,7 @@ async def _forward_findings_to_vuln_service(job: ScanJob) -> None:
         "asset_id": job.asset_id,
         "scanner_type": job.scanner_type.value,
         "findings": job.findings,
+        "organization_id": job.organization_id,
     }
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -197,22 +213,29 @@ def _hash_agent_key(api_key: str) -> str:
     return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
 
 
-async def create_agent(db: AsyncSession, payload, actor: str) -> tuple[ScanAgent, str]:
+async def create_agent(db: AsyncSession, payload, actor: str, organization_id: str) -> tuple[ScanAgent, str]:
     api_key = secrets.token_urlsafe(32)
-    agent = ScanAgent(name=payload.name, key_hash=_hash_agent_key(api_key), created_by=actor)
+    agent = ScanAgent(
+        organization_id=organization_id, name=payload.name, key_hash=_hash_agent_key(api_key), created_by=actor
+    )
     db.add(agent)
     await db.flush()
     await db.refresh(agent)
     return agent, api_key
 
 
-async def list_agents(db: AsyncSession) -> list[ScanAgent]:
-    result = await db.execute(select(ScanAgent).order_by(ScanAgent.created_at.desc()))
+async def list_agents(db: AsyncSession, organization_id: str) -> list[ScanAgent]:
+    result = await db.execute(
+        select(ScanAgent).where(ScanAgent.organization_id == organization_id).order_by(ScanAgent.created_at.desc())
+    )
     return list(result.scalars().all())
 
 
-async def get_agent(db: AsyncSession, agent_id: str) -> ScanAgent | None:
-    return await db.get(ScanAgent, agent_id)
+async def get_agent(db: AsyncSession, agent_id: str, organization_id: str) -> ScanAgent | None:
+    agent = await db.get(ScanAgent, agent_id)
+    if agent is None or agent.organization_id != organization_id:
+        return None
+    return agent
 
 
 async def get_agent_by_key(db: AsyncSession, api_key: str) -> ScanAgent | None:
@@ -225,8 +248,9 @@ async def delete_agent(db: AsyncSession, agent: ScanAgent) -> None:
     await db.flush()
 
 
-async def create_agent_scan_job(db: AsyncSession, payload, actor: str) -> AgentScanJob:
+async def create_agent_scan_job(db: AsyncSession, payload, actor: str, organization_id: str) -> AgentScanJob:
     job = AgentScanJob(
+        organization_id=organization_id,
         agent_id=payload.agent_id,
         name=payload.name,
         scanner_type=payload.scanner_type,
@@ -240,16 +264,19 @@ async def create_agent_scan_job(db: AsyncSession, payload, actor: str) -> AgentS
     return job
 
 
-async def list_agent_scan_jobs(db: AsyncSession, agent_id: str | None = None) -> list[AgentScanJob]:
-    query = select(AgentScanJob)
+async def list_agent_scan_jobs(db: AsyncSession, organization_id: str, agent_id: str | None = None) -> list[AgentScanJob]:
+    query = select(AgentScanJob).where(AgentScanJob.organization_id == organization_id)
     if agent_id:
         query = query.where(AgentScanJob.agent_id == agent_id)
     result = await db.execute(query.order_by(AgentScanJob.created_at.desc()))
     return list(result.scalars().all())
 
 
-async def get_agent_scan_job(db: AsyncSession, job_id: str) -> AgentScanJob | None:
-    return await db.get(AgentScanJob, job_id)
+async def get_agent_scan_job(db: AsyncSession, job_id: str, organization_id: str) -> AgentScanJob | None:
+    job = await db.get(AgentScanJob, job_id)
+    if job is None or job.organization_id != organization_id:
+        return None
+    return job
 
 
 async def poll_agent_jobs(db: AsyncSession, agent: ScanAgent, max_jobs: int = 5) -> list[AgentScanJob]:
@@ -299,6 +326,7 @@ async def _forward_agent_findings_to_vuln_service(job: AgentScanJob) -> None:
         "asset_id": None,
         "scanner_type": job.scanner_type,
         "findings": job.findings,
+        "organization_id": job.organization_id,
     }
     try:
         async with httpx.AsyncClient(timeout=10) as client:

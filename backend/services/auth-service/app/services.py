@@ -8,6 +8,7 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.security import hash_password, verify_password, create_access_token, create_refresh_token
+from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
 from app.models import User, Role, AuditLogEntry, Organization, SsoConfig
 
 
@@ -26,11 +27,15 @@ async def get_default_organization(db: AsyncSession) -> Organization:
     antes de que existiera multi-tenancy (ver migracion en main.py::lifespan)
     y, en un deploy on-prem de un solo cliente (el caso de uso original de
     esta plataforma, todavia el mas comun), la unica organizacion que va a
-    existir nunca. Se crea perezosamente la primera vez que hace falta."""
+    existir nunca. Se crea perezosamente la primera vez que hace falta, y
+    SIEMPRE con id=DEFAULT_ORGANIZATION_ID (no un uuid random): ese id es
+    fijo y conocido de antemano por el resto de los microservicios (ver
+    backend/shared/tenancy.py), que backfillean sus propias tablas viejas a
+    esa misma organizacion sin tener que preguntarle a auth-service cual es."""
     result = await db.execute(select(Organization).where(Organization.slug == "default"))
     org = result.scalar_one_or_none()
     if org is None:
-        org = Organization(name="Default", slug="default")
+        org = Organization(id=DEFAULT_ORGANIZATION_ID, name="Default", slug="default")
         db.add(org)
         await db.flush()
     return org

@@ -15,6 +15,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
+from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
 from app.models import NotificationChannel, NotificationLog
 
 logger = configure_logging("notification-service")
@@ -28,8 +29,9 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def create_channel(db: AsyncSession, payload) -> NotificationChannel:
+async def create_channel(db: AsyncSession, payload, organization_id: str) -> NotificationChannel:
     channel = NotificationChannel(
+        organization_id=organization_id,
         name=payload.name,
         channel_type=payload.channel_type,
         config=payload.config,
@@ -40,8 +42,12 @@ async def create_channel(db: AsyncSession, payload) -> NotificationChannel:
     return channel
 
 
-async def list_channels(db: AsyncSession) -> list[NotificationChannel]:
-    result = await db.execute(select(NotificationChannel).order_by(NotificationChannel.created_at.desc()))
+async def list_channels(db: AsyncSession, organization_id: str) -> list[NotificationChannel]:
+    result = await db.execute(
+        select(NotificationChannel)
+        .where(NotificationChannel.organization_id == organization_id)
+        .order_by(NotificationChannel.created_at.desc())
+    )
     return list(result.scalars().all())
 
 
@@ -123,6 +129,7 @@ async def send_notification(
         status_, error = await _send_webhook(channel, subject, body, severity)
 
     log = NotificationLog(
+        organization_id=channel.organization_id,
         channel_id=channel.id,
         channel_type=channel.channel_type,
         subject=subject,
@@ -137,7 +144,11 @@ async def send_notification(
 
 
 async def notify(db: AsyncSession, payload) -> list[NotificationLog]:
-    query = select(NotificationChannel).where(NotificationChannel.enabled == True)  # noqa: E712
+    organization_id = payload.organization_id or DEFAULT_ORGANIZATION_ID
+    query = select(NotificationChannel).where(
+        NotificationChannel.enabled == True,  # noqa: E712
+        NotificationChannel.organization_id == organization_id,
+    )
     if payload.channel_ids:
         query = query.where(NotificationChannel.id.in_(payload.channel_ids))
     result = await db.execute(query)
@@ -149,6 +160,11 @@ async def notify(db: AsyncSession, payload) -> list[NotificationLog]:
     return logs
 
 
-async def list_logs(db: AsyncSession, limit: int = 100) -> list[NotificationLog]:
-    result = await db.execute(select(NotificationLog).order_by(NotificationLog.created_at.desc()).limit(limit))
+async def list_logs(db: AsyncSession, organization_id: str, limit: int = 100) -> list[NotificationLog]:
+    result = await db.execute(
+        select(NotificationLog)
+        .where(NotificationLog.organization_id == organization_id)
+        .order_by(NotificationLog.created_at.desc())
+        .limit(limit)
+    )
     return list(result.scalars().all())

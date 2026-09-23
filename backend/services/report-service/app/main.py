@@ -14,8 +14,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.jobstores.base import JobLookupError
 
+from sqlalchemy import text
 from backend.shared.database import get_db, engine, Base, SessionLocal
 from backend.shared.logging import configure_logging
+from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import (
     ReportRequest,
     GeneratedReportOut,
@@ -79,6 +81,14 @@ def _unregister_job(schedule_id: str) -> None:
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"))
+        await conn.execute(text("ALTER TABLE generated_reports ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"))
+        await conn.execute(text(
+            f"UPDATE report_schedules SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
+        ))
+        await conn.execute(text(
+            f"UPDATE generated_reports SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
+        ))
     async with SessionLocal() as db:
         for schedule in await services.list_schedules(db):
             if schedule.enabled:
@@ -112,7 +122,9 @@ async def generate_report(
     db: AsyncSession = Depends(get_db),
 ):
     auth_header = request.headers.get("authorization")
-    report = await services.generate_report(db, payload.report_type, auth_header, claims.get("sub", ""))
+    report = await services.generate_report(
+        db, payload.report_type, auth_header, claims.get("sub", ""), org_id_from_claims(claims)
+    )
     await db.commit()
     reports_generated_total.labels(report_type=payload.report_type).inc()
     return report
@@ -124,12 +136,12 @@ async def list_reports(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ):
-    return await services.list_reports(db, report_type)
+    return await services.list_reports(db, org_id_from_claims(claims), report_type)
 
 
 @app.get("/reports/{report_id}", response_model=GeneratedReportOut)
 async def get_report(report_id: str, claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
-    report = await services.get_report(db, report_id)
+    report = await services.get_report(db, report_id, org_id_from_claims(claims))
     if report is None:
         raise HTTPException(status_code=404, detail="Reporte no encontrado")
     return report
@@ -142,7 +154,7 @@ async def export_report(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ):
-    report = await services.get_report(db, report_id)
+    report = await services.get_report(db, report_id, org_id_from_claims(claims))
     if report is None:
         raise HTTPException(status_code=404, detail="Reporte no encontrado")
     if format == "csv":
@@ -165,7 +177,7 @@ async def create_schedule(
     claims: dict = Depends(require_role("admin", "soc_manager")),
     db: AsyncSession = Depends(get_db),
 ):
-    schedule = await services.create_schedule(db, payload, claims.get("sub", ""))
+    schedule = await services.create_schedule(db, payload, claims.get("sub", ""), org_id_from_claims(claims))
     await db.commit()
     _register_job(schedule)
     logger.info("regla de reporte programado creada", extra={"schedule_id": schedule.id})
@@ -174,7 +186,7 @@ async def create_schedule(
 
 @app.get("/report-schedules", response_model=list[ReportScheduleOut])
 async def list_schedules_endpoint(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
-    return await services.list_schedules(db)
+    return await services.list_schedules(db, org_id_from_claims(claims))
 
 
 @app.patch("/report-schedules/{schedule_id}", response_model=ReportScheduleOut)
@@ -184,7 +196,7 @@ async def update_schedule(
     claims: dict = Depends(require_role("admin", "soc_manager")),
     db: AsyncSession = Depends(get_db),
 ):
-    schedule = await services.get_schedule(db, schedule_id)
+    schedule = await services.get_schedule(db, schedule_id, org_id_from_claims(claims))
     if schedule is None:
         raise HTTPException(status_code=404, detail="Regla de reporte no encontrada")
     schedule = await services.set_schedule_enabled(db, schedule, payload.enabled)
@@ -202,7 +214,7 @@ async def delete_schedule(
     claims: dict = Depends(require_role("admin", "soc_manager")),
     db: AsyncSession = Depends(get_db),
 ):
-    schedule = await services.get_schedule(db, schedule_id)
+    schedule = await services.get_schedule(db, schedule_id, org_id_from_claims(claims))
     if schedule is None:
         raise HTTPException(status_code=404, detail="Regla de reporte no encontrada")
     await services.delete_schedule(db, schedule)

@@ -25,27 +25,43 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def create_connector(db: AsyncSession, payload) -> Connector:
-    connector = Connector(name=payload.name, kind=payload.kind, config=payload.config, enabled=payload.enabled)
+async def create_connector(db: AsyncSession, payload, organization_id: str) -> Connector:
+    connector = Connector(
+        organization_id=organization_id, name=payload.name, kind=payload.kind,
+        config=payload.config, enabled=payload.enabled,
+    )
     db.add(connector)
     await db.flush()
     return connector
 
 
-async def list_connectors(db: AsyncSession, kind: str | None = None) -> list[Connector]:
-    query = select(Connector)
+async def list_connectors(db: AsyncSession, organization_id: str, kind: str | None = None) -> list[Connector]:
+    query = select(Connector).where(Connector.organization_id == organization_id)
     if kind:
         query = query.where(Connector.kind == kind)
     result = await db.execute(query.order_by(Connector.created_at.desc()))
     return list(result.scalars().all())
 
 
-async def _pick_connector(db: AsyncSession, kind: str, connector_id: str | None) -> Connector | None:
+async def _pick_connector(
+    db: AsyncSession, kind: str, connector_id: str | None, organization_id: str
+) -> Connector | None:
+    """organization_id siempre filtra, incluso cuando se pide un
+    connector_id especifico -- sin esto, una organizacion podria disparar
+    una accion de contencion real usando el conector (firewall/EDR/Jira)
+    configurado por OTRA organizacion con solo adivinar/probar un uuid."""
     if connector_id:
-        result = await db.execute(select(Connector).where(Connector.id == connector_id, Connector.enabled == True))  # noqa: E712
+        result = await db.execute(
+            select(Connector).where(
+                Connector.id == connector_id, Connector.organization_id == organization_id,
+                Connector.enabled == True,  # noqa: E712
+            )
+        )
     else:
         result = await db.execute(
-            select(Connector).where(Connector.kind == kind, Connector.enabled == True).order_by(Connector.created_at.desc())  # noqa: E712
+            select(Connector)
+            .where(Connector.kind == kind, Connector.organization_id == organization_id, Connector.enabled == True)  # noqa: E712
+            .order_by(Connector.created_at.desc())
         )
     return result.scalars().first()
 
@@ -67,8 +83,10 @@ async def _call_connector(connector: Connector, action: str, payload: dict) -> t
         return "failed", str(exc)
 
 
-async def run_action(db: AsyncSession, action: str, target: str, kind: str, connector_id: str | None) -> IntegrationActionLog:
-    connector = await _pick_connector(db, kind, connector_id)
+async def run_action(
+    db: AsyncSession, action: str, target: str, kind: str, connector_id: str | None, organization_id: str
+) -> IntegrationActionLog:
+    connector = await _pick_connector(db, kind, connector_id, organization_id)
     if connector is None:
         status_, error, cid = "failed", f"no hay un conector de tipo '{kind}' habilitado y configurado", ""
     elif dry_run_enabled():
@@ -78,22 +96,31 @@ async def run_action(db: AsyncSession, action: str, target: str, kind: str, conn
         status_, error = await _call_connector(connector, action, {"target": target})
         cid = connector.id
 
-    log = IntegrationActionLog(connector_id=cid, action=action, target=target, status=status_, error=error)
+    log = IntegrationActionLog(
+        organization_id=organization_id, connector_id=cid, action=action, target=target, status=status_, error=error
+    )
     db.add(log)
     await db.flush()
     return log
 
 
-async def block_ip(db: AsyncSession, ip: str, connector_id: str | None = None) -> IntegrationActionLog:
-    return await run_action(db, "block_ip", ip, "firewall", connector_id)
+async def block_ip(db: AsyncSession, ip: str, organization_id: str, connector_id: str | None = None) -> IntegrationActionLog:
+    return await run_action(db, "block_ip", ip, "firewall", connector_id, organization_id)
 
 
-async def isolate_host(db: AsyncSession, hostname: str, connector_id: str | None = None) -> IntegrationActionLog:
-    return await run_action(db, "isolate_host", hostname, "edr", connector_id)
+async def isolate_host(
+    db: AsyncSession, hostname: str, organization_id: str, connector_id: str | None = None
+) -> IntegrationActionLog:
+    return await run_action(db, "isolate_host", hostname, "edr", connector_id, organization_id)
 
 
-async def list_action_logs(db: AsyncSession, limit: int = 100) -> list[IntegrationActionLog]:
-    result = await db.execute(select(IntegrationActionLog).order_by(IntegrationActionLog.created_at.desc()).limit(limit))
+async def list_action_logs(db: AsyncSession, organization_id: str, limit: int = 100) -> list[IntegrationActionLog]:
+    result = await db.execute(
+        select(IntegrationActionLog)
+        .where(IntegrationActionLog.organization_id == organization_id)
+        .order_by(IntegrationActionLog.created_at.desc())
+        .limit(limit)
+    )
     return list(result.scalars().all())
 
 
@@ -148,9 +175,9 @@ async def _call_jira(connector: Connector, title: str, description: str, priorit
 
 
 async def create_ticket(
-    db: AsyncSession, title: str, description: str, priority: str, connector_id: str | None
+    db: AsyncSession, title: str, description: str, priority: str, connector_id: str | None, organization_id: str
 ) -> TicketLog:
-    connector = await _pick_connector(db, "ticketing", connector_id)
+    connector = await _pick_connector(db, "ticketing", connector_id, organization_id)
     if connector is None:
         status_, error, key, url, cid = (
             "failed",
@@ -167,6 +194,7 @@ async def create_ticket(
         cid = connector.id
 
     log = TicketLog(
+        organization_id=organization_id,
         connector_id=cid, title=title, priority=priority, status=status_,
         external_key=key, external_url=url, error=error,
     )
@@ -175,6 +203,11 @@ async def create_ticket(
     return log
 
 
-async def list_ticket_logs(db: AsyncSession, limit: int = 100) -> list[TicketLog]:
-    result = await db.execute(select(TicketLog).order_by(TicketLog.created_at.desc()).limit(limit))
+async def list_ticket_logs(db: AsyncSession, organization_id: str, limit: int = 100) -> list[TicketLog]:
+    result = await db.execute(
+        select(TicketLog)
+        .where(TicketLog.organization_id == organization_id)
+        .order_by(TicketLog.created_at.desc())
+        .limit(limit)
+    )
     return list(result.scalars().all())

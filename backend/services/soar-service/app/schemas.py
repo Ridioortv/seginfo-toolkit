@@ -60,6 +60,10 @@ class TriggerRequest(BaseModel):
     rule_name: str = ""
     severity: str = "medium"
     event: dict = Field(default_factory=dict)
+    # Opcional -- lo manda siem-service (su propio org_id, ya resuelto del
+    # JWT de quien ingesto el log). Si falta, se asume la organizacion
+    # default (ver backend/shared/tenancy.py).
+    organization_id: str | None = None
 
 
 class TriggerResponse(BaseModel):

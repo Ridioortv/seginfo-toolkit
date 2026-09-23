@@ -23,6 +23,11 @@ class IngestRequest(BaseModel):
     scan_job_id: str | None = None
     asset_id: str | None = None
     scanner_type: str = ""
+    # Opcional (no viene de un JWT -- este endpoint es servicio-a-servicio y
+    # no requiere uno, ver main.py::ingest) para no romper a un caller viejo
+    # que todavia no lo manda; si falta, ingest_findings lo trata como la
+    # organizacion default (ver backend/shared/tenancy.py).
+    organization_id: str | None = None
     findings: list[FindingIn] = Field(default_factory=list)
 
 

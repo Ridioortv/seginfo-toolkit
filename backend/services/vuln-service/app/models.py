@@ -39,6 +39,7 @@ class Vulnerability(Base):
     __tablename__ = "vulnerabilities"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     cve_id: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")

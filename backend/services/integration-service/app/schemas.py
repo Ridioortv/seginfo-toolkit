@@ -28,11 +28,16 @@ class ConnectorOut(BaseModel):
 class BlockIpRequest(BaseModel):
     ip: str
     connector_id: str | None = None
+    # Opcional -- estos endpoints /internal/actions/* no llevan JWT (ver
+    # main.py), asi que soar-service lo manda explicitamente. Si falta, se
+    # asume la organizacion default (ver backend/shared/tenancy.py).
+    organization_id: str | None = None
 
 
 class IsolateHostRequest(BaseModel):
     hostname: str
     connector_id: str | None = None
+    organization_id: str | None = None
 
 
 class ActionLogOut(BaseModel):
@@ -53,6 +58,7 @@ class CreateTicketRequest(BaseModel):
     description: str = ""
     priority: str = "medium"
     connector_id: str | None = None
+    organization_id: str | None = None
 
 
 class TicketLogOut(BaseModel):

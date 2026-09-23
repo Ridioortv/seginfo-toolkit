@@ -10,6 +10,7 @@ _INDEX_MAPPING = {
     "mappings": {
         "properties": {
             "@timestamp": {"type": "date"},
+            "organization_id": {"type": "keyword"},
             "host": {"properties": {"name": {"type": "keyword"}}},
             "source": {"properties": {"ip": {"type": "ip", "ignore_malformed": True}}},
             "destination": {"properties": {"ip": {"type": "ip", "ignore_malformed": True}}},

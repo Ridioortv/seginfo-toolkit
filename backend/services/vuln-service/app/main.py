@@ -6,10 +6,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, make_asgi_app
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.database import get_db, engine, Base
 from backend.shared.logging import configure_logging
+from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import IngestRequest, IngestResponse, TriageRequest, VulnerabilityOut, VulnerabilityStatsOut
 from app.dependencies import get_current_claims, require_role
 from app import services
@@ -23,6 +25,12 @@ vulns_triaged_total = Counter("vulns_triaged_total", "Vulnerabilidades triadas",
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text(
+            "ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"
+        ))
+        await conn.execute(text(
+            f"UPDATE vulnerabilities SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
+        ))
     logger.info("vuln-service iniciado")
     yield
 
@@ -62,17 +70,19 @@ async def list_vulnerabilities(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ):
-    return await services.list_vulnerabilities(db, status_filter, severity, asset_id, min_priority)
+    return await services.list_vulnerabilities(
+        db, org_id_from_claims(claims), status_filter, severity, asset_id, min_priority
+    )
 
 
 @app.get("/vulnerabilities/stats", response_model=VulnerabilityStatsOut)
 async def stats(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
-    return await services.get_stats(db)
+    return await services.get_stats(db, org_id_from_claims(claims))
 
 
 @app.get("/vulnerabilities/{vuln_id}", response_model=VulnerabilityOut)
 async def get_vulnerability(vuln_id: str, claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
-    vuln = await services.get_vulnerability(db, vuln_id)
+    vuln = await services.get_vulnerability(db, vuln_id, org_id_from_claims(claims))
     if vuln is None:
         raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
     return vuln
@@ -84,7 +94,7 @@ async def enrich(
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
-    vuln = await services.get_vulnerability(db, vuln_id)
+    vuln = await services.get_vulnerability(db, vuln_id, org_id_from_claims(claims))
     if vuln is None:
         raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
     vuln = await services.reenrich_vulnerability(db, vuln)
@@ -99,7 +109,7 @@ async def triage(
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
-    vuln = await services.get_vulnerability(db, vuln_id)
+    vuln = await services.get_vulnerability(db, vuln_id, org_id_from_claims(claims))
     if vuln is None:
         raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
     vuln = await services.triage_vulnerability(db, vuln, payload, claims.get("sub", ""))

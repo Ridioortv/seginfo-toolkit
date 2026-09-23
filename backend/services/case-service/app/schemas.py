@@ -11,6 +11,11 @@ class CaseCreate(BaseModel):
     assignee: str = ""
     alert_id: str | None = None
     source: str = "manual"
+    # Opcional -- este endpoint (POST /cases) no exige JWT a proposito (ver
+    # docstring en main.py: soar-service y otros servicios internos tambien
+    # crean casos aca). Si el caller no lo manda, se asume la organizacion
+    # default (ver backend/shared/tenancy.py).
+    organization_id: str | None = None
 
 
 class CaseUpdate(BaseModel):

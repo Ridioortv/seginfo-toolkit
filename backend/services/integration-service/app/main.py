@@ -12,8 +12,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, make_asgi_app
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import text
 from backend.shared.database import get_db, engine, Base
 from backend.shared.logging import configure_logging
+from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import (
     ConnectorCreate, ConnectorOut, BlockIpRequest, IsolateHostRequest, ActionLogOut,
     CreateTicketRequest, TicketLogOut,
@@ -29,6 +31,22 @@ actions_total = Counter("integration_action_total", "Acciones de contencion proc
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("ALTER TABLE connectors ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"))
+        await conn.execute(text(
+            "ALTER TABLE integration_action_logs ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE integration_ticket_logs ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"
+        ))
+        await conn.execute(text(
+            f"UPDATE connectors SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
+        ))
+        await conn.execute(text(
+            f"UPDATE integration_action_logs SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
+        ))
+        await conn.execute(text(
+            f"UPDATE integration_ticket_logs SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
+        ))
     logger.info("integration-service iniciado", extra={"dry_run": services.dry_run_enabled()})
     yield
 
@@ -54,19 +72,19 @@ async def create_connector(
     claims: dict = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ):
-    connector = await services.create_connector(db, payload)
+    connector = await services.create_connector(db, payload, org_id_from_claims(claims))
     await db.commit()
     return connector
 
 
 @app.get("/connectors", response_model=list[ConnectorOut])
 async def list_connectors(kind: str | None = None, claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
-    return await services.list_connectors(db, kind)
+    return await services.list_connectors(db, org_id_from_claims(claims), kind)
 
 
 @app.get("/actions", response_model=list[ActionLogOut])
 async def list_action_logs(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
-    return await services.list_action_logs(db)
+    return await services.list_action_logs(db, org_id_from_claims(claims))
 
 
 @app.post("/internal/actions/block-ip", response_model=ActionLogOut)
@@ -74,7 +92,8 @@ async def internal_block_ip(payload: BlockIpRequest, db: AsyncSession = Depends(
     """Endpoint interno (sin auth de usuario) para que soar-service dispare
     la contencion real -- o simulada, si INTEGRATION_DRY_RUN=true -- de una
     IP marcada como origen malicioso en una alerta."""
-    log = await services.block_ip(db, payload.ip, payload.connector_id)
+    organization_id = payload.organization_id or DEFAULT_ORGANIZATION_ID
+    log = await services.block_ip(db, payload.ip, organization_id, payload.connector_id)
     await db.commit()
     actions_total.labels(action="block_ip", status=log.status).inc()
     return log
@@ -84,7 +103,8 @@ async def internal_block_ip(payload: BlockIpRequest, db: AsyncSession = Depends(
 async def internal_isolate_host(payload: IsolateHostRequest, db: AsyncSession = Depends(get_db)):
     """Endpoint interno (sin auth de usuario) para que soar-service dispare
     el aislamiento real -- o simulado -- de un host comprometido."""
-    log = await services.isolate_host(db, payload.hostname, payload.connector_id)
+    organization_id = payload.organization_id or DEFAULT_ORGANIZATION_ID
+    log = await services.isolate_host(db, payload.hostname, organization_id, payload.connector_id)
     await db.commit()
     actions_total.labels(action="isolate_host", status=log.status).inc()
     return log
@@ -92,7 +112,7 @@ async def internal_isolate_host(payload: IsolateHostRequest, db: AsyncSession = 
 
 @app.get("/tickets", response_model=list[TicketLogOut])
 async def list_tickets(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
-    return await services.list_ticket_logs(db)
+    return await services.list_ticket_logs(db, org_id_from_claims(claims))
 
 
 @app.post("/internal/actions/create-ticket", response_model=TicketLogOut)
@@ -101,7 +121,10 @@ async def internal_create_ticket(payload: CreateTicketRequest, db: AsyncSession 
     un ticket -- o lo simule -- en el sistema de ticketing configurado
     (ej. Jira, via un conector kind='ticketing'; ver app/services.py
     _call_jira)."""
-    log = await services.create_ticket(db, payload.title, payload.description, payload.priority, payload.connector_id)
+    organization_id = payload.organization_id or DEFAULT_ORGANIZATION_ID
+    log = await services.create_ticket(
+        db, payload.title, payload.description, payload.priority, payload.connector_id, organization_id
+    )
     await db.commit()
     actions_total.labels(action="create_ticket", status=log.status).inc()
     return log

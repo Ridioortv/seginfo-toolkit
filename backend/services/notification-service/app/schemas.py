@@ -40,6 +40,11 @@ class NotifyRequest(BaseModel):
     severity: str = "info"
     channel_ids: list[str] | None = Field(default=None, description="None = todos los canales habilitados")
     attachments: list[NotifyAttachment] | None = Field(default=None, description="Adjuntos opcionales, solo aplicados en canales tipo 'email'")
+    # Opcional -- POST /notify lo deriva del JWT si no viene; POST
+    # /internal/notify (sin JWT, ver main.py) depende de que el caller
+    # (soar-service, report-service) lo mande explicitamente. Si falta, se
+    # asume la organizacion default (ver backend/shared/tenancy.py).
+    organization_id: str | None = None
 
 
 class NotifyLogOut(BaseModel):

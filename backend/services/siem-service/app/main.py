@@ -5,10 +5,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, make_asgi_app
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.database import get_db, engine, Base
 from backend.shared.logging import configure_logging
+from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import (
     IngestLogsRequest, IngestLogsResponse, SigmaRuleCreate, SigmaRuleUpdate, SigmaRuleOut,
     AlertUpdate, AlertOut,
@@ -27,6 +29,14 @@ os_client = opensearch_client.build_client()
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("ALTER TABLE sigma_rules ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"))
+        await conn.execute(text("ALTER TABLE alerts ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"))
+        await conn.execute(text(
+            f"UPDATE sigma_rules SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
+        ))
+        await conn.execute(text(
+            f"UPDATE alerts SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
+        ))
     try:
         await opensearch_client.ensure_index(os_client)
     except Exception as exc:  # OpenSearch puede no estar arriba todavia en dev
@@ -66,14 +76,14 @@ async def search_logs(
     size: int = 100,
     claims: dict = Depends(get_current_claims),
 ):
-    return await services.search_logs(os_client, q, host, min(size, 500))
+    return await services.search_logs(os_client, org_id_from_claims(claims), q, host, min(size, 500))
 
 
 @app.get("/rules", response_model=list[SigmaRuleOut])
 async def list_rules(
     enabled_only: bool = False, claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)
 ):
-    return await services.list_rules(db, enabled_only)
+    return await services.list_rules(db, org_id_from_claims(claims), enabled_only)
 
 
 @app.post("/rules", response_model=SigmaRuleOut, status_code=status.HTTP_201_CREATED)
@@ -82,7 +92,7 @@ async def create_rule(
     claims: dict = Depends(require_role("admin", "soc_manager")),
     db: AsyncSession = Depends(get_db),
 ):
-    rule = await services.create_rule(db, payload)
+    rule = await services.create_rule(db, payload, org_id_from_claims(claims))
     await db.commit()
     logger.info("regla sigma creada", extra={"rule_id": rule.id, "actor": claims.get("sub")})
     return rule
@@ -95,7 +105,7 @@ async def update_rule(
     claims: dict = Depends(require_role("admin", "soc_manager")),
     db: AsyncSession = Depends(get_db),
 ):
-    rule = await services.get_rule(db, rule_id)
+    rule = await services.get_rule(db, rule_id, org_id_from_claims(claims))
     if rule is None:
         raise HTTPException(status_code=404, detail="Regla no encontrada")
     rule = await services.update_rule(db, rule, payload)
@@ -104,13 +114,16 @@ async def update_rule(
 
 
 @app.get("/internal/rule-tags")
-async def internal_rule_tags(db: AsyncSession = Depends(get_db)):
+async def internal_rule_tags(organization_id: str | None = None, db: AsyncSession = Depends(get_db)):
     """Endpoint interno (sin auth de usuario -- pensado para llamadas
     servicio-a-servicio dentro de la red de docker-compose, ej.
     purple-service) que expone solo id/nombre/tags de reglas habilitadas,
     para que purple-service pueda calcular cobertura de deteccion contra
-    tecnicas MITRE ATT&CK sin exponer el detalle completo de la regla."""
-    rules = await services.list_rules(db, enabled_only=True)
+    tecnicas MITRE ATT&CK sin exponer el detalle completo de la regla.
+    organization_id lo manda purple-service (su propio tenant, del JWT de
+    quien pidio el reporte de cobertura) -- si no lo manda, se asume la
+    organizacion default."""
+    rules = await services.list_rules(db, organization_id or DEFAULT_ORGANIZATION_ID, enabled_only=True)
     return [{"id": r.id, "name": r.name, "tags": r.tags} for r in rules]
 
 
@@ -121,12 +134,12 @@ async def list_alerts(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ):
-    return await services.list_alerts(db, status_filter, severity)
+    return await services.list_alerts(db, org_id_from_claims(claims), status_filter, severity)
 
 
 @app.get("/alerts/{alert_id}", response_model=AlertOut)
 async def get_alert(alert_id: str, claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
-    alert = await services.get_alert(db, alert_id)
+    alert = await services.get_alert(db, alert_id, org_id_from_claims(claims))
     if alert is None:
         raise HTTPException(status_code=404, detail="Alerta no encontrada")
     return alert
@@ -139,7 +152,7 @@ async def update_alert(
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
-    alert = await services.get_alert(db, alert_id)
+    alert = await services.get_alert(db, alert_id, org_id_from_claims(claims))
     if alert is None:
         raise HTTPException(status_code=404, detail="Alerta no encontrada")
     alert = await services.update_alert(db, alert, payload, claims.get("sub", ""))

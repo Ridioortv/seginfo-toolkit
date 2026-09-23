@@ -20,6 +20,7 @@ class Connector(Base):
     __tablename__ = "connectors"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     kind: Mapped[str] = mapped_column(String(50), nullable=False)  # firewall | edr
     config: Mapped[dict] = mapped_column(JSON, default=dict)  # ej. {'base_url': ..., 'header_name': 'X-Api-Key'}
@@ -31,6 +32,7 @@ class IntegrationActionLog(Base):
     __tablename__ = "integration_action_logs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     connector_id: Mapped[str] = mapped_column(String(36), default="")
     action: Mapped[str] = mapped_column(String(50), nullable=False)  # block_ip | isolate_host
     target: Mapped[str] = mapped_column(String(255), default="")
@@ -50,6 +52,7 @@ class TicketLog(Base):
     __tablename__ = "integration_ticket_logs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     connector_id: Mapped[str] = mapped_column(String(36), default="")
     title: Mapped[str] = mapped_column(String(500), default="")
     priority: Mapped[str] = mapped_column(String(20), default="medium")

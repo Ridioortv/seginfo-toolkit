@@ -23,12 +23,17 @@ class CreateCaseAction(ActionExecutor):
         description = params.get("description") or f"Generado automaticamente por playbook a partir de la alerta {alert.get('id', '')}"
         priority = params.get("priority") or alert.get("severity", "medium")
 
+        organization_id = context.get("organization_id")
+
         if CASE_SERVICE_URL:
             try:
                 async with httpx.AsyncClient(timeout=5) as client:
                     resp = await client.post(
                         f"{CASE_SERVICE_URL}/cases",
-                        json={"title": title, "description": description, "priority": priority, "alert_id": alert.get("id")},
+                        json={
+                            "title": title, "description": description, "priority": priority,
+                            "alert_id": alert.get("id"), "organization_id": organization_id,
+                        },
                     )
                     if resp.status_code < 300:
                         return ActionResult(
@@ -42,6 +47,7 @@ class CreateCaseAction(ActionExecutor):
         db = context.get("db")
         if db is not None:
             pending = PendingCase(
+                organization_id=organization_id,
                 title=title, description=description, priority=priority,
                 alert_id=alert.get("id"), playbook_run_id=context.get("playbook_run_id"),
             )

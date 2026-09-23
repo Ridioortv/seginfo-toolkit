@@ -4,9 +4,10 @@ de acciones (app/actions/*). Todas las acciones son de contencion defensiva
 y corren en dry-run por defecto -- ver app/actions/base.py. No hay ninguna
 ruta de codigo aca que ejecute algo contra un objetivo real."""
 from datetime import datetime, timezone
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
+from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
 from app.models import Playbook, PlaybookRun, PendingCase, RunStatus
 from app.actions.block_ip import BlockIpAction
 from app.actions.isolate_host import IsolateHostAction
@@ -37,6 +38,7 @@ def _severity_meets_minimum(alert_severity: str, min_severity: str) -> bool:
 
 async def _run_steps(db: AsyncSession, playbook: Playbook, context: dict, triggered_by: str) -> PlaybookRun:
     run = PlaybookRun(
+        organization_id=context.get("organization_id"),
         playbook_id=playbook.id,
         playbook_name=playbook.name,
         alert_id=context.get("alert", {}).get("id"),
@@ -82,8 +84,15 @@ async def _run_steps(db: AsyncSession, playbook: Playbook, context: dict, trigge
 async def trigger_playbooks(db: AsyncSession, payload) -> tuple[int, list[PlaybookRun]]:
     """Llamado por siem-service cuando se genera una alerta (ver
     siem-service/app/services.py _notify_soar). Corre TODOS los playbooks
-    habilitados cuyo min_severity sea <= la severidad de la alerta."""
-    result = await db.execute(select(Playbook).where(Playbook.is_enabled.is_(True)))
+    habilitados (globales -- organization_id NULL -- o propios de esta
+    organizacion) cuyo min_severity sea <= la severidad de la alerta."""
+    organization_id = payload.organization_id or DEFAULT_ORGANIZATION_ID
+    result = await db.execute(
+        select(Playbook).where(
+            Playbook.is_enabled.is_(True),
+            or_(Playbook.organization_id == organization_id, Playbook.organization_id.is_(None)),
+        )
+    )
     playbooks = list(result.scalars().all())
     matched = [p for p in playbooks if _severity_meets_minimum(payload.severity, p.min_severity)]
 
@@ -91,6 +100,7 @@ async def trigger_playbooks(db: AsyncSession, payload) -> tuple[int, list[Playbo
         "event": payload.event,
         "alert": {"id": payload.alert_id, "severity": payload.severity, "rule_name": payload.rule_name},
         "db": db,
+        "organization_id": organization_id,
     }
 
     runs = []
@@ -102,26 +112,38 @@ async def trigger_playbooks(db: AsyncSession, payload) -> tuple[int, list[Playbo
     return len(matched), runs
 
 
-async def run_playbook_manually(db: AsyncSession, playbook: Playbook, payload) -> PlaybookRun:
+async def run_playbook_manually(db: AsyncSession, playbook: Playbook, payload, organization_id: str) -> PlaybookRun:
     context = {
         "event": payload.event,
         "alert": {"id": payload.alert_id, "severity": payload.event.get("severity", "medium"), "rule_name": ""},
         "db": db,
+        "organization_id": organization_id,
     }
     return await _run_steps(db, playbook, context, triggered_by="manual")
 
 
-async def list_playbooks(db: AsyncSession) -> list[Playbook]:
-    result = await db.execute(select(Playbook).order_by(Playbook.name))
+async def list_playbooks(db: AsyncSession, organization_id: str) -> list[Playbook]:
+    result = await db.execute(
+        select(Playbook)
+        .where(or_(Playbook.organization_id == organization_id, Playbook.organization_id.is_(None)))
+        .order_by(Playbook.name)
+    )
     return list(result.scalars().all())
 
 
-async def get_playbook(db: AsyncSession, playbook_id: str) -> Playbook | None:
-    return await db.get(Playbook, playbook_id)
+async def get_playbook(db: AsyncSession, playbook_id: str, organization_id: str) -> Playbook | None:
+    """Un playbook es visible/editable por una organizacion si es global
+    (organization_id NULL, built-in via YAML) o si le pertenece."""
+    playbook = await db.get(Playbook, playbook_id)
+    if playbook is None:
+        return None
+    if playbook.organization_id is not None and playbook.organization_id != organization_id:
+        return None
+    return playbook
 
 
-async def create_playbook(db: AsyncSession, payload) -> Playbook:
-    playbook = Playbook(**payload.model_dump())
+async def create_playbook(db: AsyncSession, payload, organization_id: str) -> Playbook:
+    playbook = Playbook(**payload.model_dump(), organization_id=organization_id)
     db.add(playbook)
     await db.flush()
     await db.refresh(playbook)
@@ -136,15 +158,26 @@ async def update_playbook(db: AsyncSession, playbook: Playbook, payload) -> Play
     return playbook
 
 
-async def list_runs(db: AsyncSession) -> list[PlaybookRun]:
-    result = await db.execute(select(PlaybookRun).order_by(PlaybookRun.created_at.desc()))
+async def list_runs(db: AsyncSession, organization_id: str) -> list[PlaybookRun]:
+    result = await db.execute(
+        select(PlaybookRun)
+        .where(PlaybookRun.organization_id == organization_id)
+        .order_by(PlaybookRun.created_at.desc())
+    )
     return list(result.scalars().all())
 
 
-async def get_run(db: AsyncSession, run_id: str) -> PlaybookRun | None:
-    return await db.get(PlaybookRun, run_id)
+async def get_run(db: AsyncSession, run_id: str, organization_id: str) -> PlaybookRun | None:
+    run = await db.get(PlaybookRun, run_id)
+    if run is None or run.organization_id != organization_id:
+        return None
+    return run
 
 
-async def list_pending_cases(db: AsyncSession) -> list[PendingCase]:
-    result = await db.execute(select(PendingCase).order_by(PendingCase.created_at.desc()))
+async def list_pending_cases(db: AsyncSession, organization_id: str) -> list[PendingCase]:
+    result = await db.execute(
+        select(PendingCase)
+        .where(PendingCase.organization_id == organization_id)
+        .order_by(PendingCase.created_at.desc())
+    )
     return list(result.scalars().all())

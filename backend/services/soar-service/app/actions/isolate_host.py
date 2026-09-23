@@ -28,7 +28,10 @@ class IsolateHostAction(ActionExecutor):
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(f"{INTEGRATION_SERVICE_URL}/internal/actions/isolate-host", json={"hostname": host})
+                response = await client.post(
+                    f"{INTEGRATION_SERVICE_URL}/internal/actions/isolate-host",
+                    json={"hostname": host, "organization_id": context.get("organization_id")},
+                )
                 response.raise_for_status()
                 result = response.json()
         except httpx.HTTPError as exc:

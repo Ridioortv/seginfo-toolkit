@@ -42,6 +42,7 @@ class NotifyAction(ActionExecutor):
                         "body": body,
                         "severity": alert.get("severity", "info"),
                         "channel_ids": channel_ids,
+                        "organization_id": context.get("organization_id"),
                     },
                 )
                 response.raise_for_status()

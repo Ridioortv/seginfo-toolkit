@@ -22,6 +22,7 @@ class ReportSchedule(Base):
     __tablename__ = "report_schedules"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     report_type: Mapped[str] = mapped_column(String(64), nullable=False)
     notification_channel_id: Mapped[str] = mapped_column(String(36), nullable=False)
     frequency: Mapped[str] = mapped_column(String(20), nullable=False)  # daily | weekly
@@ -39,6 +40,7 @@ class GeneratedReport(Base):
     __tablename__ = "generated_reports"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     report_type: Mapped[str] = mapped_column(String(64), nullable=False)
     generated_by: Mapped[str] = mapped_column(String(255), default="")
     data: Mapped[dict] = mapped_column(JSON, default=dict)

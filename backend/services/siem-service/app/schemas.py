@@ -20,6 +20,13 @@ class LogEventIn(BaseModel):
 
 
 class IngestLogsRequest(BaseModel):
+    # Opcional a proposito -- este endpoint (POST /logs/ingest) es para
+    # agentes/forwarders externos, no lleva JWT de usuario; si el cliente no
+    # manda organization_id, se asume la organizacion default (ver
+    # backend/shared/tenancy.py). En un deploy multi-tenant real, cada
+    # forwarder del cliente se configura con el organization_id de ese
+    # cliente (visible en la UI, panel de organizacion).
+    organization_id: str | None = None
     events: list[LogEventIn] = Field(default_factory=list)
 
 

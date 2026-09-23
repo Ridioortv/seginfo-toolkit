@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
 from backend.shared.security import create_access_token
+from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
 from app.export import export_to_pdf
 from app.models import GeneratedReport, ReportSchedule
 
@@ -97,34 +98,47 @@ _COLLECTORS = {
 }
 
 
-async def generate_report(db: AsyncSession, report_type: str, auth_header: str | None, generated_by: str) -> GeneratedReport:
+async def generate_report(
+    db: AsyncSession, report_type: str, auth_header: str | None, generated_by: str, organization_id: str
+) -> GeneratedReport:
     """Genera un reporte reenviando el token del usuario que lo solicito a
     los servicios fuente (mismo nivel de permisos que ya tiene ese usuario,
-    nunca credenciales de servicio elevadas)."""
+    nunca credenciales de servicio elevadas) -- ese mismo token ya lleva el
+    org_id de ese usuario, asi que cada servicio fuente devuelve solo datos
+    de ese tenant."""
     headers = {"Authorization": auth_header} if auth_header else {}
     errors: list[str] = []
     async with httpx.AsyncClient() as client:
         collector = _COLLECTORS[report_type]
         data = await collector(client, headers, errors)
-    report = GeneratedReport(report_type=report_type, generated_by=generated_by, data=data, errors=errors)
+    report = GeneratedReport(
+        organization_id=organization_id, report_type=report_type, generated_by=generated_by, data=data, errors=errors
+    )
     db.add(report)
     await db.flush()
     return report
 
 
-async def list_reports(db: AsyncSession, report_type: str | None = None) -> list[GeneratedReport]:
-    query = select(GeneratedReport)
+async def list_reports(db: AsyncSession, organization_id: str, report_type: str | None = None) -> list[GeneratedReport]:
+    query = select(GeneratedReport).where(GeneratedReport.organization_id == organization_id)
     if report_type:
         query = query.where(GeneratedReport.report_type == report_type)
     result = await db.execute(query.order_by(GeneratedReport.created_at.desc()))
     return list(result.scalars().all())
 
 
-async def get_report(db: AsyncSession, report_id: str) -> GeneratedReport | None:
-    result = await db.execute(select(GeneratedReport).where(GeneratedReport.id == report_id))
+async def get_report(db: AsyncSession, report_id: str, organization_id: str) -> GeneratedReport | None:
+    result = await db.execute(
+        select(GeneratedReport).where(
+            GeneratedReport.id == report_id, GeneratedReport.organization_id == organization_id
+        )
+    )
     return result.scalar_one_or_none()
-async def create_schedule(db: AsyncSession, payload, actor: str) -> ReportSchedule:
+
+
+async def create_schedule(db: AsyncSession, payload, actor: str, organization_id: str) -> ReportSchedule:
     schedule = ReportSchedule(
+        organization_id=organization_id,
         report_type=payload.report_type,
         notification_channel_id=payload.notification_channel_id,
         frequency=payload.frequency,
@@ -139,13 +153,22 @@ async def create_schedule(db: AsyncSession, payload, actor: str) -> ReportSchedu
     return schedule
 
 
-async def list_schedules(db: AsyncSession) -> list[ReportSchedule]:
-    result = await db.execute(select(ReportSchedule).order_by(ReportSchedule.created_at.desc()))
+async def list_schedules(db: AsyncSession, organization_id: str | None = None) -> list[ReportSchedule]:
+    """organization_id es opcional SOLO para el uso interno del lifespan
+    (re-registrar todos los jobs de todas las organizaciones al arrancar el
+    scheduler en proceso) -- todo endpoint HTTP siempre lo pasa."""
+    query = select(ReportSchedule)
+    if organization_id is not None:
+        query = query.where(ReportSchedule.organization_id == organization_id)
+    result = await db.execute(query.order_by(ReportSchedule.created_at.desc()))
     return list(result.scalars().all())
 
 
-async def get_schedule(db: AsyncSession, schedule_id: str) -> ReportSchedule | None:
-    return await db.get(ReportSchedule, schedule_id)
+async def get_schedule(db: AsyncSession, schedule_id: str, organization_id: str) -> ReportSchedule | None:
+    schedule = await db.get(ReportSchedule, schedule_id)
+    if schedule is None or schedule.organization_id != organization_id:
+        return None
+    return schedule
 
 
 async def set_schedule_enabled(db: AsyncSession, schedule: ReportSchedule, enabled: bool) -> ReportSchedule:
@@ -178,13 +201,18 @@ async def run_scheduled_report(session_factory, schedule_id: str) -> None:
             return
         report_type = schedule.report_type
         channel_id = schedule.notification_channel_id
+        organization_id = schedule.organization_id or DEFAULT_ORGANIZATION_ID
 
-    service_token = create_access_token("system:report-scheduler", "admin")
+    # org_id=organization_id es lo que faltaba antes de multi-tenancy: sin
+    # esto, este token de servicio no llevaba tenant y cada servicio fuente
+    # caia en la organizacion default sin importar de quien fuera la regla
+    # de reporte programado.
+    service_token = create_access_token("system:report-scheduler", "admin", org_id=organization_id)
     auth_header = f"Bearer {service_token}"
     status_note = "ok"
     try:
         async with session_factory() as db:
-            report = await generate_report(db, report_type, auth_header, "scheduler:report-schedule")
+            report = await generate_report(db, report_type, auth_header, "scheduler:report-schedule", organization_id)
             await db.commit()
             stored_type = report.report_type
             stored_data = report.data

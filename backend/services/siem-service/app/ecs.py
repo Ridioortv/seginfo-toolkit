@@ -4,13 +4,17 @@ cliente que ingesta (agentes, forwarders, APIs) -- nunca se ejecuta nada."""
 from datetime import datetime, timezone
 
 
-def normalize_event(raw: dict) -> dict:
+def normalize_event(raw: dict, organization_id: str = "") -> dict:
     """Convierte un evento de entrada (campos sueltos, ver schemas.LogEventIn)
-    en un documento ECS-lite listo para indexar en OpenSearch."""
+    en un documento ECS-lite listo para indexar en OpenSearch.
+    organization_id se guarda como campo propio (no parte del estandar ECS)
+    para poder filtrar por tenant en cada busqueda -- ver
+    opensearch_client.py, search_events."""
     timestamp = raw.get("timestamp") or datetime.now(timezone.utc).isoformat()
 
     return {
         "@timestamp": timestamp,
+        "organization_id": organization_id,
         "host": {"name": raw.get("host") or ""},
         "source": {"ip": raw.get("source_ip") or ""},
         "destination": {"ip": raw.get("dest_ip") or ""},

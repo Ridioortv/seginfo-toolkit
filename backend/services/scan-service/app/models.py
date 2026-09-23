@@ -40,6 +40,7 @@ class ScanSchedule(Base):
     __tablename__ = "scan_schedules"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), default="")
     scanner_type: Mapped[ScannerType] = mapped_column(SAEnum(ScannerType, native_enum=False))
     target: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -63,6 +64,7 @@ class ScanJob(Base):
     __tablename__ = "scan_jobs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), default="")
     scanner_type: Mapped[ScannerType] = mapped_column(SAEnum(ScannerType, native_enum=False))
     target: Mapped[str] = mapped_column(String(500), nullable=False)
@@ -97,6 +99,7 @@ class ScanAgent(Base):
     __tablename__ = "scan_agents"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     key_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     created_by: Mapped[str] = mapped_column(String(255), default="")
@@ -115,6 +118,7 @@ class AgentScanJob(Base):
     __tablename__ = "agent_scan_jobs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     agent_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), default="")
     scanner_type: Mapped[str] = mapped_column(String(20), default="nmap")

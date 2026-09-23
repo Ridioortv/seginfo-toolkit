@@ -23,15 +23,16 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def fetch_rule_tags() -> list[dict]:
+async def fetch_rule_tags(organization_id: str) -> list[dict]:
     """Llama al endpoint interno (sin auth de usuario) de siem-service que
-    expone id/nombre/tags de reglas Sigma habilitadas. Si siem-service no
-    responde, devuelve lista vacia (la cobertura se reporta en 0, nunca se
-    inventan datos)."""
+    expone id/nombre/tags de reglas Sigma habilitadas, filtradas al tenant
+    de quien pidio el reporte de cobertura. Si siem-service no responde,
+    devuelve lista vacia (la cobertura se reporta en 0, nunca se inventan
+    datos)."""
     url = f"{SIEM_SERVICE_URL}/internal/rule-tags"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(url)
+            response = await client.get(url, params={"organization_id": organization_id})
             response.raise_for_status()
             return response.json()
     except httpx.HTTPError as exc:
@@ -91,16 +92,17 @@ def _build_coverage(technique_ids_scope, rule_map: dict[str, list[str]], exercis
     )
 
 
-async def compute_overall_coverage() -> CoverageResult:
+async def compute_overall_coverage(organization_id: str) -> CoverageResult:
     """Cobertura contra el catalogo completo de tecnicas de referencia
     (metrica de dashboard, no ligada a un ejercicio en particular)."""
-    rules = await fetch_rule_tags()
+    rules = await fetch_rule_tags(organization_id)
     rule_map = _rules_by_technique(rules)
     return _build_coverage(None, rule_map)
 
 
-async def create_exercise(db: AsyncSession, payload) -> PurpleExercise:
+async def create_exercise(db: AsyncSession, payload, organization_id: str) -> PurpleExercise:
     exercise = PurpleExercise(
+        organization_id=organization_id,
         name=payload.name,
         description=payload.description,
         declared_technique_ids=payload.declared_technique_ids,
@@ -110,13 +112,21 @@ async def create_exercise(db: AsyncSession, payload) -> PurpleExercise:
     return exercise
 
 
-async def list_exercises(db: AsyncSession) -> list[PurpleExercise]:
-    result = await db.execute(select(PurpleExercise).order_by(PurpleExercise.created_at.desc()))
+async def list_exercises(db: AsyncSession, organization_id: str) -> list[PurpleExercise]:
+    result = await db.execute(
+        select(PurpleExercise)
+        .where(PurpleExercise.organization_id == organization_id)
+        .order_by(PurpleExercise.created_at.desc())
+    )
     return list(result.scalars().all())
 
 
-async def get_exercise(db: AsyncSession, exercise_id: str) -> PurpleExercise | None:
-    result = await db.execute(select(PurpleExercise).where(PurpleExercise.id == exercise_id))
+async def get_exercise(db: AsyncSession, exercise_id: str, organization_id: str) -> PurpleExercise | None:
+    result = await db.execute(
+        select(PurpleExercise).where(
+            PurpleExercise.id == exercise_id, PurpleExercise.organization_id == organization_id
+        )
+    )
     return result.scalar_one_or_none()
 
 
@@ -125,7 +135,7 @@ async def compute_coverage_for_exercise(db: AsyncSession, exercise: PurpleExerci
     ejercicio declara haber puesto a prueba (datos importados/declarados,
     nunca ejecutados por esta plataforma), y persiste el resultado en el
     propio ejercicio para consulta rapida posterior."""
-    rules = await fetch_rule_tags()
+    rules = await fetch_rule_tags(exercise.organization_id)
     rule_map = _rules_by_technique(rules)
     scope = exercise.declared_technique_ids or None
     result = _build_coverage(scope, rule_map, exercise_id=exercise.id)

@@ -4,10 +4,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, make_asgi_app
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.database import get_db, engine, Base
 from backend.shared.logging import configure_logging
+from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import CaseCreate, CaseUpdate, CaseOut, TimelineEntryCreate, ImportResult
 from app.dependencies import get_current_claims, require_role
 from app import services
@@ -20,6 +22,10 @@ cases_created_total = Counter("case_created_total", "Casos creados", ["priority"
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(text("ALTER TABLE cases ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"))
+        await conn.execute(text(
+            f"UPDATE cases SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
+        ))
     logger.info("case-service iniciado")
     yield
 
@@ -59,12 +65,12 @@ async def list_cases(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ):
-    return await services.list_cases(db, status_filter, priority, assignee)
+    return await services.list_cases(db, org_id_from_claims(claims), status_filter, priority, assignee)
 
 
 @app.get("/cases/{case_id}", response_model=CaseOut)
 async def get_case(case_id: str, claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
-    case = await services.get_case(db, case_id)
+    case = await services.get_case(db, case_id, org_id_from_claims(claims))
     if case is None:
         raise HTTPException(status_code=404, detail="Caso no encontrado")
     return case
@@ -77,7 +83,7 @@ async def update_case(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ):
-    case = await services.get_case(db, case_id)
+    case = await services.get_case(db, case_id, org_id_from_claims(claims))
     if case is None:
         raise HTTPException(status_code=404, detail="Caso no encontrado")
     case = await services.update_case(db, case, payload, claims.get("sub", ""))
@@ -92,7 +98,7 @@ async def add_timeline_entry(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ):
-    case = await services.get_case(db, case_id)
+    case = await services.get_case(db, case_id, org_id_from_claims(claims))
     if case is None:
         raise HTTPException(status_code=404, detail="Caso no encontrado")
     case = await services.add_timeline_entry(db, case, payload, claims.get("sub", ""))
@@ -105,7 +111,7 @@ async def import_soar_pending(
     claims: dict = Depends(require_role("admin", "soc_manager")),
     db: AsyncSession = Depends(get_db),
 ):
-    imported, skipped = await services.import_pending_cases_from_soar(db)
+    imported, skipped = await services.import_pending_cases_from_soar(db, org_id_from_claims(claims))
     await db.commit()
     logger.info("importacion de pending-cases de soar-service", extra={"imported": imported, "skipped": skipped})
     return ImportResult(imported=imported, skipped=skipped)

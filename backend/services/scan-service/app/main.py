@@ -11,8 +11,10 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.jobstores.base import JobLookupError
 
+from sqlalchemy import text
 from backend.shared.database import get_db, engine, Base, SessionLocal
 from backend.shared.logging import configure_logging
+from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import (
     ScanJobCreate,
     ScanJobOut,
@@ -85,6 +87,11 @@ def _unregister_job(schedule_id: str) -> None:
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        for table in ("scan_schedules", "scan_jobs", "scan_agents", "agent_scan_jobs"):
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"))
+            await conn.execute(text(
+                f"UPDATE {table} SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
+            ))
     async with SessionLocal() as db:
         for schedule in await services.list_schedules(db):
             if schedule.enabled:
@@ -122,7 +129,7 @@ async def create_scan(
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
-    job = await services.create_scan_job(db, payload, claims.get("sub", ""))
+    job = await services.create_scan_job(db, payload, claims.get("sub", ""), org_id_from_claims(claims))
     await db.commit()
     scan_jobs_total.labels(scanner_type=payload.scanner_type.value).inc()
     logger.info("scan job creado", extra={"job_id": job.id, "scanner": payload.scanner_type.value})
@@ -137,12 +144,12 @@ async def list_scans(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ):
-    return await services.list_scan_jobs(db, status_filter, scanner_type)
+    return await services.list_scan_jobs(db, org_id_from_claims(claims), status_filter, scanner_type)
 
 
 @app.get("/scans/{job_id}", response_model=ScanJobOut)
 async def get_scan(job_id: str, claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
-    job = await services.get_scan_job(db, job_id)
+    job = await services.get_scan_job(db, job_id, org_id_from_claims(claims))
     if job is None:
         raise HTTPException(status_code=404, detail="Job de escaneo no encontrado")
     return job
@@ -154,7 +161,7 @@ async def create_schedule(
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
-    schedule = await services.create_schedule(db, payload, claims.get("sub", ""))
+    schedule = await services.create_schedule(db, payload, claims.get("sub", ""), org_id_from_claims(claims))
     await db.commit()
     _register_job(schedule)
     logger.info("regla de escaneo programado creada", extra={"schedule_id": schedule.id})
@@ -163,7 +170,7 @@ async def create_schedule(
 
 @app.get("/scan-schedules", response_model=list[ScanScheduleOut])
 async def list_schedules_endpoint(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
-    return await services.list_schedules(db)
+    return await services.list_schedules(db, org_id_from_claims(claims))
 
 
 @app.patch("/scan-schedules/{schedule_id}", response_model=ScanScheduleOut)
@@ -173,7 +180,7 @@ async def update_schedule(
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
-    schedule = await services.get_schedule(db, schedule_id)
+    schedule = await services.get_schedule(db, schedule_id, org_id_from_claims(claims))
     if schedule is None:
         raise HTTPException(status_code=404, detail="Regla de escaneo no encontrada")
     schedule = await services.set_schedule_enabled(db, schedule, payload.enabled)
@@ -191,7 +198,7 @@ async def delete_schedule(
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
-    schedule = await services.get_schedule(db, schedule_id)
+    schedule = await services.get_schedule(db, schedule_id, org_id_from_claims(claims))
     if schedule is None:
         raise HTTPException(status_code=404, detail="Regla de escaneo no encontrada")
     await services.delete_schedule(db, schedule)
@@ -211,7 +218,7 @@ async def create_agent(
     claims: dict = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ):
-    agent, api_key = await services.create_agent(db, payload, claims.get("sub", ""))
+    agent, api_key = await services.create_agent(db, payload, claims.get("sub", ""), org_id_from_claims(claims))
     await db.commit()
     logger.info("agente de escaneo remoto creado", extra={"agent_id": agent.id})
     # api_key solo existe en texto plano en esta respuesta -- el servidor
@@ -224,7 +231,7 @@ async def create_agent(
 
 @app.get("/agents", response_model=list[ScanAgentOut])
 async def list_agents(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
-    return await services.list_agents(db)
+    return await services.list_agents(db, org_id_from_claims(claims))
 
 
 @app.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -233,7 +240,7 @@ async def delete_agent(
     claims: dict = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ):
-    agent = await services.get_agent(db, agent_id)
+    agent = await services.get_agent(db, agent_id, org_id_from_claims(claims))
     if agent is None:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
     await services.delete_agent(db, agent)
@@ -246,10 +253,11 @@ async def create_agent_scan(
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
-    agent = await services.get_agent(db, payload.agent_id)
+    organization_id = org_id_from_claims(claims)
+    agent = await services.get_agent(db, payload.agent_id, organization_id)
     if agent is None:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
-    job = await services.create_agent_scan_job(db, payload, claims.get("sub", ""))
+    job = await services.create_agent_scan_job(db, payload, claims.get("sub", ""), organization_id)
     await db.commit()
     logger.info("job de escaneo remoto creado", extra={"job_id": job.id, "agent_id": payload.agent_id})
     return job
@@ -261,7 +269,7 @@ async def list_agent_scans(
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ):
-    return await services.list_agent_scan_jobs(db, agent_id)
+    return await services.list_agent_scan_jobs(db, org_id_from_claims(claims), agent_id)
 
 
 @app.post("/agents/poll", response_model=AgentPollResponse)

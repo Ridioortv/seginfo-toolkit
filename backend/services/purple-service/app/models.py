@@ -23,6 +23,7 @@ class PurpleExercise(Base):
     __tablename__ = "purple_exercises"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
     declared_technique_ids: Mapped[list] = mapped_column(JSON, default=list)

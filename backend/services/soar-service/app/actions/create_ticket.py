@@ -36,7 +36,10 @@ class CreateTicketAction(ActionExecutor):
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
                     f"{INTEGRATION_SERVICE_URL}/internal/actions/create-ticket",
-                    json={"title": title, "description": description, "priority": priority, "connector_id": connector_id},
+                    json={
+                        "title": title, "description": description, "priority": priority,
+                        "connector_id": connector_id, "organization_id": context.get("organization_id"),
+                    },
                 )
                 response.raise_for_status()
                 result = response.json()
