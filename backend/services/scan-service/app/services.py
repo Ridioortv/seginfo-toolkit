@@ -7,7 +7,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
-from app.models import ScanJob, ScanStatus, ScannerType, ScanSchedule
+from app.models import ScanJob, ScanStatus, ScanSchedule
 from app.scanners import get_driver, DRIVERS
 
 logger = configure_logging("scan-service")

@@ -67,7 +67,6 @@ export default function Notifications() {
     onError: () => setSendFeedback([]),
   });
 
-  const targetLabel = newType === "email" ? "Email de destino" : "URL del webhook";
   const targetPlaceholder =
     newType === "email"
       ? "soc@tuempresa.com"

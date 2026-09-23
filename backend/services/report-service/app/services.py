@@ -5,7 +5,7 @@ servicio fuente no responde, esa seccion queda vacia con su error registrado
 en `errors`, y el resto del reporte se genera igual (best-effort)."""
 import base64
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
