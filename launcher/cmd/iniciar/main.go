@@ -53,16 +53,42 @@ func main() {
 
 	fmt.Println()
 	fmt.Println("Esperando a que el backend responda...")
-	waitForHealth(authHealth, 90*time.Second)
+	authOK := waitForURL(authHealth, 90*time.Second)
+	if !authOK {
+		fmt.Println()
+		fmt.Println("auth-service todavia no respondio. Esto es lo que dice su log:")
+		printLogs("auth-service", 40)
+	}
 
 	fmt.Println()
-	fmt.Println("Abriendo el dashboard en el navegador...")
-	openBrowser(frontendURL)
+	fmt.Println("Esperando a que el frontend responda...")
+	frontendOK := waitForURL(frontendURL, 60*time.Second)
+	if !frontendOK {
+		fmt.Println()
+		fmt.Println("El frontend todavia no respondio. Esto es lo que dice su log:")
+		printLogs("frontend", 40)
+	}
+
+	if !authOK || !frontendOK {
+		fmt.Println()
+		fmt.Println("Estado de todos los contenedores (docker compose ps):")
+		runStreaming("docker", "compose", "ps")
+	}
 
 	fmt.Println()
 	fmt.Println("========================================")
-	fmt.Println(" SentinelOps esta corriendo.")
-	fmt.Println(" Dashboard: " + frontendURL)
+	if authOK && frontendOK {
+		fmt.Println(" SentinelOps esta corriendo.")
+		fmt.Println(" Dashboard: " + frontendURL)
+		fmt.Println()
+		fmt.Println(" Abriendo el dashboard en el navegador...")
+		openBrowser(frontendURL)
+	} else {
+		fmt.Println(" SentinelOps arranco los contenedores, pero al menos uno todavia")
+		fmt.Println(" no responde (ver el log de arriba). No se abre el navegador solo")
+		fmt.Println(" para no confundir -- revisa el error, arreglalo si hace falta, y")
+		fmt.Println(" volve a correr este programa (es seguro repetirlo).")
+	}
 	fmt.Println()
 	fmt.Println(" Los servicios siguen funcionando en segundo plano aunque")
 	fmt.Println(" cierres esta ventana. Para pararlos, usa")
@@ -167,25 +193,34 @@ func runStreaming(name string, args ...string) error {
 	return cmd.Run()
 }
 
-func waitForHealth(url string, timeout time.Duration) {
+// waitForURL sondea una URL hasta que responda (cualquier respuesta HTTP
+// cuenta, incluso un error 4xx/5xx -- lo que importa es que algo este
+// escuchando en ese puerto) o se agote el tiempo. Devuelve true si
+// respondio a tiempo.
+func waitForURL(url string, timeout time.Duration) bool {
 	client := &http.Client{Timeout: 3 * time.Second}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		resp, err := client.Get(url)
 		if err == nil {
 			resp.Body.Close()
-			if resp.StatusCode == 200 {
-				return
-			}
+			return true
 		}
 		fmt.Print(".")
 		time.Sleep(2 * time.Second)
 	}
 	fmt.Println()
-	fmt.Println("El backend todavia no respondio -- puede que necesite un poco mas de")
-	fmt.Println("tiempo (Postgres/OpenSearch tardan mas en el primer arranque). El")
-	fmt.Println("dashboard se abre igual; si no carga, esperá un minuto y recargá la")
-	fmt.Println("pagina.")
+	return false
+}
+
+// printLogs corre 'docker compose logs' para un servicio puntual, para
+// que el usuario (o quien lo ayude) vea la causa real sin tener que
+// abrir una terminal aparte.
+func printLogs(service string, tailLines int) {
+	cmd := exec.Command("docker", "compose", "logs", "--tail", fmt.Sprintf("%d", tailLines), service)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stdout
+	_ = cmd.Run()
 }
 
 func openBrowser(url string) {
