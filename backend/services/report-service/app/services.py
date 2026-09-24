@@ -136,6 +136,11 @@ async def get_report(db: AsyncSession, report_id: str, organization_id: str) -> 
     return result.scalar_one_or_none()
 
 
+async def delete_report(db: AsyncSession, report: GeneratedReport) -> None:
+    await db.delete(report)
+    await db.flush()
+
+
 async def create_schedule(db: AsyncSession, payload, actor: str, organization_id: str) -> ReportSchedule:
     schedule = ReportSchedule(
         organization_id=organization_id,

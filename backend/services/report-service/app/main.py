@@ -150,6 +150,20 @@ async def get_report(report_id: str, claims: dict = Depends(get_current_claims),
     return report
 
 
+@app.delete("/reports/{report_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_report(
+    report_id: str,
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
+):
+    report = await services.get_report(db, report_id, org_id_from_claims(claims))
+    if report is None:
+        raise HTTPException(status_code=404, detail="Reporte no encontrado")
+    await services.delete_report(db, report)
+    await db.commit()
+    logger.info("reporte borrado", extra={"report_id": report_id, "actor": claims.get("sub")})
+
+
 @app.get("/reports/{report_id}/export")
 async def export_report(
     report_id: str,

@@ -84,6 +84,11 @@ export default function Reports() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["reports"] }),
   });
 
+  const deleteReport = useMutation({
+    mutationFn: async (id: string) => reportApi.delete(`/reports/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["reports"] }),
+  });
+
   const createSchedule = useMutation({
     mutationFn: async () =>
       (
@@ -147,6 +152,7 @@ export default function Reports() {
                 <th>Errores</th>
                 <th>Fecha</th>
                 <th>Export</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -161,10 +167,13 @@ export default function Reports() {
                     {" / "}
                     <button className="btn-link" onClick={() => downloadPdf(r.id)}>PDF</button>
                   </td>
+                  <td>
+                    <button className="btn-link" onClick={() => deleteReport.mutate(r.id)}>Eliminar</button>
+                  </td>
                 </tr>
               ))}
               {reports.data.length === 0 && (
-                <tr><td colSpan={5} className="empty-hint">Sin reportes generados todavia.</td></tr>
+                <tr><td colSpan={6} className="empty-hint">Sin reportes generados todavia.</td></tr>
               )}
             </tbody>
           </table>
