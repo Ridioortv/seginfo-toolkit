@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend-smoke:
+    name: Backend - py_compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Compilar todos los .py del backend (chequeo de sintaxis)
+        run: |
+          find backend -name "*.py" -not -path "*/__pycache__/*" -print0 \
+            | xargs -0 python3 -m py_compile
+      - name: Instalar dependencias de test (todos los servicios tienen tests/)
+        run: |
+          for svc in auth-service purple-service scan-service vuln-service \
+                     asset-service case-service integration-service \
+                     notification-service report-service siem-service soar-service; do
+            pip install --quiet -r backend/services/$svc/requirements.txt
+          done
+      - name: Correr pytest por servicio
+        run: |
+          for svc in auth-service purple-service scan-service vuln-service \
+                     asset-service case-service integration-service \
+                     notification-service report-service siem-service soar-service; do
+            echo "== pytest: $svc =="
+            (cd backend/services/$svc && python3 -m pytest -q)
+          done
+
+  frontend-build:
+    name: Frontend - typecheck + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run test -- --run
+      - run: npm run build
+
+  compose-validate:
+    name: docker compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Usar .env.example solo para validar la sintaxis del compose
+        run: cp .env.example .env
+      - name: Validar docker-compose.yml
+        run: docker compose config --quiet
+
+  docker-build:
+    name: Build de imagenes (sin push)
+    runs-on: ubuntu-latest
+    needs: [backend-smoke]
+    strategy:
+      matrix:
+        service:
+          - auth-service
+          - asset-service
+          - scan-service
+          - vuln-service
+          - siem-service
+          - soar-service
+          - case-service
+          - purple-service
+          - report-service
+          - notification-service
+          - integration-service
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.service }}
+        run: |
+          docker build \
+            -f backend/services/${{ matrix.service }}/Dockerfile \
+            -t sentinelops/${{ matrix.service }}:ci \
+            .
+      # TODO: agregar login + push a un registry real (GHCR/ECR, ver
+      # infra/terraform/outputs.tf -> ecr_repository_urls) una vez que el
+      # token/credenciales de despliegue esten configurados como secret
+      # del repo. Sin ese paso, este job solo verifica que cada Dockerfile
+      # buildea correctamente en cada PR.
+
+  frontend-docker-build:
+    name: Build de imagen del frontend (sin push)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build frontend
+        run: docker build -t sentinelops/frontend:ci ./frontend
