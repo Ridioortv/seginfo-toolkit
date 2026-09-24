@@ -108,6 +108,15 @@ class MercadoPagoLinkOut(BaseModel):
     init_point: str
 
 
+class MercadoPagoCancelOut(BaseModel):
+    cancelled: bool
+    valid_until: str
+
+
+class LicenseHistoryOut(BaseModel):
+    notes: str
+
+
 def _extend_expiry(license_key: str, days: int) -> None:
     """Logica compartida por el endpoint admin y el webhook de PayPal --
     se extiende desde la fecha de vencimiento ACTUAL (nunca desde
@@ -308,6 +317,84 @@ async def mercadopago_webhook(request: Request):
         return
     db.append_note(license_key, f"Mercado Pago {event_type} -- +{DEFAULT_PERIOD_DAYS} dias")
     logger.info("licencia extendida via webhook de Mercado Pago", extra={"license_key": license_key, "event_type": event_type})
+
+
+@app.get("/license/{license_key}/history", response_model=LicenseHistoryOut)
+def license_history(license_key: str):
+    """Autoservicio de solo lectura -- devuelve el historial de eventos
+    de esta licencia (pagos confirmados, cancelaciones, renovaciones a
+    mano) tal como se van acumulando en notes (ver db.append_note, se
+    acota solo a los ultimos 50 renglones). Publico a proposito, igual
+    que el resto de /license/{license_key}/... -- son las mismas notas
+    que ya devolvia GET /admin/clients (ahi protegidas con
+    ADMIN_TOKEN), asi que exponerlas sin ese token no abre nada nuevo
+    mas alla de lo que la propia license_key ya podia ver/hacer."""
+    row = db.get_client(license_key)
+    if row is None:
+        raise HTTPException(status_code=404, detail="license_key desconocida")
+    return LicenseHistoryOut(notes=row["notes"] or "")
+
+
+@app.post("/license/{license_key}/mercadopago/subscription-link", response_model=MercadoPagoLinkOut)
+async def mercadopago_public_subscription_link(license_key: str, payload: MercadoPagoLinkRequest):
+    """Autoservicio -- publico a proposito, igual que el resto de
+    /license/{license_key}/... : se autentica solo con conocer la
+    license_key. Lo llama la propia instalacion on-prem cuando el login
+    queda bloqueado por falta de pago (ver _reject_if_org_inactive en
+    auth-service/app/main.py), para poder ofrecerle a quien intenta
+    entrar un link de pago sin que el operador tenga que generarlo a
+    mano via POST /admin/clients/{license_key}/mercadopago-subscription-link.
+    payer_email lo manda el cliente (normalmente el email con el que
+    intento loguearse) -- Mercado Pago lo pide para vincular el pago,
+    no hace falta que coincida con ningun dato guardado aca."""
+    if db.get_client(license_key) is None:
+        raise HTTPException(status_code=404, detail="license_key desconocida")
+    if not mercadopago.is_configured():
+        raise HTTPException(status_code=503, detail="Mercado Pago no esta configurado en este servidor")
+    try:
+        preapproval_id, init_point = await mercadopago.create_subscription_approval_link(
+            license_key, payload.payer_email, payload.plan_id
+        )
+    except mercadopago.MercadoPagoError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    db.set_mercadopago_preapproval_id(license_key, preapproval_id)
+    logger.info("link de pago de Mercado Pago generado (autoservicio)", extra={"license_key": license_key})
+    return MercadoPagoLinkOut(preapproval_id=preapproval_id, init_point=init_point)
+
+
+@app.post("/license/{license_key}/mercadopago/cancel-subscription", response_model=MercadoPagoCancelOut)
+async def mercadopago_cancel_subscription(license_key: str):
+    """Autoservicio del cliente -- publico a proposito, igual que
+    GET /license/{license_key}/status: se autentica solo con conocer su
+    propia license_key (la misma que ya tiene en su .env, nunca hace
+    falta el ADMIN_TOKEN del operador para esto). Corta el PROXIMO
+    cobro automatico de Mercado Pago; el periodo ya pagado sigue
+    corriendo hasta que venza subscription_expires_at (no se toca
+    aca) -- is_org_active() del lado del cliente sigue permitiendole
+    usar la plataforma hasta esa fecha, exactamente como si hubiera
+    dejado que la suscripcion venciera sola."""
+    row = db.get_client(license_key)
+    if row is None:
+        raise HTTPException(status_code=404, detail="license_key desconocida")
+    preapproval_id = row["mercadopago_preapproval_id"]
+    if not preapproval_id:
+        raise HTTPException(
+            status_code=404, detail="esta licencia no tiene ninguna suscripcion de Mercado Pago vinculada"
+        )
+    if not mercadopago.is_configured():
+        raise HTTPException(status_code=503, detail="Mercado Pago no esta configurado en este servidor")
+    try:
+        await mercadopago.cancel_subscription(preapproval_id)
+    except mercadopago.MercadoPagoError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    db.append_note(
+        license_key,
+        "Mercado Pago: suscripcion cancelada por el cliente -- no se renueva mas, "
+        "el periodo pagado sigue corriendo hasta que venza",
+    )
+    logger.info("suscripcion de Mercado Pago cancelada", extra={"license_key": license_key})
+    row = db.get_client(license_key)
+    return MercadoPagoCancelOut(cancelled=True, valid_until=row["subscription_expires_at"])
 
 
 @app.post("/admin/clients/{license_key}/revoke", response_model=ClientOut)

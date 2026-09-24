@@ -115,3 +115,17 @@ export async function login(email: string, password: string, totpCode?: string):
   });
   return data;
 }
+
+// Auto-registro publico (ver POST /auth/register en auth-service): siempre
+// crea al usuario como "analyst" en la organizacion "default" -- el primer
+// usuario que exista en toda la base queda como admin automaticamente. No
+// devuelve tokens (a diferencia de login/loginWithGoogle): Login.tsx llama
+// a login() con las mismas credenciales justo despues, para no duplicar la
+// logica de "que hacer con el TokenPair" en dos lugares.
+export async function register(email: string, password: string, fullName: string): Promise<void> {
+  await authApi.post("/auth/register", {
+    email,
+    password,
+    full_name: fullName,
+  });
+}

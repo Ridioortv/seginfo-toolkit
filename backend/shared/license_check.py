@@ -99,3 +99,81 @@ async def check_license() -> tuple[bool, datetime | None]:
     valid_until_raw = body.get("valid_until")
     valid_until = datetime.fromisoformat(valid_until_raw) if valid_until_raw else None
     return valid, valid_until
+
+
+async def cancel_mercadopago_subscription() -> None:
+    """Le pide al servidor central que cancele el PROXIMO cobro
+    automatico de Mercado Pago vinculado a esta LICENSE_KEY (ver
+    licensing-server/app/main.py::mercadopago_cancel_subscription) --
+    lo que dispara el boton de autoservicio "Cancelar suscripcion" en
+    la organizacion (ver auth-service/app/main.py). No cambia
+    subscription_expires_at ni acá ni del lado del servidor central: el
+    periodo ya pagado sigue corriendo hasta que venza, is_org_active()
+    no se entera de esto hasta esa fecha. No hace falta verificar
+    ninguna firma acá (a diferencia de check_license): esto no le da
+    ningun permiso extra al cliente, solo corta un cobro futuro."""
+    if not is_configured():
+        raise LicenseCheckError("LICENSE_SERVER_URL/LICENSE_KEY no configurados")
+
+    url = f"{LICENSE_SERVER_URL}/license/{LICENSE_KEY}/mercadopago/cancel-subscription"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(url)
+            resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:300] if exc.response is not None else str(exc)
+        raise LicenseCheckError(f"el servidor central rechazo la cancelacion: {detail}") from exc
+    except httpx.HTTPError as exc:
+        raise LicenseCheckError(f"no se pudo contactar al servidor central de licencias: {exc}") from exc
+
+
+async def get_mercadopago_payment_link(payer_email: str) -> str | None:
+    """Le pide al servidor central un link de pago (Mercado Pago) para
+    ESTA license_key -- autoservicio para cuando la suscripcion esta
+    vencida (ver _reject_if_org_inactive en auth-service/app/main.py),
+    asi quien intenta entrar puede pagar y recuperar el acceso sin
+    escribirle al operador. Devuelve None (no LicenseCheckError) si el
+    servidor central esta arriba pero Mercado Pago no esta configurado
+    del lado suyo (503) -- eso no es un fallo de red/firma, es "esta
+    instalacion no ofrece pago automatico", y el caller ya sabe mostrar
+    el mensaje generico de "contacta al operador" en ese caso."""
+    if not is_configured():
+        raise LicenseCheckError("LICENSE_SERVER_URL/LICENSE_KEY no configurados")
+
+    url = f"{LICENSE_SERVER_URL}/license/{LICENSE_KEY}/mercadopago/subscription-link"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(url, json={"payer_email": payer_email})
+            if resp.status_code == 503:
+                return None
+            resp.raise_for_status()
+            body = resp.json()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text[:300] if exc.response is not None else str(exc)
+        raise LicenseCheckError(f"el servidor central rechazo la generacion del link de pago: {detail}") from exc
+    except httpx.HTTPError as exc:
+        raise LicenseCheckError(f"no se pudo contactar al servidor central de licencias: {exc}") from exc
+    return body.get("init_point")
+
+
+async def get_subscription_history() -> list[str]:
+    """Trae el historial de eventos (pagos, cancelaciones, renovaciones)
+    de ESTA license_key desde el servidor central -- lo que alimenta la
+    seccion "Pagos y licencia" del frontend (ver
+    GET /auth/organizations/{id}/subscription/history en
+    auth-service/app/main.py). Devuelve las lineas mas nuevas primero."""
+    if not is_configured():
+        raise LicenseCheckError("LICENSE_SERVER_URL/LICENSE_KEY no configurados")
+
+    url = f"{LICENSE_SERVER_URL}/license/{LICENSE_KEY}/history"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            body = resp.json()
+    except httpx.HTTPError as exc:
+        raise LicenseCheckError(f"no se pudo contactar al servidor central de licencias: {exc}") from exc
+
+    notes = body.get("notes") or ""
+    lines = [ln for ln in notes.split("\n") if ln]
+    return list(reversed(lines))

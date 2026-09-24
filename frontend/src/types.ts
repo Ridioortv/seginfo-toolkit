@@ -282,6 +282,24 @@ export interface OrganizationOut {
   name: string;
   slug: string;
   is_active: boolean;
+  // Presentes solo en la respuesta de GET/POST .../subscription* (ver
+  // backend/services/auth-service/app/schemas.py::OrganizationOut) --
+  // el listado de GET /auth/organizations no los necesita.
+  subscription_expires_at?: string;
+  license_last_checked_at?: string | null;
+}
+
+export interface SubscriptionCancelOut {
+  cancelled: boolean;
+  valid_until: string;
+}
+
+export interface SubscriptionPayLinkOut {
+  payment_url: string;
+}
+
+export interface SubscriptionHistoryOut {
+  history: string[];
 }
 
 export interface OrganizationCreateResult {

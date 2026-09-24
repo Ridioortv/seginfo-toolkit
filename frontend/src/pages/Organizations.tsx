@@ -17,6 +17,9 @@ import PageHeader from "../components/PageHeader";
 //    selector de organizacion para SSO se oculta para un admin comun
 //    (ya sabe cual es la suya, viene de sus claims) y se muestra para
 //    un platform_admin (tiene que elegir a cual le configura SSO).
+//
+// La suscripcion / facturacion de la organizacion (ver cuando vence,
+// pagar, cancelar) vive en su propia pagina, Billing.tsx -- no aca.
 
 export default function Organizations() {
   const claims = useAuthStore((s) => s.claims);

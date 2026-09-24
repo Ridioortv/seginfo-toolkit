@@ -24,6 +24,31 @@ class SubscriptionExtendRequest(BaseModel):
     days: int = Field(default=30, ge=1, le=3650)
 
 
+class SubscriptionCancelOut(BaseModel):
+    """Respuesta del autoservicio "Cancelar suscripcion" -- cancelled
+    confirma que Mercado Pago recibio la cancelacion (no se cobra mas),
+    pero el acceso sigue activo hasta valid_until (el periodo ya pagado
+    no se corta)."""
+
+    cancelled: bool
+    valid_until: datetime
+
+
+class SubscriptionPayLinkOut(BaseModel):
+    """Link de pago (Mercado Pago) para pagar por primera vez o volver a
+    suscribirse tras cancelar -- ver POST .../subscription/pay-link."""
+
+    payment_url: str
+
+
+class SubscriptionHistoryOut(BaseModel):
+    """Historial de eventos de la licencia (pagos, cancelaciones,
+    renovaciones a mano), mas nuevos primero -- ver
+    GET .../subscription/history."""
+
+    history: list[str]
+
+
 class OrganizationCreate(BaseModel):
     """Crea una organizacion nueva Y su primer usuario admin en un solo
     paso -- deliberadamente no hay auto-registro publico de organizaciones

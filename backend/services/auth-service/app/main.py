@@ -37,6 +37,9 @@ from app.schemas import (
     SsoConfigIn,
     SsoConfigOut,
     SubscriptionExtendRequest,
+    SubscriptionCancelOut,
+    SubscriptionPayLinkOut,
+    SubscriptionHistoryOut,
 )
 from app.dependencies import get_current_claims, require_role, require_platform_admin, require_org_admin_or_platform_admin
 from app import services, oidc
@@ -61,15 +64,38 @@ async def _reject_if_org_inactive(db: AsyncSession, org, actor_email: str) -> No
     la suscripcion al dia -- ver services.is_org_active() para el
     criterio exacto. Se llama en los 4 caminos que emiten tokens
     (login, Google, SSO, refresh); bloqueo total por decision del
-    operador, no un downgrade a solo-lectura."""
+    operador, no un downgrade a solo-lectura.
+
+    A quien llega hasta aca ya se le verificaron sus credenciales (esta
+    funcion se llama DESPUES de authenticate()/Google/SSO, nunca
+    antes) -- por eso alcanza esa confianza para, ademas de bloquearlo,
+    ofrecerle de una un link de pago (Mercado Pago) generado al vuelo
+    contra el servidor central de licencias, con actor_email como
+    payer_email. El campo "detail" del 402 pasa a ser un objeto (no un
+    string plano) para que el frontend pueda mostrar un boton "Pagar
+    membresia" en vez de solo un cartel de error -- ver Login.tsx."""
     if services.is_org_active(org):
         return
     login_attempts_total.labels(outcome="failure").inc()
     await services.record_audit_event(db, actor_email, "auth.login.blocked_subscription", org.id)
     await db.commit()
+
+    payment_url = None
+    if license_check.is_configured():
+        try:
+            payment_url = await license_check.get_mercadopago_payment_link(actor_email)
+        except license_check.LicenseCheckError as exc:
+            logger.warning("no se pudo generar el link de pago de Mercado Pago para %s: %s", org.id, exc)
+
+    message = "La suscripcion de esta organizacion no esta al dia."
+    if payment_url:
+        message += " Paga la membresia para recuperar el acceso."
+    else:
+        message += " Contacta al administrador de la plataforma para renovarla."
+
     raise HTTPException(
         status_code=status.HTTP_402_PAYMENT_REQUIRED,
-        detail="La suscripcion de esta organizacion no esta al dia. Contacta al administrador de la plataforma para renovarla.",
+        detail={"message": message, "payment_url": payment_url},
     )
 
 
@@ -420,6 +446,103 @@ async def extend_subscription(
     )
     await db.commit()
     return org
+
+
+@app.post("/auth/organizations/{org_id}/subscription/cancel-payment", response_model=SubscriptionCancelOut)
+async def cancel_subscription_payment(
+    org_id: str,
+    claims: dict = Depends(require_org_admin_or_platform_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Autoservicio -- a diferencia de extend_subscription (arriba), esto
+    NO otorga ningun beneficio gratis (no toca subscription_expires_at),
+    solo corta el PROXIMO cobro automatico de Mercado Pago -- por eso el
+    admin de la propia organizacion puede llamarlo el mismo, sin
+    necesitar a un platform_admin. El acceso sigue activo hasta que
+    venza el periodo ya pagado (ver cancel_mercadopago_subscription en
+    backend/shared/license_check.py)."""
+    org = await services.get_organization_by_id(db, org_id)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organizacion no encontrada")
+    if not license_check.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Esta instalacion no tiene un servidor central de licencias configurado -- "
+            "para cancelar la suscripcion, contacta al operador.",
+        )
+    try:
+        await license_check.cancel_mercadopago_subscription()
+    except license_check.LicenseCheckError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    await services.record_audit_event(
+        db, claims.get("sub", ""), "organization.subscription.cancel_payment", org_id
+    )
+    await db.commit()
+    return SubscriptionCancelOut(cancelled=True, valid_until=org.subscription_expires_at)
+
+
+@app.post("/auth/organizations/{org_id}/subscription/pay-link", response_model=SubscriptionPayLinkOut)
+async def get_subscription_pay_link(
+    org_id: str,
+    claims: dict = Depends(require_org_admin_or_platform_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Autoservicio -- genera un link de pago de Mercado Pago para esta
+    organizacion, tanto para pagar por primera vez como para volver a
+    suscribirse despues de haber cancelado (ver cancel_subscription_payment
+    arriba) mientras el periodo ya pagado todavia no vencio. payer_email
+    es el email de QUIEN ESTA LOGUEADO pidiendolo (se resuelve del JWT,
+    nunca se le pide al frontend que lo mande) -- Mercado Pago lo pide
+    solo para vincular el pago, no hace falta que sea el admin de la
+    organizacion en particular."""
+    org = await services.get_organization_by_id(db, org_id)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organizacion no encontrada")
+    if not license_check.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Esta instalacion no tiene un servidor central de licencias configurado -- "
+            "para pagar o renovar, contacta al operador.",
+        )
+    user = await services.get_user_by_id(db, claims.get("sub", ""))
+    if user is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    try:
+        payment_url = await license_check.get_mercadopago_payment_link(user.email)
+    except license_check.LicenseCheckError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not payment_url:
+        raise HTTPException(
+            status_code=503,
+            detail="Mercado Pago no esta configurado del lado del servidor central de licencias.",
+        )
+    await services.record_audit_event(db, claims.get("sub", ""), "organization.subscription.pay_link", org_id)
+    await db.commit()
+    return SubscriptionPayLinkOut(payment_url=payment_url)
+
+
+@app.get("/auth/organizations/{org_id}/subscription/history", response_model=SubscriptionHistoryOut)
+async def get_subscription_history(
+    org_id: str,
+    claims: dict = Depends(require_org_admin_or_platform_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Solo lectura -- historial de pagos/cancelaciones/renovaciones de
+    esta licencia, para que el admin de la organizacion no tenga que
+    pedirselo al operador. Lista vacia (nunca error) si no hay servidor
+    central configurado -- el frontend ya sabe mostrar "sin historial"
+    en ese caso."""
+    org = await services.get_organization_by_id(db, org_id)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organizacion no encontrada")
+    if not license_check.is_configured():
+        return SubscriptionHistoryOut(history=[])
+    try:
+        history = await license_check.get_subscription_history()
+    except license_check.LicenseCheckError as exc:
+        logger.warning("no se pudo traer el historial de licencia para %s: %s", org_id, exc)
+        return SubscriptionHistoryOut(history=[])
+    return SubscriptionHistoryOut(history=history)
 
 
 # --- SSO empresarial (OIDC) ---

@@ -16,10 +16,12 @@ const NAV_ITEMS = [
 ];
 
 // Solo un admin de organizacion (administra su propia empresa: usuarios,
-// SSO) o un platform_admin (administra la plataforma entera: crea
-// organizaciones nuevas) necesita esta pagina -- ver Organizations.tsx y
+// SSO, facturacion) o un platform_admin (administra la plataforma entera:
+// crea organizaciones nuevas, ve/administra la facturacion de cualquiera)
+// necesita estas dos paginas -- ver Organizations.tsx, Billing.tsx y
 // dependencies.py::require_platform_admin/require_org_admin_or_platform_admin.
 const ORG_NAV_ITEM = { to: "/organizations", label: "Organizaciones" };
+const BILLING_NAV_ITEM = { to: "/billing", label: "Pagos y licencia" };
 
 export default function Layout() {
   const claims = useAuthStore((s) => s.claims);
@@ -27,7 +29,7 @@ export default function Layout() {
   const navigate = useNavigate();
 
   const canManageOrganizations = claims?.role === "admin" || claims?.platform_admin === true;
-  const navItems = canManageOrganizations ? [...NAV_ITEMS, ORG_NAV_ITEM] : NAV_ITEMS;
+  const navItems = canManageOrganizations ? [...NAV_ITEMS, ORG_NAV_ITEM, BILLING_NAV_ITEM] : NAV_ITEMS;
 
   function handleLogout() {
     logout();
