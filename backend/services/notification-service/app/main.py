@@ -15,7 +15,7 @@ from backend.shared.logging import configure_logging
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
-from app.schemas import ChannelCreate, ChannelOut, NotifyRequest, NotifyResult, NotifyLogOut
+from app.schemas import ChannelCreate, ChannelUpdate, ChannelOut, NotifyRequest, NotifyResult, NotifyLogOut
 from app.dependencies import get_current_claims, require_role
 from app import services
 
@@ -73,6 +73,35 @@ async def create_channel(
 @app.get("/channels", response_model=list[ChannelOut])
 async def list_channels(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
     return await services.list_channels(db, org_id_from_claims(claims))
+
+
+@app.patch("/channels/{channel_id}", response_model=ChannelOut)
+async def update_channel(
+    channel_id: str,
+    payload: ChannelUpdate,
+    claims: dict = Depends(require_role("admin", "soc_manager")),
+    db: AsyncSession = Depends(get_db),
+):
+    channel = await services.get_channel(db, channel_id, org_id_from_claims(claims))
+    if channel is None:
+        raise HTTPException(status_code=404, detail="Canal no encontrado")
+    channel = await services.update_channel(db, channel, payload)
+    await db.commit()
+    return channel
+
+
+@app.delete("/channels/{channel_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_channel(
+    channel_id: str,
+    claims: dict = Depends(require_role("admin", "soc_manager")),
+    db: AsyncSession = Depends(get_db),
+):
+    channel = await services.get_channel(db, channel_id, org_id_from_claims(claims))
+    if channel is None:
+        raise HTTPException(status_code=404, detail="Canal no encontrado")
+    await services.delete_channel(db, channel)
+    await db.commit()
+    logger.info("canal de notificacion borrado", extra={"channel_id": channel_id, "actor": claims.get("sub")})
 
 
 @app.post("/notify", response_model=NotifyResult)

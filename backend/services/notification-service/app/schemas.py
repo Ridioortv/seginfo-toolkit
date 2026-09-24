@@ -13,6 +13,12 @@ class ChannelCreate(BaseModel):
     enabled: bool = True
 
 
+class ChannelUpdate(BaseModel):
+    name: str | None = None
+    config: dict | None = None
+    enabled: bool | None = None
+
+
 class ChannelOut(BaseModel):
     id: str
     name: str

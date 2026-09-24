@@ -36,6 +36,17 @@ export default function Notifications() {
 
   const enabledChannelsCount = channels.data?.filter((c) => c.enabled).length ?? 0;
 
+  const toggleChannel = useMutation({
+    mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) =>
+      (await notificationApi.patch<ChannelOut>(`/channels/${id}`, { enabled })).data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["channels"] }),
+  });
+
+  const deleteChannel = useMutation({
+    mutationFn: async (id: string) => notificationApi.delete(`/channels/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["channels"] }),
+  });
+
   const createChannel = useMutation({
     mutationFn: async () => {
       const config = newType === "email" ? { smtp_to: newTarget } : { webhook_url: newTarget };
@@ -81,12 +92,28 @@ export default function Notifications() {
         subtitle="Canales de aviso (email/Slack/webhook). Por defecto en modo DRY-RUN: no envia nada real hasta que un operador lo habilite explicitamente."
       />
 
+      <div className="cards-grid">
+        <div className="stat-card">
+          <span className="stat-label">Canales</span>
+          <span className="stat-value">{enabledChannelsCount} / {channels.data?.length ?? 0}</span>
+          <span className="stat-hint">habilitados / totales</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Envios totales</span>
+          <span className="stat-value">{logs.data?.length ?? "-"}</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Envios fallidos</span>
+          <span className="stat-value">{(logs.data ?? []).filter((l) => l.status === "failed").length}</span>
+        </div>
+      </div>
+
       <div className="panel">
         <h2>Canales configurados</h2>
         {channels.data && (
           <table className="data-table">
             <thead>
-              <tr><th>Nombre</th><th>Tipo</th><th>Destino</th><th>Habilitado</th></tr>
+              <tr><th>Nombre</th><th>Tipo</th><th>Destino</th><th>Habilitado</th><th></th></tr>
             </thead>
             <tbody>
               {channels.data.map((c) => (
@@ -94,11 +121,26 @@ export default function Notifications() {
                   <td>{c.name}</td>
                   <td>{c.channel_type}</td>
                   <td className="mono">{String(c.config.webhook_url ?? c.config.smtp_to ?? "-")}</td>
-                  <td>{c.enabled ? "si" : "no"}</td>
+                  <td>
+                    {canManageChannels ? (
+                      <input
+                        type="checkbox"
+                        checked={c.enabled}
+                        onChange={(e) => toggleChannel.mutate({ id: c.id, enabled: e.target.checked })}
+                      />
+                    ) : (
+                      c.enabled ? "si" : "no"
+                    )}
+                  </td>
+                  <td>
+                    {canManageChannels && (
+                      <button className="btn-link" onClick={() => deleteChannel.mutate(c.id)}>Eliminar</button>
+                    )}
+                  </td>
                 </tr>
               ))}
               {channels.data.length === 0 && (
-                <tr><td colSpan={4} className="empty-hint">Sin canales configurados todavia. Agrega uno abajo.</td></tr>
+                <tr><td colSpan={5} className="empty-hint">Sin canales configurados todavia. Agrega uno abajo.</td></tr>
               )}
             </tbody>
           </table>

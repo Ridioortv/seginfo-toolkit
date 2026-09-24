@@ -51,6 +51,26 @@ async def list_channels(db: AsyncSession, organization_id: str) -> list[Notifica
     return list(result.scalars().all())
 
 
+async def get_channel(db: AsyncSession, channel_id: str, organization_id: str) -> NotificationChannel | None:
+    channel = await db.get(NotificationChannel, channel_id)
+    if channel is None or channel.organization_id != organization_id:
+        return None
+    return channel
+
+
+async def update_channel(db: AsyncSession, channel: NotificationChannel, payload) -> NotificationChannel:
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(channel, field, value)
+    await db.flush()
+    await db.refresh(channel)
+    return channel
+
+
+async def delete_channel(db: AsyncSession, channel: NotificationChannel) -> None:
+    await db.delete(channel)
+    await db.flush()
+
+
 async def _send_email(
     channel: NotificationChannel, subject: str, body: str, attachments: list | None = None
 ) -> tuple[str, str]:
