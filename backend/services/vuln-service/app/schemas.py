@@ -65,6 +65,7 @@ class VulnerabilityOut(BaseModel):
     status: VulnStatus
     triage_note: str
     triaged_by: str
+    remediation_steps: list[str]
     created_at: datetime
     updated_at: datetime
 

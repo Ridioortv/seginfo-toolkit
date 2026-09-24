@@ -87,10 +87,16 @@ export interface VulnerabilityOut {
   package: string;
   installed_version: string;
   fixed_version: string;
+  port: number | null;
+  service: string;
   cvss_score: number | null;
   epss_score: number | null;
   is_kev: boolean;
   priority_score: number;
+  status: string;
+  triage_note: string;
+  triaged_by: string;
+  remediation_steps: string[];
 }
 
 export interface VulnerabilityStatsOut {

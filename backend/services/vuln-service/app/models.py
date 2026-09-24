@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from sqlalchemy import String, DateTime, Enum as SAEnum, Float, Boolean, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from backend.shared.database import Base
+from app import remediation
 import enum
 
 
@@ -69,3 +70,11 @@ class Vulnerability(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+    @property
+    def remediation_steps(self) -> list[str]:
+        """Pasos de remediacion sugeridos -- se calculan al vuelo a partir
+        de los campos ya guardados (package/fixed_version, puerto, CVE,
+        KEV), nunca se persisten: siempre reflejan el estado actual del
+        registro sin necesitar una migracion de columna nueva."""
+        return remediation.build_remediation_steps(self)
