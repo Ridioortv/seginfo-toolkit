@@ -154,3 +154,43 @@ corregir lo que se encontrara roto -- no una fase nueva.
   una base real. Tests de frontend que rendericen componentes (con
   @testing-library/react) en vez de solo la logica pura extraida a
   utils/.
+
+## Cierre del pedido de funcionalidades "100% funcional por botones" (2026-09-24)
+Corrida a pedido explicito de Manu: hacer que Activos, Escaneos,
+Vulnerabilidades, SIEM, SOAR, Casos, Purple Team, Reportes,
+Notificaciones e Integraciones queden completas y usables con botones
+(sin JSON/codigo a mano), y agregar una guia de uso dentro de la app.
+Ejecutada en 10 fases, cada una commiteada y pusheada por separado:
+
+- Activos: alta de activos + boton "Escanear (detectar fallos)" por
+  fila que lanza un scan-job real contra ese activo.
+- Escaneos: borrado por item de escaneos y agent-scans ya terminados
+  (`DELETE /scans/{id}`, `DELETE /agent-scans/{id}`, solo en estados
+  terminales).
+- Vulnerabilidades: pasos de remediacion generados por reglas
+  (`vuln-service/app/remediation.py`, sin IA/red) mostrados por fila +
+  triage (confirmado/falso positivo/riesgo aceptado/remediado).
+- SIEM: severidad agregada al esquema ECS-lite, 3 reglas Sigma
+  recomendadas seedeables con un boton, y creador de reglas 100% por
+  formulario (sin JSON a mano). Los hallazgos de scan-service ahora se
+  forwardean tambien a SIEM (antes solo a vuln-service).
+- SOAR: borrado de playbooks + creador de pasos de playbook por
+  formulario (accion + parametros), sin textarea de JSON.
+- Casos: sincronizacion automatica periodica con SOAR
+  (`case-service::_soar_sync_loop`, mismo patron que
+  `auth-service::_license_check_loop`) + gestion completa por botones
+  (tomar/resolver/cerrar/reabrir, asignar, notas).
+- Purple Team: declaracion de ejercicios por checklist de tecnicas
+  ATT&CK + recalculo de cobertura y vista de gaps, todo por UI.
+- Reportes: borrado de reportes generados por item.
+- Notificaciones: dashboard + habilitar/deshabilitar/borrar canales.
+- Integraciones: formularios estructurados por tipo de conector
+  (firewall/EDR, ticketing) en vez de un textarea de config JSON.
+- Ayuda: seccion nueva (`/help`), visible para todos los roles, con
+  guia interactiva en espanol simple de cada funcion de la plataforma,
+  busqueda de texto libre y progreso de lectura persistido en el
+  navegador (mas una subseccion solo-admin para Organizaciones y pagos).
+
+Validacion: cada fase se verifico con pytest real de los servicios
+backend tocados, `tsc --noEmit`, `vitest run` y `npm run build` del
+frontend antes de commitear -- todo en verde en las 10 fases.
