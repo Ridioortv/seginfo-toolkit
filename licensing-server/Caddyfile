@@ -1,0 +1,10 @@
+{$LICENSE_SERVER_DOMAIN} {
+	# Caddy pide y renueva el certificado TLS solo (Let's Encrypt) para
+	# este dominio -- por eso LICENSE_SERVER_DOMAIN tiene que ser un
+	# dominio real que ya apunte (registro DNS A) a la IP publica del
+	# VPS, no la IP sola. reverse_proxy usa el nombre del servicio
+	# ("licensing-server") en vez de localhost porque Caddy y
+	# licensing-server se hablan por la red interna de Docker Compose,
+	# no por el puerto publicado en el host.
+	reverse_proxy licensing-server:8000
+}

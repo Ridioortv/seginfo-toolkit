@@ -8,9 +8,14 @@
 #                          # (generar el segundo con: python generate_keys.py)
 #   docker compose up -d --build
 #
-# Ver README.md para el detalle completo (incluye como poner esto detras
-# de TLS, que es imprescindible: ADMIN_TOKEN viaja en texto plano en el
-# header Authorization).
+# Ver README.md para el detalle completo. Incluye Caddy (TLS automatico
+# vía Let's Encrypt) delante -- es imprescindible, no opcional:
+# ADMIN_TOKEN viaja en texto plano en el header Authorization, asi que
+# sin TLS cualquiera en el camino (el propio VPS, un proxy intermedio,
+# la red del cliente) podria leerlo. Antes de "docker compose up",
+# completar LICENSE_SERVER_DOMAIN en .env con un dominio que ya apunte
+# (registro DNS A) a la IP publica de este VPS -- Caddy necesita un
+# dominio real para pedir el certificado, una IP sola no alcanza.
 services:
   licensing-server:
     restart: unless-stopped
@@ -21,7 +26,27 @@ services:
     volumes:
       - licensing_data:/data
     ports:
-      - "8443:8000"
+      # Solo en localhost -- para poder curlear desde el propio VPS al
+      # debuggear. La unica entrada real desde internet es via Caddy
+      # (puertos 80/443 mas abajo), nunca directo a este puerto en
+      # texto plano.
+      - "127.0.0.1:8443:8000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - licensing-server
+    env_file: .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
 
 volumes:
   licensing_data:
+  caddy_data:
+  caddy_config:

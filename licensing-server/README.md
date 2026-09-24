@@ -34,10 +34,13 @@ opcional, no un requisito para que el cobro mensual funcione hoy.**
 
 ## Desplegar
 
-Necesitás: un VPS con Docker (DigitalOcean, Hetzner, etc. -- cualquiera
-de ~$5-6 USD/mes alcanza de sobra) y, para producción de verdad, TLS
-delante (Caddy o nginx con Let's Encrypt) porque `ADMIN_TOKEN` viaja en
-texto plano en el header `Authorization` de los endpoints `/admin/*`.
+Necesitás: un VPS con Docker y un dominio (o subdominio) que apunte a
+su IP -- Caddy (incluido en `docker-compose.yml`, ver mas abajo) le
+pone TLS automático (Let's Encrypt) delante, imprescindible porque
+`ADMIN_TOKEN` viaja en texto plano en el header `Authorization` de los
+endpoints `/admin/*`. Cualquier VPS con Docker sirve (DigitalOcean,
+Hetzner, ~$5-6 USD/mes) -- la sección "Desplegar en Google Cloud Free
+Tier" mas abajo cubre la opción gratis.
 
 ```bash
 cd licensing-server
@@ -48,11 +51,91 @@ python3 -m venv .venv && .venv/bin/pip install cryptography
 # (o al .env de cada instalación antes de armar el .rar)
 
 cp .env.example .env
-# completar ADMIN_TOKEN (un secreto largo random propio) y
-# LICENSE_SIGNING_PRIVATE_KEY (el que imprimió generate_keys.py)
+# completar ADMIN_TOKEN (un secreto largo random propio),
+# LICENSE_SIGNING_PRIVATE_KEY (el que imprimió generate_keys.py) y
+# LICENSE_SERVER_DOMAIN (el dominio que ya apunta a este VPS -- Caddy
+# lo necesita para pedir el certificado, una IP sola no le alcanza)
 
 docker compose up -d --build
 ```
+
+## Desplegar en Google Cloud Free Tier (gratis para siempre)
+
+Instancia `e2-micro` (1 vCPU compartida, 1GB RAM) -- de sobra para este
+servicio (SQLite + FastAPI, trafico minimo). Gratis para siempre
+mientras se respeten estas condiciones (que ya están abajo).
+
+### 1. Crear la cuenta y el proyecto
+
+En https://console.cloud.google.com/freetrial/signup te va a pedir una
+tarjeta (no cobra nada mientras no salgas del free tier a mano). Creá
+un proyecto nuevo (cualquier nombre).
+
+### 2. Reservar una IP externa estática
+
+Sin esto, la IP del VPS puede cambiar si se reinicia -- rompería el DNS
+apenas pase. Es gratis mientras esté asignada a una instancia
+corriendo (cobra solo si queda "suelta", sin usar).
+
+Consola: **VPC network -> IP addresses -> Reserve external static
+address** (región: alguna de `us-west1`, `us-central1` o `us-east1` --
+son las únicas elegibles para el free tier).
+
+### 3. Crear la VM
+
+Consola: **Compute Engine -> VM instances -> Create instance**.
+
+- Región: la misma que la IP reservada (`us-west1`, `us-central1` o
+  `us-east1`) -- fuera de esas tres, se cobra.
+- Tipo de máquina: **e2-micro**.
+- Boot disk: Ubuntu 22.04 LTS o más nueva, disco estándar (no SSD) de
+  hasta 30GB -- SSD o más tamaño sale de lo gratis.
+- Redes -> IP externa: elegí la IP estática que reservaste en el paso 2.
+- Firewall: tildá "Allow HTTP traffic" y "Allow HTTPS traffic" (abre
+  los puertos 80/443, los que usa Caddy).
+- Desactivá cualquier opción de backups/snapshots automáticos y
+  monitoring adicional -- son las que más rápido generan cargos por
+  fuera del free tier.
+
+### 4. Apuntar tu dominio
+
+En el DNS de tu dominio (el que sea -- no hace falta comprar uno nuevo
+si ya tenés alguno; si no tenés, un subdominio gratis de
+[DuckDNS](https://www.duckdns.org/) también sirve), creá un registro
+**A** apuntando a la IP estática del paso 2. Esperá unos minutos a que
+propague antes del paso 6 (Caddy necesita poder resolverlo para pedir
+el certificado).
+
+### 5. Conectarte e instalar Docker
+
+Desde la consola de Google Cloud, botón **SSH** al lado de la
+instancia (abre una terminal en el navegador, no hace falta configurar
+nada más):
+
+```bash
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+# cerrá y volvé a abrir la sesion SSH para que el grupo tome efecto
+git clone https://github.com/Ridioortv/seginfo-toolkit.git
+cd seginfo-toolkit/licensing-server
+```
+
+### 6. Configurar y levantar
+
+Seguí el bloque de comandos de la sección "Desplegar" de más arriba
+(`generate_keys.py`, completar `.env` -- ADMIN_TOKEN,
+LICENSE_SIGNING_PRIVATE_KEY y `LICENSE_SERVER_DOMAIN` con el dominio
+del paso 4) y despues `docker compose up -d --build`. A los pocos
+segundos Caddy pide el certificado solo -- `docker compose logs -f
+caddy` para ver que diga "certificate obtained successfully".
+
+### El límite a vigilar: egreso de red
+
+El free tier de GCP incluye 1GB/mes de salida a internet gratis; de
+ahí en adelante cobra (~$0.12/GB). Para este servicio (un JSON chico
+por cada check-in de licencia, una o dos veces por día por cliente) es
+un margen enorme -- no hay riesgo real de pasarlo salvo que tengas
+cientos de clientes.
 
 ## Gestionar clientes
 
