@@ -14,7 +14,11 @@ Variables de entorno (ver .env.example):
         Webhooks -> configurar notificaciones). Es lo unico que permite
         distinguir un webhook real de uno inventado por cualquiera.
     MERCADOPAGO_PLAN_ID -- el id del plan de suscripcion (creado una
-        vez, ver README.md) al que se suscribe cada cliente.
+        vez, ver README.md). Cada cliente NO se suscribe directo a este
+        plan (ver el docstring de create_subscription_approval_link
+        para el por que) -- se usa solo como referencia de la que este
+        servidor copia el monto/frecuencia al crear la suscripcion de
+        cada cliente.
     MERCADOPAGO_BACK_URL -- a donde vuelve el navegador del cliente
         despues de aprobar/rechazar en Mercado Pago.
 
@@ -73,12 +77,25 @@ def _headers() -> dict:
 async def create_subscription_approval_link(
     license_key: str, payer_email: str, plan_id: str | None = None
 ) -> tuple[str, str]:
-    """Crea una suscripcion (Preapproval) en Mercado Pago asociada al
-    plan de $ARS/30 dias, con external_reference=license_key, y
-    devuelve (preapproval_id, init_point). El operador manda init_point
-    al cliente; cuando lo aprueba (con su propia cuenta/tarjeta),
-    Mercado Pago factura a la cuenta del operador y dispara el webhook
-    subscription_preapproval."""
+    """Crea una suscripcion (Preapproval) en Mercado Pago con los mismos
+    terminos del plan de referencia (MERCADOPAGO_PLAN_ID), con
+    external_reference=license_key, y devuelve (preapproval_id,
+    init_point). El operador manda init_point al cliente; cuando lo
+    aprueba (con su propia cuenta/tarjeta, en la pagina de Mercado
+    Pago), Mercado Pago factura a la cuenta del operador y dispara el
+    webhook subscription_preapproval.
+
+    A proposito NO se manda "preapproval_plan_id" en el POST /preapproval
+    de mas abajo -- Mercado Pago exige "card_token_id" (tokenizar la
+    tarjeta del lado del servidor) para cualquier suscripcion creada CON
+    ese campo ("Suscripcion con plan asociado", ver la documentacion de
+    Mercado Pago: "siempre debe crearse con su card_token_id y en status
+    Authorized"), lo que rompe el flujo que este servidor necesita (el
+    cliente entra el/ella misma su tarjeta en la pagina de Mercado
+    Pago, este servidor nunca la toca). En cambio, se lee el plan solo
+    para copiar sus terminos (auto_recurring, reason) y se crea una
+    "Suscripcion SIN plan asociado" con status=pending -- ese flujo si
+    devuelve init_point sin pedir card_token_id."""
     if not is_configured():
         raise MercadoPagoError("MERCADOPAGO_ACCESS_TOKEN no configurado")
     plan_id = plan_id or MERCADOPAGO_PLAN_ID
@@ -86,15 +103,29 @@ async def create_subscription_approval_link(
         raise MercadoPagoError("No hay plan_id (MERCADOPAGO_PLAN_ID vacio y no se paso uno explicito)")
 
     async with httpx.AsyncClient(timeout=15) as client:
+        plan_resp = await client.get(f"{BASE_URL}/preapproval_plan/{plan_id}", headers=_headers())
+        if plan_resp.status_code >= 400:
+            raise MercadoPagoError(
+                f"no se pudo leer el plan {plan_id}: {plan_resp.status_code} {plan_resp.text[:500]}"
+            )
+        plan = plan_resp.json()
+        auto_recurring = plan.get("auto_recurring") or {}
+
         resp = await client.post(
             f"{BASE_URL}/preapproval",
             headers=_headers(),
             json={
-                "preapproval_plan_id": plan_id,
                 "external_reference": license_key,
                 "payer_email": payer_email,
-                "reason": "SentinelOps mensual",
+                "reason": plan.get("reason") or "SentinelOps mensual",
                 "back_url": MERCADOPAGO_BACK_URL,
+                "status": "pending",
+                "auto_recurring": {
+                    "frequency": auto_recurring.get("frequency", 30),
+                    "frequency_type": auto_recurring.get("frequency_type", "days"),
+                    "transaction_amount": auto_recurring.get("transaction_amount"),
+                    "currency_id": auto_recurring.get("currency_id", "ARS"),
+                },
             },
         )
         if resp.status_code >= 400:
