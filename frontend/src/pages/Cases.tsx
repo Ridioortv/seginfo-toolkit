@@ -4,14 +4,13 @@ import type { CaseOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { SeverityBadge, StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
+import { isSlaBreached } from "../utils/sla";
 
 export default function Cases() {
   const cases = useQuery({
     queryKey: ["cases"],
     queryFn: async () => (await caseApi.get<CaseOut[]>("/cases")).data,
   });
-
-  const now = new Date().toISOString();
 
   return (
     <div>
@@ -38,7 +37,7 @@ export default function Cases() {
             </thead>
             <tbody>
               {cases.data.map((c) => {
-                const breached = !!c.sla_due_at && c.sla_due_at < now && c.status !== "resolved" && c.status !== "closed";
+                const breached = isSlaBreached(c.sla_due_at, c.status);
                 return (
                   <tr key={c.id}>
                     <td>{c.title}</td>

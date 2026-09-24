@@ -34,6 +34,7 @@ COPY backend/services/scan-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/services/scan-service/app ./app
+COPY backend/services/scan-service/tests ./tests
 COPY backend/shared ./backend/shared
 RUN touch backend/__init__.py
 

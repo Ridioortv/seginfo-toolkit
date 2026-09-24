@@ -9,6 +9,7 @@ COPY backend/services/auth-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/services/auth-service/app ./app
+COPY backend/services/auth-service/tests ./tests
 COPY backend/shared ./backend/shared
 RUN touch backend/__init__.py
 

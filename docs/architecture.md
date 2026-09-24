@@ -2,9 +2,27 @@
 
 ## Vision general
 
-Microservicios independientes (FastAPI) detras de un API gateway, con un frontend
-SPA en React/TypeScript. Cada servicio tiene su propia base de datos logica dentro
-de Postgres y se comunica de forma asincrona via RabbitMQ cuando corresponde.
+Microservicios independientes (FastAPI), cada uno con su propia base de datos
+logica dentro de la misma instancia de Postgres, mas un frontend SPA en
+React/TypeScript que les habla directo (no hay un API gateway separado: el
+frontend guarda la URL base de cada servicio via las variables `VITE_*_API_BASE_URL`
+de `.env`/`.env.example`).
+
+La comunicacion entre microservicios es sincrona, por HTTP/REST (`httpx`),
+nunca por una cola de mensajes: por ejemplo, purple-service le pregunta a
+siem-service por sus reglas via `GET /internal/rule-tags`, y report-service
+agrega datos de vuln-service/siem-service/case-service/purple-service con
+`GET` directos, autenticado con un JWT de servicio-a-servicio de corta
+duracion (`backend.shared.security.create_access_token`, ver
+`report-service/app/services.py::_fetch`). No hay RabbitMQ ni ninguna otra
+cola de mensajes en este proyecto (el diagrama original planeaba una, pero
+la implementacion real quedo mas simple, sincrona, y asi se documenta aca).
+
+Tampoco hay MinIO ni ningun object storage externo: los reportes generados
+(PDF/CSV) se guardan como blob base64 en la propia tabla `generated_reports`
+de Postgres (ver `report-service/app/models.py::GeneratedReport`) -- son
+documentos chicos (reportes de texto/tablas, no adjuntos multimedia), asi
+que no justifican un datastore aparte.
 
 ## Diagrama
 
@@ -32,8 +50,6 @@ flowchart TB
         PG[(PostgreSQL)]
         REDIS[(Redis)]
         OS[(OpenSearch)]
-        MQ[(RabbitMQ)]
-        MINIO[(MinIO)]
     end
 
     FE --> AUTH
@@ -50,15 +66,17 @@ flowchart TB
     SIEM --> SOAR
     SOAR --> CASE
     PURPLE --> SIEM
+    REPORT --> VULN
+    REPORT --> SIEM
+    REPORT --> CASE
+    REPORT --> PURPLE
 
     AUTH --> PG
     ASSET --> PG
     VULN --> PG
     CASE --> PG
+    REPORT --> PG
     SIEM --> OS
-    SCAN --> MQ
-    SOAR --> MQ
-    REPORT --> MINIO
     AUTH --> REDIS
 \`\`\`
 
