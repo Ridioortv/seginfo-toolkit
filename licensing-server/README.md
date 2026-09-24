@@ -39,8 +39,12 @@ su IP -- Caddy (incluido en `docker-compose.yml`, ver mas abajo) le
 pone TLS automático (Let's Encrypt) delante, imprescindible porque
 `ADMIN_TOKEN` viaja en texto plano en el header `Authorization` de los
 endpoints `/admin/*`. Cualquier VPS con Docker sirve (DigitalOcean,
-Hetzner, ~$5-6 USD/mes) -- la sección "Desplegar en Google Cloud Free
-Tier" mas abajo cubre la opción gratis.
+Hetzner, ~$5-6 USD/mes). Este camino (y el de Google Cloud Free Tier,
+mas abajo) piden tarjeta para verificar la cuenta -- si no tenés una,
+o no te la aceptan, la sección **"Desplegar en Render + Neon (gratis,
+sin tarjeta)"** es la alternativa: gratis para siempre, sin tarjeta en
+ningún lado, a cambio de una demora de ~1 minuto si el servicio estuvo
+15+ minutos sin uso.
 
 ```bash
 cd licensing-server
@@ -136,6 +140,99 @@ ahí en adelante cobra (~$0.12/GB). Para este servicio (un JSON chico
 por cada check-in de licencia, una o dos veces por día por cliente) es
 un margen enorme -- no hay riesgo real de pasarlo salvo que tengas
 cientos de clientes.
+
+## Desplegar en Render + Neon (gratis, sin tarjeta)
+
+Alternativa completa a los dos caminos de arriba para cuando no tenés
+tarjeta o no te la aceptan (el error `OR_BACR2_59` de Google Cloud,
+por ejemplo). Nada de esto pide tarjeta en ningún paso. La contra:
+Render "duerme" el servicio a los 15 minutos sin requests -- el
+próximo check-in de un cliente, o el próximo webhook de Mercado Pago,
+tarda ~1 minuto extra en responder mientras se despierta (Mercado Pago
+reintenta los webhooks solo si no le mandas un 200 a tiempo, asi que
+no se pierde el evento, solo se demora).
+
+Este camino no usa Caddy ni `LICENSE_SERVER_DOMAIN` -- Render te da un
+dominio propio (`https://tu-servicio.onrender.com`) con TLS automático
+incluido.
+
+### 1. Base de datos: Neon (Postgres gratis, sin tarjeta)
+
+1. Entrá a [neon.tech](https://neon.tech) y creá una cuenta (con
+   GitHub o Google alcanza, no pide tarjeta).
+2. Creá un proyecto nuevo (cualquier nombre y región te sirven).
+3. En el dashboard del proyecto, pestaña **Connection Details**, copiá
+   la **Connection string** completa (arranca con `postgresql://` y ya
+   incluye `?sslmode=require` al final) -- vas a usarla como
+   `DATABASE_URL` en el paso 3.
+
+### 2. Generar las claves de firma (una sola vez, en tu máquina)
+
+```bash
+cd licensing-server
+python3 -m venv .venv && .venv/bin/pip install cryptography
+.venv/bin/python generate_keys.py
+```
+
+Guardá los dos valores que imprime: `LICENSE_SIGNING_PRIVATE_KEY` (va
+en Render, paso 3 -- nunca a un cliente) y `LICENSE_SERVER_PUBLIC_KEY`
+(va en el `.env.example` del repo principal / en el `.env` de cada
+instalación on-prem antes de armar el `.rar`).
+
+### 3. Servicio: Render (gratis, sin tarjeta)
+
+1. Entrá a [render.com](https://render.com) y creá una cuenta (con
+   GitHub alcanza, no pide tarjeta para el plan free).
+2. **New -> Web Service**, elegí el repo `Ridioortv/seginfo-toolkit`
+   (dale permiso a Render sobre el repo si te lo pide).
+3. Completá:
+   - **Root Directory**: `licensing-server`
+   - **Runtime**: Docker (Render detecta el `Dockerfile` solo)
+   - **Instance Type**: **Free**
+4. En **Environment Variables** agregá:
+   - `ADMIN_TOKEN` -- un secreto largo random propio (ej.
+     `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`)
+   - `LICENSE_SIGNING_PRIVATE_KEY` -- el del paso 2
+   - `DATABASE_URL` -- la connection string de Neon del paso 1 (al
+     estar seteada, este servidor usa Postgres en vez de SQLite solo)
+   - `MERCADOPAGO_ACCESS_TOKEN`, `MERCADOPAGO_PLAN_ID` -- los tuyos
+     (ver "Cobrar con Mercado Pago" más abajo si todavía no los tenés)
+   - `MERCADOPAGO_WEBHOOK_SECRET` -- lo completás en el paso 5, dejalo
+     vacío por ahora
+   - `MERCADOPAGO_BACK_URL` -- opcional, default sirve
+5. **Create Web Service**. Render clona el repo, hace `docker build` y
+   despliega -- tarda unos minutos la primera vez. Cuando el estado
+   pase a **Live**, arriba de todo vas a ver la URL
+   (`https://tu-servicio.onrender.com`).
+
+No hace falta tocar `PORT`: Render la inyecta sola y el `Dockerfile` ya
+la respeta (ver `ENV PORT` ahí).
+
+### 4. Confirmar que responde
+
+```bash
+curl https://tu-servicio.onrender.com/health
+```
+
+Si tardó ~1 minuto en responder la primera vez, es el "despertar" del
+plan free descripto arriba -- normal.
+
+### 5. Registrar el webhook de Mercado Pago
+
+Con el servicio ya arriba, seguí el paso "3. Webhook" de la sección
+"Cobrar con Mercado Pago" más abajo, usando
+`https://tu-servicio.onrender.com/webhooks/mercadopago` como URL del
+webhook. El panel de Mercado Pago te va a mostrar ahí la "clave
+secreta" -- volvé a Render, pegala en la variable
+`MERCADOPAGO_WEBHOOK_SECRET` y guardá (Render redeploya solo al
+cambiar una variable).
+
+### El límite a vigilar: horas de instancia
+
+El plan free de Render da 750 horas/mes de instancia activa -- un solo
+servicio corriendo todo el mes usa ~720, así que sobra margen aunque
+nunca se duerma. Si tenés más de un servicio free en la misma cuenta,
+las horas se comparten entre todos.
 
 ## Gestionar clientes
 
