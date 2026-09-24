@@ -373,6 +373,20 @@ async def list_organizations(claims: dict = Depends(require_platform_admin), db:
     return await services.list_organizations(db)
 
 
+@app.get("/internal/organizations")
+async def internal_list_organizations(db: AsyncSession = Depends(get_db)):
+    """Endpoint interno (sin auth de usuario -- servicio-a-servicio dentro
+    de la red de docker-compose, mismo patron que /internal/rule-tags de
+    siem-service o /internal/notify de notification-service). Solo expone
+    ids, nada sensible: pensado para que otro servicio pueda recorrer
+    "todas las organizaciones" sin necesitar un JWT de platform_admin
+    (ej. case-service, para sincronizar pending-cases de soar-service de
+    cada tenant en un ciclo de fondo -- ver case-service/app/main.py::
+    _soar_sync_loop)."""
+    orgs = await services.list_organizations(db)
+    return [{"id": org.id} for org in orgs]
+
+
 @app.get("/auth/organizations/{org_id}/sso", response_model=SsoConfigOut | None)
 async def get_sso_config(
     org_id: str,

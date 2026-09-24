@@ -14,6 +14,7 @@ from app.models import Case, CaseTimelineEntry, CaseStatus, SLA_HOURS_BY_PRIORIT
 
 logger = configure_logging("case-service")
 SOAR_SERVICE_URL = os.getenv("SOAR_SERVICE_URL", "http://soar-service:8000")
+AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "http://auth-service:8000")
 
 
 def _now() -> datetime:
@@ -82,6 +83,23 @@ async def add_timeline_entry(db: AsyncSession, case: Case, payload, actor: str) 
     await db.flush()
     await db.refresh(case, attribute_names=["timeline"])
     return case
+
+
+async def list_organization_ids() -> list[str]:
+    """Consulta auth-service/internal/organizations (sin JWT -- endpoint
+    interno de servicio-a-servicio, ver su docstring) para saber que
+    organizaciones existen, sin necesitar un token de platform_admin.
+    Best-effort: si auth-service no responde, devuelve lista vacia (el
+    ciclo de sincronizacion simplemente no hace nada esa vuelta, ver
+    app/main.py::_soar_sync_loop)."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{AUTH_SERVICE_URL}/internal/organizations")
+            resp.raise_for_status()
+            return [org["id"] for org in resp.json()]
+    except httpx.HTTPError as exc:
+        logger.warning("no se pudo consultar auth-service/internal/organizations", extra={"error": str(exc)})
+        return []
 
 
 async def import_pending_cases_from_soar(db: AsyncSession, organization_id: str) -> tuple[int, int]:

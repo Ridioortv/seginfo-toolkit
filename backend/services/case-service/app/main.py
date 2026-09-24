@@ -1,5 +1,7 @@
 """case-service entrypoint: incidentes estilo ITSM/kanban con SLA por
 prioridad y timeline de auditoria."""
+import asyncio
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,7 +9,7 @@ from prometheus_client import Counter, make_asgi_app
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.shared.database import get_db, engine, Base
+from backend.shared.database import get_db, engine, Base, SessionLocal
 from backend.shared.logging import configure_logging
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
@@ -19,6 +21,32 @@ from app import services
 logger = configure_logging("case-service")
 cases_created_total = Counter("case_created_total", "Casos creados", ["priority", "source"])
 
+CASE_SOAR_SYNC_INTERVAL_SECONDS = int(os.getenv("CASE_SOAR_SYNC_INTERVAL_SECONDS", str(2 * 60)))
+
+
+async def _soar_sync_loop() -> None:
+    """Tarea de fondo: cada CASE_SOAR_SYNC_INTERVAL_SECONDS (2 minutos por
+    defecto), recorre TODAS las organizaciones (via auth-service
+    /internal/organizations) e importa sus pending-cases de soar-service
+    (ver services.import_pending_cases_from_soar) -- asi Casos se mantiene
+    al dia solo, sin que un admin tenga que apretar el boton de
+    importacion manual cada vez. Mismo patron que
+    auth-service/app/main.py::_license_check_loop."""
+    while True:
+        try:
+            org_ids = await services.list_organization_ids()
+            async with SessionLocal() as session:
+                for org_id in org_ids:
+                    imported, _ = await services.import_pending_cases_from_soar(session, org_id)
+                    if imported:
+                        logger.info("casos importados automaticamente de soar-service", extra={
+                            "organization_id": org_id, "imported": imported,
+                        })
+                await session.commit()
+        except Exception:
+            logger.exception("fallo inesperado en el ciclo de sincronizacion con soar-service")
+        await asyncio.sleep(CASE_SOAR_SYNC_INTERVAL_SECONDS)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -28,8 +56,10 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             f"UPDATE cases SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
         ))
+    sync_task = asyncio.create_task(_soar_sync_loop())
     logger.info("case-service iniciado")
     yield
+    sync_task.cancel()
 
 
 app = FastAPI(title="SentinelOps Case Service", version="0.1.0", lifespan=lifespan)
