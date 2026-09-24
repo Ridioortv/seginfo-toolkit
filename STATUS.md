@@ -129,19 +129,16 @@ corregir lo que se encontrara roto -- no una fase nueva.
 - .github/workflows/ci.yml sigue sin poder commitearse (ver Pendiente).
 
 ## Pendiente -- decision de Manu, no es codigo
-- El token de GitHub usado por esta automatizacion sigue sin permiso
-  'Workflows'. .github/workflows/ci.yml queda escrito en disco sin
-  commitear (con los pasos reales de pytest/vitest ya agregados) --
-  Manu puede agregarle al token el permiso 'Workflows: Read and write'
-  (GitHub, Settings del fine-grained PAT) y subirlo el mismo desde su
-  PC (`git add .github/workflows/ci.yml && git commit -m "Agrega CI" &&
-  git push`), o esperar a que una proxima corrida lo haga una vez tenga
-  el permiso. Mientras tanto el CI no corre en GitHub, pero los tests
-  se pueden correr igual a mano (`make test` o pytest/vitest directo).
-- Una vez que el CI se pueda subir, falta decidir el registry para
-  publicar las imagenes Docker (GHCR es la opcion mas simple, no
-  requiere credenciales de AWS) y agregar el login+push al job
-  docker-build.
+- [RESUELTO 2026-09-24] Manu le agrego el permiso 'Workflows: Read and
+  write' al fine-grained PAT y .github/workflows/ci.yml ya esta
+  commiteado y pusheado -- el job backend-smoke se actualizo para
+  correr pytest en los 11 servicios (antes solo cubria los 4 que tenian
+  tests en ese momento). CI corriendo en GitHub Actions desde el commit
+  c1557db.
+- Falta decidir el registry para publicar las imagenes Docker (GHCR es
+  la opcion mas simple, no requiere credenciales de AWS) y agregar el
+  login+push al job docker-build -- hoy ese job solo verifica que cada
+  Dockerfile buildea, no publica nada.
 - Ningun conector de firewall/EDR real esta configurado en
   integration-service (la plataforma sigue 100% dry-run por defecto,
   ver SOAR_DRY_RUN/INTEGRATION_DRY_RUN/NOTIFICATION_DRY_RUN) -- es
