@@ -1,11 +1,48 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { siemApi } from "../services/api";
 import type { AlertOut, SigmaRuleOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { SeverityBadge, StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
 
+const SEVERITIES = ["critical", "high", "medium", "low", "info"];
+
+const FIELD_OPTIONS = [
+  { value: "host.name", label: "Host" },
+  { value: "source.ip", label: "IP origen" },
+  { value: "destination.ip", label: "IP destino" },
+  { value: "user.name", label: "Usuario" },
+  { value: "event.action", label: "Accion del evento" },
+  { value: "event.category", label: "Categoria del evento" },
+  { value: "event.outcome", label: "Resultado del evento" },
+  { value: "message", label: "Mensaje" },
+  { value: "sentinelops.source_type", label: "Origen (scanner/tipo de log)" },
+  { value: "sentinelops.severity", label: "Severidad reportada" },
+];
+
+type ConditionRow = { field: string; value: string };
+
+function buildDetection(conditions: ConditionRow[]): Record<string, unknown> {
+  const selection: Record<string, unknown> = {};
+  for (const c of conditions) {
+    if (!c.field || !c.value.trim()) continue;
+    const values = c.value.split(",").map((v) => v.trim()).filter(Boolean);
+    selection[c.field] = values.length > 1 ? values : values[0];
+  }
+  return { selection_1: selection, condition: "selection_1" };
+}
+
 export default function Siem() {
+  const queryClient = useQueryClient();
+
+  const [ruleName, setRuleName] = useState("");
+  const [ruleDescription, setRuleDescription] = useState("");
+  const [ruleSeverity, setRuleSeverity] = useState("medium");
+  const [ruleTags, setRuleTags] = useState("");
+  const [conditions, setConditions] = useState<ConditionRow[]>([{ field: "event.category", value: "" }]);
+  const [ruleFormError, setRuleFormError] = useState<string | null>(null);
+
   const alerts = useQuery({
     queryKey: ["alerts"],
     queryFn: async () => (await siemApi.get<AlertOut[]>("/alerts")).data,
@@ -15,9 +52,94 @@ export default function Siem() {
     queryFn: async () => (await siemApi.get<SigmaRuleOut[]>("/rules")).data,
   });
 
+  const seedDefaults = useMutation({
+    mutationFn: async () => (await siemApi.post<SigmaRuleOut[]>("/rules/seed-defaults")).data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["rules"] }),
+  });
+
+  const createRule = useMutation({
+    mutationFn: async () =>
+      (
+        await siemApi.post<SigmaRuleOut>("/rules", {
+          name: ruleName,
+          description: ruleDescription,
+          severity: ruleSeverity,
+          tags: ruleTags.split(",").map((t) => t.trim()).filter(Boolean),
+          detection: buildDetection(conditions),
+          is_enabled: true,
+        })
+      ).data,
+    onSuccess: () => {
+      setRuleName("");
+      setRuleDescription("");
+      setRuleTags("");
+      setConditions([{ field: "event.category", value: "" }]);
+      setRuleFormError(null);
+      queryClient.invalidateQueries({ queryKey: ["rules"] });
+    },
+  });
+
+  const toggleRule = useMutation({
+    mutationFn: async ({ id, is_enabled }: { id: string; is_enabled: boolean }) =>
+      (await siemApi.patch<SigmaRuleOut>(`/rules/${id}`, { is_enabled })).data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["rules"] }),
+  });
+
+  const deleteRule = useMutation({
+    mutationFn: async (id: string) => siemApi.delete(`/rules/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["rules"] }),
+  });
+
+  const updateAlert = useMutation({
+    mutationFn: async ({ id, status: newStatus }: { id: string; status: string }) =>
+      (await siemApi.patch<AlertOut>(`/alerts/${id}`, { status: newStatus })).data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["alerts"] }),
+  });
+
+  function onCreateRule() {
+    setRuleFormError(null);
+    if (!ruleName.trim()) {
+      setRuleFormError("Ingresa un nombre para la regla.");
+      return;
+    }
+    const detection = buildDetection(conditions);
+    if (Object.keys(detection.selection_1 as object).length === 0) {
+      setRuleFormError("Agrega al menos una condicion con campo y valor.");
+      return;
+    }
+    createRule.mutate();
+  }
+
+  function updateCondition(idx: number, patch: Partial<ConditionRow>) {
+    setConditions((prev) => prev.map((c, i) => (i === idx ? { ...c, ...patch } : c)));
+  }
+
+  const openAlertsCount = (alerts.data ?? []).filter((a) => a.status === "new").length;
+  const criticalAlertsCount = (alerts.data ?? []).filter((a) => a.severity === "critical").length;
+  const activeRulesCount = (rules.data ?? []).filter((r) => r.is_enabled).length;
+
   return (
     <div>
       <PageHeader title="SIEM" subtitle="Alertas generadas por el motor de reglas Sigma sobre logs normalizados (ECS-lite)" />
+
+      <div className="cards-grid">
+        <div className="stat-card">
+          <span className="stat-label">Alertas totales</span>
+          <span className="stat-value">{alerts.data?.length ?? "-"}</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Alertas abiertas</span>
+          <span className="stat-value">{openAlertsCount}</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Alertas criticas</span>
+          <span className="stat-value">{criticalAlertsCount}</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Reglas activas</span>
+          <span className="stat-value">{activeRulesCount} / {rules.data?.length ?? 0}</span>
+        </div>
+      </div>
 
       <div className="panel">
         <h2>Alertas</h2>
@@ -37,6 +159,7 @@ export default function Siem() {
                 <th>Estado</th>
                 <th>SOAR disparado</th>
                 <th>Creada</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -47,10 +170,22 @@ export default function Siem() {
                   <td><StatusBadge value={a.status} /></td>
                   <td>{a.soar_triggered ? "si" : "no"}</td>
                   <td>{new Date(a.created_at).toLocaleString()}</td>
+                  <td>
+                    {a.status === "new" && (
+                      <button className="btn-link" onClick={() => updateAlert.mutate({ id: a.id, status: "acknowledged" })}>
+                        Reconocer
+                      </button>
+                    )}
+                    {a.status !== "closed" && (
+                      <button className="btn-link" onClick={() => updateAlert.mutate({ id: a.id, status: "closed" })}>
+                        Cerrar
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
               {alerts.data.length === 0 && (
-                <tr><td colSpan={5} className="empty-hint">Sin alertas todavia.</td></tr>
+                <tr><td colSpan={6} className="empty-hint">Sin alertas todavia.</td></tr>
               )}
             </tbody>
           </table>
@@ -59,14 +194,90 @@ export default function Siem() {
 
       <div className="panel">
         <h2>Reglas de deteccion (Sigma)</h2>
+        <p className="empty-hint">
+          Una regla se dispara cuando TODAS las condiciones de abajo coinciden con un evento ingresado. Para
+          comparar contra varios valores (ej. "admin" o "root"), separalos por coma.
+        </p>
+
+        <div className="inline-form">
+          <button className="btn-secondary" onClick={() => seedDefaults.mutate()} disabled={seedDefaults.isPending}>
+            {seedDefaults.isPending ? "Cargando..." : "Cargar reglas recomendadas"}
+          </button>
+          {seedDefaults.data && (
+            <span className="empty-hint">{seedDefaults.data.length} regla(s) nueva(s) agregada(s).</span>
+          )}
+        </div>
+
+        <h3 style={{ marginTop: 16 }}>Nueva regla</h3>
+        <div className="inline-form">
+          <input placeholder="Nombre" value={ruleName} onChange={(e) => setRuleName(e.target.value)} />
+          <select value={ruleSeverity} onChange={(e) => setRuleSeverity(e.target.value)}>
+            {SEVERITIES.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+          <input placeholder="Tags (separados por coma)" value={ruleTags} onChange={(e) => setRuleTags(e.target.value)} />
+        </div>
+        <input
+          placeholder="Descripcion (opcional)"
+          style={{ width: "100%", marginTop: 8 }}
+          value={ruleDescription}
+          onChange={(e) => setRuleDescription(e.target.value)}
+        />
+
+        <div style={{ marginTop: 10 }}>
+          <strong>Condiciones (todas deben cumplirse):</strong>
+          {conditions.map((c, idx) => (
+            <div className="inline-form" key={idx} style={{ marginTop: 6 }}>
+              <select value={c.field} onChange={(e) => updateCondition(idx, { field: e.target.value })}>
+                {FIELD_OPTIONS.map((f) => (
+                  <option key={f.value} value={f.value}>{f.label}</option>
+                ))}
+              </select>
+              <input
+                placeholder="Valor (o valores separados por coma)"
+                value={c.value}
+                onChange={(e) => updateCondition(idx, { value: e.target.value })}
+              />
+              {conditions.length > 1 && (
+                <button className="btn-link" onClick={() => setConditions((prev) => prev.filter((_, i) => i !== idx))}>
+                  Quitar
+                </button>
+              )}
+            </div>
+          ))}
+          <button
+            type="button"
+            className="btn-secondary"
+            style={{ marginTop: 8 }}
+            onClick={() => setConditions((prev) => [...prev, { field: "event.action", value: "" }])}
+          >
+            + Agregar condicion
+          </button>
+        </div>
+
+        <div style={{ marginTop: 10 }}>
+          <button className="btn-primary" onClick={onCreateRule} disabled={createRule.isPending}>
+            {createRule.isPending ? "Creando..." : "Crear regla"}
+          </button>
+        </div>
+        {ruleFormError && <p className="error-text">{ruleFormError}</p>}
+        {createRule.isError && !ruleFormError && (
+          <p className="error-text">
+            No se pudo crear la regla.{" "}
+            <span className="error-detail">{connectionErrorDetail(createRule.error)}</span>
+          </p>
+        )}
+
         {rules.data && (
-          <table className="data-table">
+          <table className="data-table" style={{ marginTop: 16 }}>
             <thead>
               <tr>
                 <th>Nombre</th>
                 <th>Severidad</th>
                 <th>Tags</th>
                 <th>Habilitada</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -75,11 +286,20 @@ export default function Siem() {
                   <td>{r.name}</td>
                   <td><SeverityBadge value={r.severity} /></td>
                   <td className="mono">{r.tags.join(", ")}</td>
-                  <td>{r.is_enabled ? "si" : "no"}</td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={r.is_enabled}
+                      onChange={(e) => toggleRule.mutate({ id: r.id, is_enabled: e.target.checked })}
+                    />
+                  </td>
+                  <td>
+                    <button className="btn-link" onClick={() => deleteRule.mutate(r.id)}>Eliminar</button>
+                  </td>
                 </tr>
               ))}
               {rules.data.length === 0 && (
-                <tr><td colSpan={4} className="empty-hint">Sin reglas cargadas todavia.</td></tr>
+                <tr><td colSpan={5} className="empty-hint">Sin reglas cargadas todavia -- usa "Cargar reglas recomendadas" o crea una arriba.</td></tr>
               )}
             </tbody>
           </table>

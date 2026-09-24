@@ -28,6 +28,7 @@ def normalize_event(raw: dict, organization_id: str = "") -> dict:
         "sentinelops": {
             "source_type": raw.get("source_type") or "generic",
             "asset_id": raw.get("asset_id"),
+            "severity": raw.get("severity") or "info",
             "raw": raw.get("raw") or "",
         },
     }

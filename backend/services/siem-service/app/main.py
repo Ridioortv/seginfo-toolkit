@@ -116,6 +116,31 @@ async def update_rule(
     return rule
 
 
+@app.delete("/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_rule(
+    rule_id: str,
+    claims: dict = Depends(require_role("admin", "soc_manager")),
+    db: AsyncSession = Depends(get_db),
+):
+    rule = await services.get_rule(db, rule_id, org_id_from_claims(claims))
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Regla no encontrada")
+    await services.delete_rule(db, rule)
+    await db.commit()
+    logger.info("regla sigma borrada", extra={"rule_id": rule_id, "actor": claims.get("sub")})
+
+
+@app.post("/rules/seed-defaults", response_model=list[SigmaRuleOut])
+async def seed_default_rules(
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
+):
+    created = await services.seed_default_rules(db, org_id_from_claims(claims))
+    await db.commit()
+    logger.info("reglas por defecto cargadas", extra={"cantidad": len(created), "actor": claims.get("sub")})
+    return created
+
+
 @app.get("/internal/rule-tags")
 async def internal_rule_tags(organization_id: str | None = None, db: AsyncSession = Depends(get_db)):
     """Endpoint interno (sin auth de usuario -- pensado para llamadas

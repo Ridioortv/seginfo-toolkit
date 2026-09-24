@@ -16,6 +16,7 @@ class LogEventIn(BaseModel):
     message: str = ""
     source_type: str = "generic"
     asset_id: str | None = None
+    severity: str = "info"
     raw: str = ""
 
 

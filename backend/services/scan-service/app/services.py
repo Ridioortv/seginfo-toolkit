@@ -15,6 +15,7 @@ from app.scanners import get_driver, DRIVERS
 logger = configure_logging("scan-service")
 
 VULN_SERVICE_URL = os.getenv("VULN_SERVICE_URL", "http://vuln-service:8000")
+SIEM_SERVICE_URL = os.getenv("SIEM_SERVICE_URL", "http://siem-service:8000")
 
 
 def _now() -> datetime:
@@ -201,6 +202,7 @@ async def execute_scan_job(session_factory, job_id: str) -> None:
 
         if result.findings:
             await _forward_findings_to_vuln_service(job)
+            await _forward_findings_to_siem_service(job)
 
 
 async def _forward_findings_to_vuln_service(job: ScanJob) -> None:
@@ -219,6 +221,40 @@ async def _forward_findings_to_vuln_service(job: ScanJob) -> None:
             await client.post(f"{VULN_SERVICE_URL}/vulnerabilities/ingest", json=payload)
     except httpx.HTTPError as exc:
         logger.warning("no se pudo reenviar hallazgos a vuln-service", extra={"job_id": job.id, "error": str(exc)})
+
+
+def _findings_to_siem_events(scanner_type: str, target: str, asset_id: str | None, findings: list[dict]) -> list[dict]:
+    """Un evento ECS-lite por hallazgo, para que siem-service pueda
+    evaluar reglas Sigma sobre resultados de escaneo (ver
+    app/services.py::DEFAULT_RULES de siem-service, que ya trae reglas
+    para severidad critica/alta de este mismo pipeline)."""
+    return [
+        {
+            "host": target,
+            "event_action": "scan_finding",
+            "event_category": "vulnerability",
+            "event_outcome": "success",
+            "message": finding.get("title", ""),
+            "source_type": scanner_type,
+            "asset_id": asset_id,
+            "severity": finding.get("severity", "info"),
+        }
+        for finding in findings
+    ]
+
+
+async def _forward_findings_to_siem_service(job: ScanJob) -> None:
+    """Best-effort, igual que _forward_findings_to_vuln_service: si
+    siem-service no responde, el job de escaneo ya quedo guardado igual."""
+    payload = {
+        "organization_id": job.organization_id,
+        "events": _findings_to_siem_events(job.scanner_type.value, job.target, job.asset_id, job.findings),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(f"{SIEM_SERVICE_URL}/logs/ingest", json=payload)
+    except httpx.HTTPError as exc:
+        logger.warning("no se pudo reenviar hallazgos a siem-service", extra={"job_id": job.id, "error": str(exc)})
 
 
 # --- Agentes de escaneo remoto ---
@@ -337,6 +373,7 @@ async def submit_agent_result(db: AsyncSession, agent: ScanAgent, job_id: str, p
     await db.flush()
     if payload.status == "completed" and payload.findings:
         await _forward_agent_findings_to_vuln_service(job)
+        await _forward_agent_findings_to_siem_service(job)
     return job
 
 
@@ -358,5 +395,21 @@ async def _forward_agent_findings_to_vuln_service(job: AgentScanJob) -> None:
     except httpx.HTTPError as exc:
         logger.warning(
             "no se pudo reenviar hallazgos de agente remoto a vuln-service",
+            extra={"job_id": job.id, "error": str(exc)},
+        )
+
+
+async def _forward_agent_findings_to_siem_service(job: AgentScanJob) -> None:
+    """Mismo patron best-effort, ver _forward_findings_to_siem_service."""
+    payload = {
+        "organization_id": job.organization_id,
+        "events": _findings_to_siem_events(job.scanner_type, job.target, None, job.findings),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(f"{SIEM_SERVICE_URL}/logs/ingest", json=payload)
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "no se pudo reenviar hallazgos de agente remoto a siem-service",
             extra={"job_id": job.id, "error": str(exc)},
         )

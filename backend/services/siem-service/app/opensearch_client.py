@@ -27,6 +27,7 @@ _INDEX_MAPPING = {
                 "properties": {
                     "source_type": {"type": "keyword"},
                     "asset_id": {"type": "keyword"},
+                    "severity": {"type": "keyword"},
                     "raw": {"type": "text"},
                 }
             },

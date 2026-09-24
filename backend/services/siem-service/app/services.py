@@ -117,6 +117,81 @@ async def update_rule(db: AsyncSession, rule: SigmaRule, payload) -> SigmaRule:
     return rule
 
 
+async def delete_rule(db: AsyncSession, rule: SigmaRule) -> None:
+    await db.delete(rule)
+    await db.flush()
+
+
+# Reglas recomendadas para arrancar sin tener que escribir JSON a mano --
+# pensadas especificamente para el pipeline de escaneos (scan-service manda
+# un evento por hallazgo con event.category=vulnerability y
+# sentinelops.severity segun lo que informo el scanner, ver
+# scan-service/app/services.py::_forward_findings_to_siem_service).
+# Idempotente: seed_default_rules no duplica una regla si ya existe una con
+# el mismo nombre en esta organizacion.
+DEFAULT_RULES: list[dict] = [
+    {
+        "name": "Hallazgo critico de escaneo",
+        "description": "Un escaneo (nmap/trivy/nuclei/openvas) reporto un hallazgo de severidad critica.",
+        "severity": "critical",
+        "tags": ["scan", "vulnerability", "critical"],
+        "detection": {
+            "selection_1": {"event.category": "vulnerability", "sentinelops.severity": "critical"},
+            "condition": "selection_1",
+        },
+    },
+    {
+        "name": "Hallazgo alto de escaneo",
+        "description": "Un escaneo reporto un hallazgo de severidad alta.",
+        "severity": "high",
+        "tags": ["scan", "vulnerability", "high"],
+        "detection": {
+            "selection_1": {"event.category": "vulnerability", "sentinelops.severity": "high"},
+            "condition": "selection_1",
+        },
+    },
+    {
+        "name": "Login fallido repetido en cuenta administrativa",
+        "description": "Evento de autenticacion fallida sobre una cuenta admin/root -- util para forwarders de logs de auth.",
+        "severity": "medium",
+        "tags": ["auth", "brute-force"],
+        "detection": {
+            "selection_1": {"event.action": "user_login", "event.outcome": "failure", "user.name": ["admin", "root"]},
+            "condition": "selection_1",
+        },
+    },
+]
+
+
+async def seed_default_rules(db: AsyncSession, organization_id: str) -> list[SigmaRule]:
+    existing_result = await db.execute(
+        select(SigmaRule.name).where(SigmaRule.organization_id == organization_id)
+    )
+    existing_names = {row[0] for row in existing_result.all()}
+
+    created: list[SigmaRule] = []
+    for spec in DEFAULT_RULES:
+        if spec["name"] in existing_names:
+            continue
+        rule = SigmaRule(
+            organization_id=organization_id,
+            name=spec["name"],
+            description=spec["description"],
+            severity=spec["severity"],
+            tags=spec["tags"],
+            detection=spec["detection"],
+            is_enabled=True,
+        )
+        db.add(rule)
+        created.append(rule)
+
+    if created:
+        await db.flush()
+        for rule in created:
+            await db.refresh(rule)
+    return created
+
+
 async def list_alerts(
     db: AsyncSession, organization_id: str, status_filter: str | None = None, severity: str | None = None
 ) -> list[Alert]:
