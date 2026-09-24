@@ -114,6 +114,22 @@ async def update_playbook(
     return playbook
 
 
+@app.delete("/playbooks/{playbook_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_playbook(
+    playbook_id: str,
+    claims: dict = Depends(require_role("admin", "soc_manager")),
+    db: AsyncSession = Depends(get_db),
+):
+    playbook = await services.get_playbook(db, playbook_id, org_id_from_claims(claims))
+    if playbook is None:
+        raise HTTPException(status_code=404, detail="Playbook no encontrado")
+    if playbook.organization_id is None and not claims.get("platform_admin"):
+        raise HTTPException(status_code=403, detail="Solo un administrador de plataforma puede borrar un playbook global")
+    await services.delete_playbook(db, playbook)
+    await db.commit()
+    logger.info("playbook borrado", extra={"playbook_id": playbook_id, "actor": claims.get("sub")})
+
+
 @app.post("/playbooks/{playbook_id}/run", response_model=PlaybookRunOut)
 async def run_playbook_manually(
     playbook_id: str,

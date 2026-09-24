@@ -158,6 +158,11 @@ async def update_playbook(db: AsyncSession, playbook: Playbook, payload) -> Play
     return playbook
 
 
+async def delete_playbook(db: AsyncSession, playbook: Playbook) -> None:
+    await db.delete(playbook)
+    await db.flush()
+
+
 async def list_runs(db: AsyncSession, organization_id: str) -> list[PlaybookRun]:
     result = await db.execute(
         select(PlaybookRun)

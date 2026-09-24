@@ -8,14 +8,34 @@ import { connectionErrorDetail } from "../utils/errors";
 
 const SEVERITIES = ["info", "low", "medium", "high", "critical"];
 
-const STEPS_PLACEHOLDER = `[
-  { "action": "notify", "params": {} }
-]`;
+type ActionField = { key: string; label: string };
+type ActionDef = { value: string; label: string; fields: ActionField[] };
 
-const STEPS_HINT =
-  'Acciones disponibles: block_ip, isolate_host, create_case, create_ticket, notify. ' +
-  'Cada paso es { "action": "...", "params": { ... } } -- params vacio usa los valores por defecto ' +
-  '(ej. resuelve la IP/host desde la alerta, o notifica a todos los canales habilitados).';
+const ACTIONS: ActionDef[] = [
+  { value: "block_ip", label: "Bloquear IP (contencion de firewall)", fields: [
+    { key: "ip", label: "IP a bloquear (vacio = toma la IP de origen de la alerta)" },
+  ] },
+  { value: "isolate_host", label: "Aislar host (contencion EDR/NAC)", fields: [
+    { key: "host", label: "Host a aislar (vacio = toma el host de la alerta)" },
+  ] },
+  { value: "create_case", label: "Crear caso en Casos", fields: [
+    { key: "title", label: "Titulo (opcional, se autogenera con la alerta)" },
+    { key: "priority", label: "Prioridad (opcional: critical/high/medium/low)" },
+  ] },
+  { value: "create_ticket", label: "Crear ticket externo (Jira, via Integraciones)", fields: [
+    { key: "title", label: "Titulo (opcional, se autogenera con la alerta)" },
+  ] },
+  { value: "notify", label: "Enviar notificacion", fields: [
+    { key: "subject", label: "Asunto (opcional)" },
+    { key: "body", label: "Mensaje (opcional)" },
+  ] },
+];
+
+type StepDraft = { action: string; params: Record<string, string> };
+
+function actionLabel(action: string): string {
+  return ACTIONS.find((a) => a.value === action)?.label ?? action;
+}
 
 export default function Soar() {
   const queryClient = useQueryClient();
@@ -23,8 +43,11 @@ export default function Soar() {
   const [description, setDescription] = useState("");
   const [minSeverity, setMinSeverity] = useState("high");
   const [ruleTags, setRuleTags] = useState("");
-  const [stepsText, setStepsText] = useState(STEPS_PLACEHOLDER);
-  const [stepsError, setStepsError] = useState("");
+  const [steps, setSteps] = useState<StepDraft[]>([]);
+  const [draftAction, setDraftAction] = useState(ACTIONS[0].value);
+  const [draftParams, setDraftParams] = useState<Record<string, string>>({});
+  const [formError, setFormError] = useState<string | null>(null);
+  const [runFeedback, setRunFeedback] = useState<{ playbookId: string; message: string } | null>(null);
 
   const playbooks = useQuery({
     queryKey: ["playbooks"],
@@ -36,49 +59,105 @@ export default function Soar() {
   });
 
   const createPlaybook = useMutation({
-    mutationFn: async () => {
-      let steps: Record<string, unknown>[];
-      try {
-        steps = stepsText.trim() ? JSON.parse(stepsText) : [];
-      } catch {
-        throw new Error("Los pasos (steps) no son JSON valido");
-      }
-      return (
+    mutationFn: async () =>
+      (
         await soarApi.post<PlaybookOut>("/playbooks", {
           name,
           description,
           min_severity: minSeverity,
           rule_tags: ruleTags.split(",").map((t) => t.trim()).filter(Boolean),
-          steps,
+          steps: steps.map((s) => ({
+            action: s.action,
+            params: Object.fromEntries(Object.entries(s.params).filter(([, v]) => v.trim() !== "")),
+          })),
           is_enabled: true,
         })
-      ).data;
-    },
+      ).data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["playbooks"] });
       setName("");
       setDescription("");
       setRuleTags("");
+      setSteps([]);
+      setFormError(null);
     },
   });
 
-  function onSubmit() {
-    setStepsError("");
-    createPlaybook.mutate(undefined, {
-      onError: (err) => {
-        if (err instanceof Error && err.message === "Los pasos (steps) no son JSON valido") {
-          setStepsError(err.message);
-        }
-      },
-    });
+  const togglePlaybook = useMutation({
+    mutationFn: async ({ id, is_enabled }: { id: string; is_enabled: boolean }) =>
+      (await soarApi.patch<PlaybookOut>(`/playbooks/${id}`, { is_enabled })).data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["playbooks"] }),
+  });
+
+  const deletePlaybook = useMutation({
+    mutationFn: async (id: string) => soarApi.delete(`/playbooks/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["playbooks"] }),
+  });
+
+  const runPlaybook = useMutation({
+    mutationFn: async (playbook: PlaybookOut) =>
+      (await soarApi.post<PlaybookRunOut>(`/playbooks/${playbook.id}/run`, {})).data,
+    onSuccess: (run, playbook) => {
+      setRunFeedback({ playbookId: playbook.id, message: `Ejecucion "${run.status}" -- mira el detalle abajo en Ejecuciones.` });
+      queryClient.invalidateQueries({ queryKey: ["runs"] });
+    },
+    onError: (err: unknown, playbook) => {
+      setRunFeedback({
+        playbookId: playbook.id,
+        message: err instanceof Error ? err.message : "No se pudo ejecutar el playbook.",
+      });
+    },
+  });
+
+  function addStep() {
+    setSteps((prev) => [...prev, { action: draftAction, params: draftParams }]);
+    setDraftParams({});
   }
+
+  function onSubmit() {
+    setFormError(null);
+    if (!name.trim()) {
+      setFormError("Ingresa un nombre para el playbook.");
+      return;
+    }
+    if (steps.length === 0) {
+      setFormError("Agrega al menos un paso.");
+      return;
+    }
+    createPlaybook.mutate();
+  }
+
+  const activeFields = ACTIONS.find((a) => a.value === draftAction)?.fields ?? [];
+  const enabledCount = (playbooks.data ?? []).filter((p) => p.is_enabled).length;
+  const successRuns = (runs.data ?? []).filter((r) => r.status === "completed").length;
+  const failedRuns = (runs.data ?? []).filter((r) => r.status === "failed").length;
 
   return (
     <div>
       <PageHeader
         title="SOAR"
-        subtitle="Playbooks de respuesta automatizada. Todas las acciones de contencion corren en modo DRY-RUN salvo que un operador lo desactive explicitamente (ver SOAR_DRY_RUN / INTEGRATION_DRY_RUN / NOTIFICATION_DRY_RUN)."
+        subtitle="Playbooks de respuesta automatizada. Todas las acciones de contencion corren en modo DRY-RUN salvo que un operador lo desactive explicitamente."
       />
+
+      <div className="cards-grid">
+        <div className="stat-card">
+          <span className="stat-label">Playbooks</span>
+          <span className="stat-value">{enabledCount} / {playbooks.data?.length ?? 0}</span>
+          <span className="stat-hint">habilitados / totales</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Ejecuciones totales</span>
+          <span className="stat-value">{runs.data?.length ?? "-"}</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Exitosas</span>
+          <span className="stat-value">{successRuns}</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Fallidas</span>
+          <span className="stat-value">{failedRuns}</span>
+        </div>
+      </div>
 
       <div className="panel">
         <h2>Nuevo playbook</h2>
@@ -101,20 +180,57 @@ export default function Soar() {
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
-        <p className="empty-hint" style={{ marginTop: 8 }}>{STEPS_HINT}</p>
-        <textarea
-          className="mono"
-          style={{ width: "100%", minHeight: 120 }}
-          value={stepsText}
-          onChange={(e) => setStepsText(e.target.value)}
-        />
-        <div style={{ marginTop: 8 }}>
-          <button className="btn-primary" onClick={onSubmit} disabled={createPlaybook.isPending || !name.trim()}>
+
+        <div style={{ marginTop: 12 }}>
+          <strong>Pasos:</strong>
+          {steps.length > 0 && (
+            <ol>
+              {steps.map((s, idx) => (
+                <li key={idx}>
+                  {actionLabel(s.action)}
+                  {Object.entries(s.params).some(([, v]) => v) && (
+                    <span className="empty-hint"> ({Object.entries(s.params).filter(([, v]) => v).map(([k, v]) => `${k}=${v}`).join(", ")})</span>
+                  )}
+                  <button className="btn-link" onClick={() => setSteps((prev) => prev.filter((_, i) => i !== idx))}>Quitar</button>
+                </li>
+              ))}
+            </ol>
+          )}
+
+          <div className="inline-form" style={{ marginTop: 6 }}>
+            <select
+              value={draftAction}
+              onChange={(e) => {
+                setDraftAction(e.target.value);
+                setDraftParams({});
+              }}
+            >
+              {ACTIONS.map((a) => (
+                <option key={a.value} value={a.value}>{a.label}</option>
+              ))}
+            </select>
+          </div>
+          {activeFields.map((f) => (
+            <input
+              key={f.key}
+              placeholder={f.label}
+              style={{ width: "100%", marginTop: 6 }}
+              value={draftParams[f.key] ?? ""}
+              onChange={(e) => setDraftParams((prev) => ({ ...prev, [f.key]: e.target.value }))}
+            />
+          ))}
+          <button type="button" className="btn-secondary" style={{ marginTop: 8 }} onClick={addStep}>
+            + Agregar paso
+          </button>
+        </div>
+
+        <div style={{ marginTop: 12 }}>
+          <button className="btn-primary" onClick={onSubmit} disabled={createPlaybook.isPending}>
             {createPlaybook.isPending ? "Creando..." : "Crear playbook"}
           </button>
         </div>
-        {stepsError && <p className="error-text">{stepsError}</p>}
-        {createPlaybook.isError && !stepsError && (
+        {formError && <p className="error-text">{formError}</p>}
+        {createPlaybook.isError && !formError && (
           <p className="error-text">
             No se pudo crear el playbook.{" "}
             <span className="error-detail">{connectionErrorDetail(createPlaybook.error)}</span>
@@ -139,6 +255,7 @@ export default function Soar() {
                 <th>Tags de regla</th>
                 <th>Pasos</th>
                 <th>Habilitado</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -148,11 +265,31 @@ export default function Soar() {
                   <td>{p.min_severity}</td>
                   <td className="mono">{p.rule_tags.join(", ")}</td>
                   <td>{p.steps.map((s) => (s as { action?: string }).action).join(", ") || p.steps.length}</td>
-                  <td>{p.is_enabled ? "si" : "no"}</td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={p.is_enabled}
+                      onChange={(e) => togglePlaybook.mutate({ id: p.id, is_enabled: e.target.checked })}
+                    />
+                  </td>
+                  <td>
+                    <button
+                      className="btn-link"
+                      onClick={() => runPlaybook.mutate(p)}
+                      disabled={runPlaybook.isPending}
+                    >
+                      Ejecutar ahora
+                    </button>
+                    {" / "}
+                    <button className="btn-link" onClick={() => deletePlaybook.mutate(p.id)}>Eliminar</button>
+                    {runFeedback && runFeedback.playbookId === p.id && (
+                      <p className="empty-hint" style={{ margin: "4px 0 0" }}>{runFeedback.message}</p>
+                    )}
+                  </td>
                 </tr>
               ))}
               {playbooks.data.length === 0 && (
-                <tr><td colSpan={5} className="empty-hint">Sin playbooks cargados todavia.</td></tr>
+                <tr><td colSpan={6} className="empty-hint">Sin playbooks cargados todavia.</td></tr>
               )}
             </tbody>
           </table>
