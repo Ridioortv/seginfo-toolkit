@@ -9,6 +9,7 @@ COPY backend/services/soar-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/services/soar-service/app ./app
+COPY backend/services/soar-service/tests ./tests
 COPY backend/services/soar-service/playbooks ./playbooks
 COPY backend/shared ./backend/shared
 RUN touch backend/__init__.py

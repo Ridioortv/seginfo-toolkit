@@ -37,7 +37,7 @@ infraestructura de `docker-compose.yml` / `infra/`. No cubre el codigo de tercer
 
 | Amenaza | Mitigacion actual | Pendiente |
 |---|---|---|
-| Filtrar vulnerabilidades/CVEs de un cliente a otro | Cada servicio usa su propia base logica; no hay multi-tenant todavia -- una instancia = un cliente | Modelo multi-tenant con aislamiento por fila (RLS) o por esquema si se vende a multiples clientes desde una misma instancia |
+| Filtrar vulnerabilidades/CVEs de un cliente a otro | Multi-tenant con aislamiento por fila (`organization_id` en cada tabla de cada servicio, filtrado en cada query -- ver `backend/shared/tenancy.py`); el JWT lleva `org_id` y cada endpoint lo usa para scopear sus consultas | Auditoria periodica de que todo query nuevo filtre por `organization_id` (revisar en code review, no hay un enforcement automatico a nivel de DB tipo RLS todavia) |
 | Exponer secretos (JWT secret, password de DB) en el repo | `.env` esta en `.gitignore`; `infra/k8s/base/secret.yaml` tambien; Terraform usa `TF_VAR_db_password` en vez de un default | Adoptar un secret manager real (Vault, AWS Secrets Manager) en vez de Secrets planos de k8s |
 | El endpoint interno `/internal/rule-tags` de siem-service devuelve datos de reglas sin autenticar | Solo expone id/nombre/tags (nunca la logica de deteccion completa) y se asume red interna no expuesta a internet | Restringir por NetworkPolicy de k8s a los Pods que realmente lo necesitan (purple-service) |
 

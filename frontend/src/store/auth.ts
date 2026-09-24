@@ -44,7 +44,7 @@ function loadInitial(): Pick<AuthState, "accessToken" | "refreshToken" | "claims
   }
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>()((set) => ({
   ...loadInitial(),
   setTokens: (accessToken: string, refreshToken: string) => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ accessToken, refreshToken }));

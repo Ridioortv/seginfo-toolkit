@@ -9,6 +9,7 @@ import type {
   SubscriptionPayLinkOut,
 } from "../types";
 import PageHeader from "../components/PageHeader";
+import { formatDate } from "../utils/format";
 
 // Pagos, licencia y baja del servicio -- todo lo que un admin de
 // organizacion (o un platform_admin) necesita para administrar su propia
@@ -20,11 +21,6 @@ import PageHeader from "../components/PageHeader";
 // Permisos: mismo criterio que Organizations.tsx -- un admin comun ve y
 // administra SOLO la suya (ownOrgId, de sus claims); un platform_admin
 // elige de la lista, porque puede administrar la de cualquier cliente.
-function formatDate(iso: string | undefined | null): string {
-  if (!iso) return "--";
-  return new Date(iso).toLocaleDateString("es-AR");
-}
-
 export default function Billing() {
   const claims = useAuthStore((s) => s.claims);
   const isPlatformAdmin = claims?.platform_admin === true;

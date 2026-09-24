@@ -74,8 +74,15 @@ class TestAccessToken:
             security.decode_token(expired)
 
     def test_tampered_signature_is_rejected(self):
+        # No tocar el ULTIMO caracter del token: en base64url, la posicion
+        # final de un grupo puede caer en bits de padding no significativos,
+        # asi que cambiarla no siempre altera el valor decodificado (test
+        # flaky). Se tamperea el PRIMER caracter de la firma en cambio, que
+        # siempre es significativo.
         token = security.create_access_token(subject="user-123", role="analyst")
-        tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+        header, payload, signature = token.split(".")
+        tampered_char = "A" if signature[0] != "A" else "B"
+        tampered = f"{header}.{payload}.{tampered_char}{signature[1:]}"
         with pytest.raises(jwt.JWTError):
             security.decode_token(tampered)
 

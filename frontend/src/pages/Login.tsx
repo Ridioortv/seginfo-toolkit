@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { login, loginWithGoogle, register } from "../services/api";
 import { useAuthStore } from "../store/auth";
+import { parseLoginError } from "../utils/loginError";
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 
@@ -50,23 +51,12 @@ export default function Login() {
   // instalacion todavia gestiona los pagos a mano (ahi solo se muestra
   // el mensaje, sin boton).
   function applyLoginError(err: unknown, fallback: string) {
-    const axiosErr = err as { response?: { status?: number; data?: { detail?: unknown } } };
-    const detail = axiosErr?.response?.data?.detail;
-    if (axiosErr?.response?.status === 402) {
-      if (detail && typeof detail === "object") {
-        const d = detail as { message?: string; payment_url?: string | null };
-        setError(d.message ?? "La suscripcion de esta organizacion no esta al dia.");
-        setPaymentUrl(d.payment_url ?? null);
-        return;
-      }
-      if (typeof detail === "string") {
-        setError(detail);
-        setPaymentUrl(null);
-        return;
-      }
-    }
-    setError(fallback);
-    setPaymentUrl(null);
+    // Logica de interpretacion del error extraida a utils/loginError.ts
+    // (funcion pura, testeada sin renderizar este componente) -- aca solo
+    // queda volcar el resultado al estado del formulario.
+    const { message, paymentUrl: url } = parseLoginError(err, fallback);
+    setError(message);
+    setPaymentUrl(url);
   }
 
   function handleSsoLogin(e: React.FormEvent) {
