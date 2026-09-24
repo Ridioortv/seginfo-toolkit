@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { to: "/reports", label: "Reportes" },
   { to: "/notifications", label: "Notificaciones" },
   { to: "/integrations", label: "Integraciones" },
+  { to: "/help", label: "Ayuda" },
 ];
 
 // Solo un admin de organizacion (administra su propia empresa: usuarios,

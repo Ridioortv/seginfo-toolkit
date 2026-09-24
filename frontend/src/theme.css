@@ -375,3 +375,133 @@ body {
   color: var(--text-primary);
   font-family: var(--font-sans);
 }
+
+/* ---- Ayuda / tutorial interactivo (Fase 10) ---- */
+
+.help-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.progress-bar-track {
+  flex: 1;
+  height: 8px;
+  background: var(--bg-2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+
+.help-layout {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .help-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.help-topic-list {
+  position: sticky;
+  top: 0;
+}
+
+.help-search {
+  width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  margin-bottom: 12px;
+}
+
+.help-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.help-topic-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-family: var(--font-sans);
+}
+
+.help-topic-btn:hover {
+  background: var(--bg-2);
+  color: var(--text-primary);
+}
+
+.help-topic-btn-active {
+  background: var(--bg-2);
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.help-tagline {
+  color: var(--text-secondary);
+  margin-top: -6px;
+}
+
+.help-steps {
+  padding-left: 20px;
+  margin: 16px 0;
+}
+
+.help-steps li {
+  margin-bottom: 14px;
+}
+
+.help-steps li p {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+}
+
+.help-tips {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+
+.help-tips h3 {
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.help-tips ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.help-tips li {
+  margin-bottom: 6px;
+  font-size: 0.875rem;
+}
