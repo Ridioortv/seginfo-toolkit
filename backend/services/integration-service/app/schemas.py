@@ -13,6 +13,12 @@ class ConnectorCreate(BaseModel):
     enabled: bool = True
 
 
+class ConnectorUpdate(BaseModel):
+    name: str | None = None
+    config: dict | None = None
+    enabled: bool | None = None
+
+
 class ConnectorOut(BaseModel):
     id: str
     name: str

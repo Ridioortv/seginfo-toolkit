@@ -80,6 +80,29 @@ async def list_connectors(db: AsyncSession, organization_id: str, kind: str | No
     return list(result.scalars().all())
 
 
+async def get_connector(db: AsyncSession, connector_id: str, organization_id: str) -> Connector | None:
+    connector = await db.get(Connector, connector_id)
+    if connector is None or connector.organization_id != organization_id:
+        return None
+    return connector
+
+
+async def update_connector(db: AsyncSession, connector: Connector, payload) -> Connector:
+    data = payload.model_dump(exclude_unset=True)
+    if "config" in data and data["config"] is not None:
+        data["config"] = _encrypt_secret_fields(data["config"])
+    for field, value in data.items():
+        setattr(connector, field, value)
+    await db.flush()
+    await db.refresh(connector)
+    return connector
+
+
+async def delete_connector(db: AsyncSession, connector: Connector) -> None:
+    await db.delete(connector)
+    await db.flush()
+
+
 async def _pick_connector(
     db: AsyncSession, kind: str, connector_id: str | None, organization_id: str
 ) -> Connector | None:

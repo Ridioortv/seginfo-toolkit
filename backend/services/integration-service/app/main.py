@@ -19,7 +19,7 @@ from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import (
-    ConnectorCreate, ConnectorOut, BlockIpRequest, IsolateHostRequest, ActionLogOut,
+    ConnectorCreate, ConnectorUpdate, ConnectorOut, BlockIpRequest, IsolateHostRequest, ActionLogOut,
     CreateTicketRequest, TicketLogOut,
 )
 from app.dependencies import get_current_claims, require_role
@@ -97,6 +97,36 @@ async def list_connectors(kind: str | None = None, claims: dict = Depends(get_cu
     for c in connectors:
         c.config = services.redact_connector_config(c.config)
     return connectors
+
+
+@app.patch("/connectors/{connector_id}", response_model=ConnectorOut)
+async def update_connector(
+    connector_id: str,
+    payload: ConnectorUpdate,
+    claims: dict = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    connector = await services.get_connector(db, connector_id, org_id_from_claims(claims))
+    if connector is None:
+        raise HTTPException(status_code=404, detail="Conector no encontrado")
+    connector = await services.update_connector(db, connector, payload)
+    await db.commit()
+    connector.config = services.redact_connector_config(connector.config)
+    return connector
+
+
+@app.delete("/connectors/{connector_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_connector(
+    connector_id: str,
+    claims: dict = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
+):
+    connector = await services.get_connector(db, connector_id, org_id_from_claims(claims))
+    if connector is None:
+        raise HTTPException(status_code=404, detail="Conector no encontrado")
+    await services.delete_connector(db, connector)
+    await db.commit()
+    logger.info("conector borrado", extra={"connector_id": connector_id, "actor": claims.get("sub")})
 
 
 @app.get("/actions", response_model=list[ActionLogOut])

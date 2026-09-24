@@ -8,19 +8,31 @@ import { connectionErrorDetail } from "../utils/errors";
 
 type ConnectorKind = "firewall" | "edr" | "ticketing";
 
-const CONFIG_PLACEHOLDER: Record<ConnectorKind, string> = {
-  firewall: '{\n  "base_url": "https://firewall.example/api",\n  "header_name": "X-Api-Key",\n  "api_key": "..."\n}',
-  edr: '{\n  "base_url": "https://edr.example/api",\n  "header_name": "X-Api-Key",\n  "api_key": "..."\n}',
-  ticketing:
-    '{\n  "base_url": "https://tuempresa.atlassian.net",\n  "email": "soc@tuempresa.com",\n  "api_token": "...",\n  "project_key": "SEC",\n  "issue_type": "Task",\n  "priority_map": { "critical": "Highest", "high": "High" }\n}',
+const KIND_LABELS: Record<ConnectorKind, string> = {
+  firewall: "Firewall (bloqueo de IPs)",
+  edr: "EDR / NAC (aislamiento de hosts)",
+  ticketing: "Ticketing (ej. Jira)",
+};
+
+type FirewallLikeForm = { baseUrl: string; headerName: string; apiKey: string };
+type TicketingForm = {
+  baseUrl: string; email: string; apiToken: string; projectKey: string; issueType: string;
+  priorityCritical: string; priorityHigh: string; priorityMedium: string; priorityLow: string;
+};
+
+const EMPTY_FIREWALL_FORM: FirewallLikeForm = { baseUrl: "", headerName: "X-Api-Key", apiKey: "" };
+const EMPTY_TICKETING_FORM: TicketingForm = {
+  baseUrl: "", email: "", apiToken: "", projectKey: "", issueType: "Task",
+  priorityCritical: "Highest", priorityHigh: "High", priorityMedium: "Medium", priorityLow: "Low",
 };
 
 export default function Integrations() {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [kind, setKind] = useState<ConnectorKind>("ticketing");
-  const [configText, setConfigText] = useState(CONFIG_PLACEHOLDER.ticketing);
-  const [configError, setConfigError] = useState("");
+  const [firewallForm, setFirewallForm] = useState<FirewallLikeForm>(EMPTY_FIREWALL_FORM);
+  const [ticketingForm, setTicketingForm] = useState<TicketingForm>(EMPTY_TICKETING_FORM);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const connectors = useQuery({
     queryKey: ["connectors"],
@@ -35,69 +47,157 @@ export default function Integrations() {
     queryFn: async () => (await integrationApi.get<TicketLogOut[]>("/tickets")).data,
   });
 
+  function buildConfig(): Record<string, unknown> {
+    if (kind === "ticketing") {
+      const priorityMap: Record<string, string> = {};
+      if (ticketingForm.priorityCritical) priorityMap.critical = ticketingForm.priorityCritical;
+      if (ticketingForm.priorityHigh) priorityMap.high = ticketingForm.priorityHigh;
+      if (ticketingForm.priorityMedium) priorityMap.medium = ticketingForm.priorityMedium;
+      if (ticketingForm.priorityLow) priorityMap.low = ticketingForm.priorityLow;
+      return {
+        base_url: ticketingForm.baseUrl,
+        email: ticketingForm.email,
+        api_token: ticketingForm.apiToken,
+        project_key: ticketingForm.projectKey,
+        issue_type: ticketingForm.issueType || "Task",
+        priority_map: priorityMap,
+      };
+    }
+    return {
+      base_url: firewallForm.baseUrl,
+      header_name: firewallForm.headerName || "X-Api-Key",
+      api_key: firewallForm.apiKey,
+    };
+  }
+
   const createConnector = useMutation({
-    mutationFn: async () => {
-      let config: Record<string, unknown>;
-      try {
-        config = configText.trim() ? JSON.parse(configText) : {};
-      } catch {
-        throw new Error("La configuracion no es JSON valido");
-      }
-      return (await integrationApi.post<ConnectorOut>("/connectors", { name, kind, config, enabled: true })).data;
-    },
+    mutationFn: async () =>
+      (await integrationApi.post<ConnectorOut>("/connectors", { name, kind, config: buildConfig(), enabled: true })).data,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["connectors"] });
       setName("");
+      setFirewallForm(EMPTY_FIREWALL_FORM);
+      setTicketingForm(EMPTY_TICKETING_FORM);
+      setFormError(null);
     },
   });
 
-  function onKindChange(next: ConnectorKind) {
-    setKind(next);
-    setConfigText(CONFIG_PLACEHOLDER[next]);
-    setConfigError("");
-  }
+  const toggleConnector = useMutation({
+    mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) =>
+      (await integrationApi.patch<ConnectorOut>(`/connectors/${id}`, { enabled })).data,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["connectors"] }),
+  });
+
+  const deleteConnector = useMutation({
+    mutationFn: async (id: string) => integrationApi.delete(`/connectors/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["connectors"] }),
+  });
 
   function onSubmit() {
-    setConfigError("");
-    createConnector.mutate(undefined, {
-      onError: (err) => {
-        if (err instanceof Error && err.message === "La configuracion no es JSON valido") {
-          setConfigError(err.message);
-        }
-      },
-    });
+    setFormError(null);
+    if (!name.trim()) {
+      setFormError("Ingresa un nombre para el conector.");
+      return;
+    }
+    const baseUrl = kind === "ticketing" ? ticketingForm.baseUrl : firewallForm.baseUrl;
+    if (!baseUrl.trim()) {
+      setFormError("Ingresa la URL base del sistema al que te vas a conectar.");
+      return;
+    }
+    createConnector.mutate();
   }
 
   return (
     <div>
       <PageHeader
         title="Integraciones"
-        subtitle="Conectores de contencion (firewall/EDR) y de ticketing (ej. Jira). Por defecto en modo DRY-RUN: ninguna accion toca infraestructura real sin un conector configurado y el flag explicitamente desactivado (INTEGRATION_DRY_RUN=false)."
+        subtitle="Conectores de contencion (firewall/EDR) y de ticketing (ej. Jira). Por defecto en modo DRY-RUN: ninguna accion toca infraestructura real sin un conector configurado y el flag explicitamente desactivado."
       />
 
       <div className="panel">
         <h2>Nuevo conector</h2>
         <div className="inline-form">
           <input placeholder="Nombre" value={name} onChange={(e) => setName(e.target.value)} />
-          <select value={kind} onChange={(e) => onKindChange(e.target.value as ConnectorKind)}>
-            <option value="ticketing">ticketing (ej. Jira)</option>
-            <option value="firewall">firewall</option>
-            <option value="edr">edr</option>
+          <select value={kind} onChange={(e) => setKind(e.target.value as ConnectorKind)}>
+            {(Object.entries(KIND_LABELS) as [ConnectorKind, string][]).map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
           </select>
         </div>
-        <textarea
-          className="mono"
-          style={{ width: "100%", minHeight: 140, marginTop: 8 }}
-          value={configText}
-          onChange={(e) => setConfigText(e.target.value)}
-        />
-        <div style={{ marginTop: 8 }}>
-          <button className="btn-primary" onClick={onSubmit} disabled={createConnector.isPending || !name.trim()}>
+
+        {kind === "ticketing" ? (
+          <>
+            <div className="inline-form" style={{ marginTop: 8 }}>
+              <input
+                placeholder="URL base (ej. https://tuempresa.atlassian.net)"
+                style={{ flex: 2 }}
+                value={ticketingForm.baseUrl}
+                onChange={(e) => setTicketingForm((f) => ({ ...f, baseUrl: e.target.value }))}
+              />
+              <input
+                placeholder="Email de la cuenta"
+                value={ticketingForm.email}
+                onChange={(e) => setTicketingForm((f) => ({ ...f, email: e.target.value }))}
+              />
+            </div>
+            <div className="inline-form" style={{ marginTop: 8 }}>
+              <input
+                type="password"
+                placeholder="API token"
+                value={ticketingForm.apiToken}
+                onChange={(e) => setTicketingForm((f) => ({ ...f, apiToken: e.target.value }))}
+              />
+              <input
+                placeholder="Clave del proyecto (ej. SEC)"
+                value={ticketingForm.projectKey}
+                onChange={(e) => setTicketingForm((f) => ({ ...f, projectKey: e.target.value }))}
+              />
+              <input
+                placeholder="Tipo de ticket (ej. Task)"
+                value={ticketingForm.issueType}
+                onChange={(e) => setTicketingForm((f) => ({ ...f, issueType: e.target.value }))}
+              />
+            </div>
+            <p className="empty-hint" style={{ marginTop: 8 }}>
+              Mapeo de prioridad (severidad de la alerta -&gt; prioridad del ticket, opcional -- ya viene con valores
+              tipicos de Jira):
+            </p>
+            <div className="inline-form">
+              <input placeholder="Critica" value={ticketingForm.priorityCritical} onChange={(e) => setTicketingForm((f) => ({ ...f, priorityCritical: e.target.value }))} />
+              <input placeholder="Alta" value={ticketingForm.priorityHigh} onChange={(e) => setTicketingForm((f) => ({ ...f, priorityHigh: e.target.value }))} />
+              <input placeholder="Media" value={ticketingForm.priorityMedium} onChange={(e) => setTicketingForm((f) => ({ ...f, priorityMedium: e.target.value }))} />
+              <input placeholder="Baja" value={ticketingForm.priorityLow} onChange={(e) => setTicketingForm((f) => ({ ...f, priorityLow: e.target.value }))} />
+            </div>
+          </>
+        ) : (
+          <div className="inline-form" style={{ marginTop: 8 }}>
+            <input
+              placeholder="URL base (ej. https://firewall.tuempresa.com/api)"
+              style={{ flex: 2 }}
+              value={firewallForm.baseUrl}
+              onChange={(e) => setFirewallForm((f) => ({ ...f, baseUrl: e.target.value }))}
+            />
+            <input
+              placeholder="Nombre del header de autenticacion (ej. X-Api-Key)"
+              value={firewallForm.headerName}
+              onChange={(e) => setFirewallForm((f) => ({ ...f, headerName: e.target.value }))}
+            />
+            <input
+              type="password"
+              placeholder="API key"
+              value={firewallForm.apiKey}
+              onChange={(e) => setFirewallForm((f) => ({ ...f, apiKey: e.target.value }))}
+            />
+          </div>
+        )}
+
+        <div style={{ marginTop: 10 }}>
+          <button className="btn-primary" onClick={onSubmit} disabled={createConnector.isPending}>
             {createConnector.isPending ? "Creando..." : "Crear conector"}
           </button>
         </div>
-        {configError && <p className="error-text">{configError}</p>}
-        {createConnector.isError && !configError && (
+        {formError && <p className="error-text">{formError}</p>}
+        {createConnector.isError && !formError && (
           <p className="error-text">
             No se pudo crear el conector.{" "}
             <span className="error-detail">{connectionErrorDetail(createConnector.error)}</span>
@@ -110,18 +210,27 @@ export default function Integrations() {
         {connectors.data && (
           <table className="data-table">
             <thead>
-              <tr><th>Nombre</th><th>Tipo</th><th>Habilitado</th></tr>
+              <tr><th>Nombre</th><th>Tipo</th><th>Habilitado</th><th></th></tr>
             </thead>
             <tbody>
               {connectors.data.map((c) => (
                 <tr key={c.id}>
                   <td>{c.name}</td>
-                  <td>{c.kind}</td>
-                  <td>{c.enabled ? "si" : "no"}</td>
+                  <td>{KIND_LABELS[c.kind as ConnectorKind] ?? c.kind}</td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={c.enabled}
+                      onChange={(e) => toggleConnector.mutate({ id: c.id, enabled: e.target.checked })}
+                    />
+                  </td>
+                  <td>
+                    <button className="btn-link" onClick={() => deleteConnector.mutate(c.id)}>Eliminar</button>
+                  </td>
                 </tr>
               ))}
               {connectors.data.length === 0 && (
-                <tr><td colSpan={3} className="empty-hint">Sin conectores configurados -- toda accion de contencion/ticketing queda en modo simulado.</td></tr>
+                <tr><td colSpan={4} className="empty-hint">Sin conectores configurados -- toda accion de contencion/ticketing queda en modo simulado.</td></tr>
               )}
             </tbody>
           </table>
