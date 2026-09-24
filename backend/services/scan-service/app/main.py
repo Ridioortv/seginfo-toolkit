@@ -158,6 +158,22 @@ async def get_scan(job_id: str, claims: dict = Depends(get_current_claims), db: 
     return job
 
 
+@app.delete("/scans/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_scan(
+    job_id: str,
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
+):
+    job = await services.get_scan_job(db, job_id, org_id_from_claims(claims))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job de escaneo no encontrado")
+    if not services.is_deletable_status(job.status):
+        raise HTTPException(status_code=409, detail="Solo se pueden borrar escaneos ya finalizados")
+    await services.delete_scan_job(db, job)
+    await db.commit()
+    logger.info("scan job borrado", extra={"job_id": job_id, "actor": claims.get("sub")})
+
+
 @app.post("/scan-schedules", response_model=ScanScheduleOut, status_code=status.HTTP_201_CREATED)
 async def create_schedule(
     payload: ScanScheduleCreate,
@@ -273,6 +289,22 @@ async def list_agent_scans(
     db: AsyncSession = Depends(get_db),
 ):
     return await services.list_agent_scan_jobs(db, org_id_from_claims(claims), agent_id)
+
+
+@app.delete("/agent-scans/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_agent_scan(
+    job_id: str,
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
+):
+    job = await services.get_agent_scan_job(db, job_id, org_id_from_claims(claims))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job de escaneo remoto no encontrado")
+    if not services.is_deletable_status(job.status):
+        raise HTTPException(status_code=409, detail="Solo se pueden borrar escaneos ya finalizados")
+    await services.delete_agent_scan_job(db, job)
+    await db.commit()
+    logger.info("scan job remoto borrado", extra={"job_id": job_id, "actor": claims.get("sub")})
 
 
 @app.post("/agents/poll", response_model=AgentPollResponse)

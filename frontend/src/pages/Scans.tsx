@@ -31,6 +31,8 @@ const SCOPE_LABELS: Record<NetworkScope, string> = {
 // memoria la notacion CIDR. Siempre editable antes de lanzar el escaneo.
 const LAN_PRESETS = ["192.168.0.0/24", "192.168.1.0/24", "10.0.0.0/24", "172.16.0.0/24"];
 
+const TERMINAL_STATUSES = new Set(["completed", "failed", "scanner_unavailable"]);
+
 function scopeOf(job: ScanJobOut): string {
   const raw = job.options?.network_scope;
   return typeof raw === "string" && raw in SCOPE_LABELS ? raw : "-";
@@ -142,6 +144,16 @@ export default function Scans() {
       setAgentJobTarget("");
       queryClient.invalidateQueries({ queryKey: ["agent-scans"] });
     },
+  });
+
+  const deleteScan = useMutation({
+    mutationFn: async (id: string) => scanApi.delete(`/scans/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["scans"] }),
+  });
+
+  const deleteAgentScan = useMutation({
+    mutationFn: async (id: string) => scanApi.delete(`/agent-scans/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["agent-scans"] }),
   });
 
   const createScans = useMutation({
@@ -485,6 +497,7 @@ export default function Scans() {
                 <th>Estado</th>
                 <th>Hallazgos</th>
                 <th>Creado</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -499,10 +512,15 @@ export default function Scans() {
                   </td>
                   <td>{j.findings.length}</td>
                   <td>{new Date(j.created_at).toLocaleString()}</td>
+                  <td>
+                    {TERMINAL_STATUSES.has(j.status) && (
+                      <button className="btn-link" onClick={() => deleteAgentScan.mutate(j.id)}>Eliminar</button>
+                    )}
+                  </td>
                 </tr>
               ))}
               {agentScans.data.length === 0 && (
-                <tr><td colSpan={6} className="empty-hint">Sin escaneos remotos todavia.</td></tr>
+                <tr><td colSpan={7} className="empty-hint">Sin escaneos remotos todavia.</td></tr>
               )}
             </tbody>
           </table>
@@ -516,6 +534,7 @@ export default function Scans() {
       </div>
 
       <div className="panel">
+        <h2>Escaneos realizados</h2>
         {scans.isLoading && <p className="empty-hint">Cargando...</p>}
         {scans.isError && (
           <p className="error-text">
@@ -534,6 +553,7 @@ export default function Scans() {
                 <th>Estado</th>
                 <th>Hallazgos</th>
                 <th>Creado</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -551,10 +571,15 @@ export default function Scans() {
                   </td>
                   <td>{s.findings.length}</td>
                   <td>{new Date(s.created_at).toLocaleString()}</td>
+                  <td>
+                    {TERMINAL_STATUSES.has(s.status) && (
+                      <button className="btn-link" onClick={() => deleteScan.mutate(s.id)}>Eliminar</button>
+                    )}
+                  </td>
                 </tr>
               ))}
               {scans.data.length === 0 && (
-                <tr><td colSpan={7} className="empty-hint">Sin escaneos ejecutados todavia.</td></tr>
+                <tr><td colSpan={8} className="empty-hint">Sin escaneos ejecutados todavia.</td></tr>
               )}
             </tbody>
           </table>

@@ -56,6 +56,24 @@ async def get_scan_job(db: AsyncSession, job_id: str, organization_id: str) -> S
     return job
 
 
+TERMINAL_SCAN_STATUSES = {"completed", "failed", "scanner_unavailable"}
+
+
+def is_deletable_status(status_value) -> bool:
+    """Un escaneo (propio o de agente remoto) solo se puede borrar una vez
+    terminado -- pending/running todavia pueden estar corriendo en
+    background_tasks o esperando el proximo polling del agente."""
+    value = status_value.value if hasattr(status_value, "value") else status_value
+    return value in TERMINAL_SCAN_STATUSES
+
+
+async def delete_scan_job(db: AsyncSession, job: ScanJob) -> None:
+    """Solo se borran escaneos ya terminados (completed/failed/scanner_unavailable) --
+    uno en pending/running todavia puede estar corriendo en background_tasks."""
+    await db.delete(job)
+    await db.flush()
+
+
 def scanners_status() -> dict:
     return {scanner_type.value: driver.is_available() for scanner_type, driver in DRIVERS.items()}
 
@@ -245,6 +263,12 @@ async def get_agent_by_key(db: AsyncSession, api_key: str) -> ScanAgent | None:
 
 async def delete_agent(db: AsyncSession, agent: ScanAgent) -> None:
     await db.delete(agent)
+    await db.flush()
+
+
+async def delete_agent_scan_job(db: AsyncSession, job: AgentScanJob) -> None:
+    """Mismo criterio que delete_scan_job: solo estados terminales."""
+    await db.delete(job)
     await db.flush()
 
 
