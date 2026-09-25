@@ -26,6 +26,7 @@ export default function Cases() {
   const [assigneeDraft, setAssigneeDraft] = useState<Record<string, string>>({});
   const [noteDraft, setNoteDraft] = useState<Record<string, string>>({});
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+  const [caseActionError, setCaseActionError] = useState<string | null>(null);
 
   const cases = useQuery({
     queryKey: ["cases"],
@@ -46,7 +47,13 @@ export default function Cases() {
   const updateCase = useMutation({
     mutationFn: async ({ id, payload }: { id: string; payload: Record<string, unknown> }) =>
       (await caseApi.patch<CaseOut>(`/cases/${id}`, payload)).data,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cases"] }),
+    onSuccess: () => {
+      setCaseActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["cases"] });
+    },
+    onError: (err: unknown) => {
+      setCaseActionError(connectionErrorDetail(err));
+    },
   });
 
   const addNote = useMutation({
@@ -54,7 +61,11 @@ export default function Cases() {
       (await caseApi.post<CaseOut>(`/cases/${id}/timeline`, { action: "note", notes })).data,
     onSuccess: (_data, vars) => {
       setNoteDraft((prev) => ({ ...prev, [vars.id]: "" }));
+      setCaseActionError(null);
       queryClient.invalidateQueries({ queryKey: ["cases"] });
+    },
+    onError: (err: unknown) => {
+      setCaseActionError(connectionErrorDetail(err));
     },
   });
 
@@ -101,6 +112,12 @@ export default function Cases() {
       )}
 
       <div className="panel">
+        {caseActionError && (
+          <p className="error-text">
+            No se pudo completar la accion sobre el caso.{" "}
+            <span className="error-detail">{caseActionError}</span>
+          </p>
+        )}
         {cases.isLoading && <p className="empty-hint">Cargando...</p>}
         {cases.isError && (
           <p className="error-text">

@@ -5,6 +5,7 @@ import type { PlaybookOut, PlaybookRunOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
+import { useAuthStore } from "../store/auth";
 
 const SEVERITIES = ["info", "low", "medium", "high", "critical"];
 
@@ -37,8 +38,22 @@ function actionLabel(action: string): string {
   return ACTIONS.find((a) => a.value === action)?.label ?? action;
 }
 
+// PlaybookOut no expone organization_id (ver soar-service/app/schemas.py),
+// asi que no podemos leerlo directo para saber si un playbook es global.
+// source_file si viene en la respuesta y es un proxy exacto: solo lo llena
+// playbook_loader.py al sincronizar los YAML de playbooks/ (que son
+// justamente los playbooks con organization_id=NULL/global); un playbook
+// creado a mano via POST /playbooks nunca tiene source_file. Ver
+// main.py::update_playbook / delete_playbook -- ahi es donde el backend
+// exige platform_admin para tocar uno de estos.
+function isGlobalPlaybook(playbook: PlaybookOut): boolean {
+  return Boolean(playbook.source_file);
+}
+
 export default function Soar() {
   const queryClient = useQueryClient();
+  const claims = useAuthStore((s) => s.claims);
+  const isPlatformAdmin = claims?.platform_admin === true;
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [minSeverity, setMinSeverity] = useState("high");
@@ -48,6 +63,7 @@ export default function Soar() {
   const [draftParams, setDraftParams] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [runFeedback, setRunFeedback] = useState<{ playbookId: string; message: string } | null>(null);
+  const [playbookActionError, setPlaybookActionError] = useState<unknown>(null);
 
   const playbooks = useQuery({
     queryKey: ["playbooks"],
@@ -86,12 +102,20 @@ export default function Soar() {
   const togglePlaybook = useMutation({
     mutationFn: async ({ id, is_enabled }: { id: string; is_enabled: boolean }) =>
       (await soarApi.patch<PlaybookOut>(`/playbooks/${id}`, { is_enabled })).data,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["playbooks"] }),
+    onSuccess: () => {
+      setPlaybookActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["playbooks"] });
+    },
+    onError: (err: unknown) => setPlaybookActionError(err),
   });
 
   const deletePlaybook = useMutation({
     mutationFn: async (id: string) => soarApi.delete(`/playbooks/${id}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["playbooks"] }),
+    onSuccess: () => {
+      setPlaybookActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["playbooks"] });
+    },
+    onError: (err: unknown) => setPlaybookActionError(err),
   });
 
   const runPlaybook = useMutation({
@@ -259,40 +283,60 @@ export default function Soar() {
               </tr>
             </thead>
             <tbody>
-              {playbooks.data.map((p) => (
-                <tr key={p.id}>
-                  <td>{p.name}</td>
-                  <td>{p.min_severity}</td>
-                  <td className="mono">{p.rule_tags.join(", ")}</td>
-                  <td>{p.steps.map((s) => (s as { action?: string }).action).join(", ") || p.steps.length}</td>
-                  <td>
-                    <input
-                      type="checkbox"
-                      checked={p.is_enabled}
-                      onChange={(e) => togglePlaybook.mutate({ id: p.id, is_enabled: e.target.checked })}
-                    />
-                  </td>
-                  <td>
-                    <button
-                      className="btn-link"
-                      onClick={() => runPlaybook.mutate(p)}
-                      disabled={runPlaybook.isPending}
-                    >
-                      Ejecutar ahora
-                    </button>
-                    {" / "}
-                    <button className="btn-link" onClick={() => deletePlaybook.mutate(p.id)}>Eliminar</button>
-                    {runFeedback && runFeedback.playbookId === p.id && (
-                      <p className="empty-hint" style={{ margin: "4px 0 0" }}>{runFeedback.message}</p>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {playbooks.data.map((p) => {
+                const isGlobal = isGlobalPlaybook(p);
+                const canManage = !isGlobal || isPlatformAdmin;
+                const globalHint = "Playbook global (cargado desde YAML) -- solo un administrador de plataforma puede habilitarlo/deshabilitarlo o eliminarlo.";
+                return (
+                  <tr key={p.id}>
+                    <td>{p.name}</td>
+                    <td>{p.min_severity}</td>
+                    <td className="mono">{p.rule_tags.join(", ")}</td>
+                    <td>{p.steps.map((s) => (s as { action?: string }).action).join(", ") || p.steps.length}</td>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={p.is_enabled}
+                        disabled={!canManage}
+                        title={canManage ? undefined : globalHint}
+                        onChange={(e) => togglePlaybook.mutate({ id: p.id, is_enabled: e.target.checked })}
+                      />
+                    </td>
+                    <td>
+                      <button
+                        className="btn-link"
+                        onClick={() => runPlaybook.mutate(p)}
+                        disabled={runPlaybook.isPending}
+                      >
+                        Ejecutar ahora
+                      </button>
+                      {canManage && (
+                        <>
+                          {" / "}
+                          <button className="btn-link" onClick={() => deletePlaybook.mutate(p.id)}>Eliminar</button>
+                        </>
+                      )}
+                      {isGlobal && !isPlatformAdmin && (
+                        <span className="empty-hint" title={globalHint}> (global)</span>
+                      )}
+                      {runFeedback && runFeedback.playbookId === p.id && (
+                        <p className="empty-hint" style={{ margin: "4px 0 0" }}>{runFeedback.message}</p>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
               {playbooks.data.length === 0 && (
                 <tr><td colSpan={6} className="empty-hint">Sin playbooks cargados todavia.</td></tr>
               )}
             </tbody>
           </table>
+        )}
+        {playbookActionError != null && (
+          <p className="error-text">
+            No se pudo actualizar el playbook.{" "}
+            <span className="error-detail">{connectionErrorDetail(playbookActionError)}</span>
+          </p>
         )}
       </div>
 

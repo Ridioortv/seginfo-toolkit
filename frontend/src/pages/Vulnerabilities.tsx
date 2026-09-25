@@ -16,6 +16,7 @@ const TRIAGE_ACTIONS: { status: string; label: string }[] = [
 export default function Vulnerabilities() {
   const queryClient = useQueryClient();
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [triageActionError, setTriageActionError] = useState<unknown>(null);
 
   const stats = useQuery({
     queryKey: ["vuln-stats", "page"],
@@ -30,9 +31,11 @@ export default function Vulnerabilities() {
     mutationFn: async ({ id, status: newStatus }: { id: string; status: string }) =>
       (await vulnApi.patch<VulnerabilityOut>(`/vulnerabilities/${id}/triage`, { status: newStatus })).data,
     onSuccess: () => {
+      setTriageActionError(null);
       queryClient.invalidateQueries({ queryKey: ["vulnerabilities"] });
       queryClient.invalidateQueries({ queryKey: ["vuln-stats", "page"] });
     },
+    onError: (err: unknown) => setTriageActionError(err),
   });
 
   return (
@@ -135,6 +138,12 @@ export default function Vulnerabilities() {
               )}
             </tbody>
           </table>
+        )}
+        {triageActionError != null && (
+          <p className="error-text">
+            No se pudo actualizar el triage.{" "}
+            <span className="error-detail">{connectionErrorDetail(triageActionError)}</span>
+          </p>
         )}
       </div>
     </div>

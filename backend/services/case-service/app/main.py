@@ -119,6 +119,12 @@ async def update_case(
     case = await services.get_case(db, case_id, org_id_from_claims(claims))
     if case is None:
         raise HTTPException(status_code=404, detail="Caso no encontrado")
+    changes = payload.model_dump(exclude_unset=True)
+    if "status" in changes and not services.is_valid_status_transition(case.status, changes["status"]):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Transicion de estado invalida: {case.status.value} -> {changes['status'].value}",
+        )
     case = await services.update_case(db, case, payload, claims.get("sub", ""))
     await db.commit()
     return case

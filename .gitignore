@@ -8,3 +8,4 @@ dist/
 *.exe
 *.db
 backend/.venv/
+vite.config.ts.timestamp-*.mjs

@@ -20,6 +20,7 @@ export default function PurpleTeam() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [formError, setFormError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [coverageActionError, setCoverageActionError] = useState<string | null>(null);
 
   const coverage = useQuery({
     queryKey: ["coverage-overall", "page"],
@@ -55,7 +56,13 @@ export default function PurpleTeam() {
   const recomputeCoverage = useMutation({
     mutationFn: async (exerciseId: string) =>
       (await purpleApi.post<CoverageResult>(`/exercises/${exerciseId}/coverage`)).data,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["exercises"] }),
+    onSuccess: () => {
+      setCoverageActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["exercises"] });
+    },
+    onError: (err: unknown) => {
+      setCoverageActionError(connectionErrorDetail(err));
+    },
   });
 
   function toggleTechnique(id: string) {
@@ -181,6 +188,12 @@ export default function PurpleTeam() {
 
       <div className="panel">
         <h2>Ejercicios declarados</h2>
+        {coverageActionError && (
+          <p className="error-text">
+            No se pudo recalcular la cobertura.{" "}
+            <span className="error-detail">{coverageActionError}</span>
+          </p>
+        )}
         {exercises.data && exercises.data.length > 0 ? (
           <table className="data-table">
             <thead>
@@ -230,7 +243,7 @@ export default function PurpleTeam() {
                             </>
                           ) : (
                             <p className="empty-hint">
-                              {last ? "Sin gaps -- todas las tecnicas declaradas tienen al menos una regla que las detecta." : "Todavia no se calculo la cobertura de este ejercicio."}
+                              {last?.coverage_pct !== undefined ? "Sin gaps -- todas las tecnicas declaradas tienen al menos una regla que las detecta." : "Todavia no se calculo la cobertura de este ejercicio."}
                             </p>
                           )}
                         </td>

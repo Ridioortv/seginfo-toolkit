@@ -5,6 +5,7 @@ import { useAuthStore } from "../store/auth";
 import type { ChannelOut, NotifyLogOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { StatusBadge } from "../components/Badge";
+import { connectionErrorDetail } from "../utils/errors";
 
 type ChannelType = "email" | "slack_webhook" | "generic_webhook";
 
@@ -144,6 +145,18 @@ export default function Notifications() {
               )}
             </tbody>
           </table>
+        )}
+        {toggleChannel.isError && (
+          <p className="error-text">
+            No se pudo actualizar el canal.{" "}
+            <span className="error-detail">{connectionErrorDetail(toggleChannel.error)}</span>
+          </p>
+        )}
+        {deleteChannel.isError && (
+          <p className="error-text">
+            No se pudo eliminar el canal.{" "}
+            <span className="error-detail">{connectionErrorDetail(deleteChannel.error)}</span>
+          </p>
         )}
 
         {canManageChannels ? (

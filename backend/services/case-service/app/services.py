@@ -21,6 +21,34 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Mismo grafo de transiciones que ya ofrece el frontend (ver
+# STATUS_TRANSITIONS en frontend/src/pages/Cases.tsx): open<->in_progress,
+# in_progress<->resolved, resolved<->closed, mas el atajo "Reabrir" desde
+# closed directo a open. La UI ya restringe que boton se muestra segun el
+# status actual, pero PATCH /cases/{case_id} no validaba nada server-side --
+# un caller que no sea la UI (curl, otro servicio, un tab con un status
+# viejo en memoria) podia poner cualquier status invalido.
+CASE_STATUS_TRANSITIONS: dict[str, set[str]] = {
+    CaseStatus.open.value: {CaseStatus.in_progress.value},
+    CaseStatus.in_progress.value: {CaseStatus.resolved.value, CaseStatus.open.value},
+    CaseStatus.resolved.value: {CaseStatus.closed.value, CaseStatus.in_progress.value},
+    CaseStatus.closed.value: {CaseStatus.open.value},
+}
+
+
+def is_valid_status_transition(old_status, new_status) -> bool:
+    """Regla de negocio pura (sin DB, testeable) que decide si se puede
+    pasar de old_status a new_status -- mismo patron que
+    is_deletable_status en scan-service/app/services.py. Maneja tanto el
+    enum de SQLAlchemy (CaseStatus) como str plano via hasattr(.., "value").
+    Quedarse en el mismo status (no-op) siempre es valido."""
+    old_value = old_status.value if hasattr(old_status, "value") else old_status
+    new_value = new_status.value if hasattr(new_status, "value") else new_status
+    if old_value == new_value:
+        return True
+    return new_value in CASE_STATUS_TRANSITIONS.get(old_value, set())
+
+
 async def _add_timeline_entry(db: AsyncSession, case_id: str, actor: str, action: str, notes: str = "") -> None:
     db.add(CaseTimelineEntry(case_id=case_id, actor=actor, action=action, notes=notes))
     await db.flush()

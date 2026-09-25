@@ -235,6 +235,18 @@ export default function Integrations() {
             </tbody>
           </table>
         )}
+        {toggleConnector.isError && (
+          <p className="error-text">
+            No se pudo actualizar el conector.{" "}
+            <span className="error-detail">{connectionErrorDetail(toggleConnector.error)}</span>
+          </p>
+        )}
+        {deleteConnector.isError && (
+          <p className="error-text">
+            No se pudo eliminar el conector.{" "}
+            <span className="error-detail">{connectionErrorDetail(deleteConnector.error)}</span>
+          </p>
+        )}
       </div>
 
       <div className="panel">

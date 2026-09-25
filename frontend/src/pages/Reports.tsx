@@ -1,9 +1,17 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { reportApi, notificationApi } from "../services/api";
+import { useAuthStore } from "../store/auth";
 import type { GeneratedReportOut, ReportScheduleOut, ChannelOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { connectionErrorDetail } from "../utils/errors";
+
+// Mismo criterio que require_role("admin", "soc_manager") en
+// POST/PATCH/DELETE /report-schedules (report-service/app/main.py) --
+// sin este chequeo, cualquier usuario logueado veia los controles de
+// "Reportes programados" igual y solo se enteraba de que no podia usarlos
+// por un 403 (silencioso en toggle/borrar, ver los onError de mas abajo).
+const CAN_MANAGE_SCHEDULES = ["admin", "soc_manager"];
 
 const REPORT_TYPES = [
   { value: "executive_summary", label: "Resumen ejecutivo" },
@@ -55,6 +63,9 @@ async function downloadPdf(reportId: string) {
 export default function Reports() {
   const [reportType, setReportType] = useState(REPORT_TYPES[0].value);
   const queryClient = useQueryClient();
+
+  const claims = useAuthStore((s) => s.claims);
+  const canManageSchedules = !!claims?.role && CAN_MANAGE_SCHEDULES.includes(claims.role);
 
   const [schedReportType, setSchedReportType] = useState(REPORT_TYPES[0].value);
   const [schedChannelId, setSchedChannelId] = useState("");
@@ -178,6 +189,12 @@ export default function Reports() {
             </tbody>
           </table>
         )}
+        {deleteReport.isError && (
+          <p className="error-text">
+            No se pudo eliminar el reporte.{" "}
+            <span className="error-detail">{connectionErrorDetail(deleteReport.error)}</span>
+          </p>
+        )}
       </div>
 
       <div className="panel">
@@ -193,52 +210,61 @@ export default function Reports() {
           <p className="empty-hint">No hay ningun canal de notificaciones tipo "email" habilitado todavia.</p>
         )}
 
-        <div className="inline-form">
-          <select value={schedReportType} onChange={(e) => setSchedReportType(e.target.value)}>
-            {REPORT_TYPES.map((rt) => (
-              <option key={rt.value} value={rt.value}>{rt.label}</option>
-            ))}
-          </select>
-          <select value={schedChannelId} onChange={(e) => setSchedChannelId(e.target.value)}>
-            <option value="">Elegir canal de email...</option>
-            {emailChannels.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-        </div>
-        <div className="inline-form" style={{ marginTop: 8 }}>
-          <select value={schedFrequency} onChange={(e) => setSchedFrequency(e.target.value as "daily" | "weekly")}>
-            <option value="daily">Todos los dias</option>
-            <option value="weekly">Un dia a la semana</option>
-          </select>
-          {schedFrequency === "weekly" && (
-            <select value={schedDayOfWeek} onChange={(e) => setSchedDayOfWeek(Number(e.target.value))}>
-              {DAY_LABELS.map((label, idx) => (
-                <option key={label} value={idx}>{label}</option>
-              ))}
-            </select>
-          )}
-          <input
-            type="number" min={0} max={23} style={{ width: 60 }}
-            value={schedHour} onChange={(e) => setSchedHour(Number(e.target.value))}
-          />
-          <span>:</span>
-          <input
-            type="number" min={0} max={59} style={{ width: 60 }}
-            value={schedMinute} onChange={(e) => setSchedMinute(Number(e.target.value))}
-          />
-          <button
-            className="btn-primary"
-            onClick={() => createSchedule.mutate()}
-            disabled={createSchedule.isPending || !schedChannelId}
-          >
-            {createSchedule.isPending ? "Creando..." : "Crear regla"}
-          </button>
-        </div>
-        {createSchedule.isError && (
-          <p className="error-text">
-            No se pudo crear la regla.{" "}
-            <span className="error-detail">{connectionErrorDetail(createSchedule.error)}</span>
+        {canManageSchedules ? (
+          <>
+            <div className="inline-form">
+              <select value={schedReportType} onChange={(e) => setSchedReportType(e.target.value)}>
+                {REPORT_TYPES.map((rt) => (
+                  <option key={rt.value} value={rt.value}>{rt.label}</option>
+                ))}
+              </select>
+              <select value={schedChannelId} onChange={(e) => setSchedChannelId(e.target.value)}>
+                <option value="">Elegir canal de email...</option>
+                {emailChannels.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="inline-form" style={{ marginTop: 8 }}>
+              <select value={schedFrequency} onChange={(e) => setSchedFrequency(e.target.value as "daily" | "weekly")}>
+                <option value="daily">Todos los dias</option>
+                <option value="weekly">Un dia a la semana</option>
+              </select>
+              {schedFrequency === "weekly" && (
+                <select value={schedDayOfWeek} onChange={(e) => setSchedDayOfWeek(Number(e.target.value))}>
+                  {DAY_LABELS.map((label, idx) => (
+                    <option key={label} value={idx}>{label}</option>
+                  ))}
+                </select>
+              )}
+              <input
+                type="number" min={0} max={23} style={{ width: 60 }}
+                value={schedHour} onChange={(e) => setSchedHour(Number(e.target.value))}
+              />
+              <span>:</span>
+              <input
+                type="number" min={0} max={59} style={{ width: 60 }}
+                value={schedMinute} onChange={(e) => setSchedMinute(Number(e.target.value))}
+              />
+              <button
+                className="btn-primary"
+                onClick={() => createSchedule.mutate()}
+                disabled={createSchedule.isPending || !schedChannelId}
+              >
+                {createSchedule.isPending ? "Creando..." : "Crear regla"}
+              </button>
+            </div>
+            {createSchedule.isError && (
+              <p className="error-text">
+                No se pudo crear la regla.{" "}
+                <span className="error-detail">{connectionErrorDetail(createSchedule.error)}</span>
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="empty-hint">
+            Tu usuario ({claims?.role ?? "sin rol"}) no puede crear ni administrar reglas de reporte programado -- lo
+            puede hacer un admin o soc_manager.
           </p>
         )}
 
@@ -265,19 +291,37 @@ export default function Reports() {
                     {s.last_status && <span className="error-detail">{s.last_status}</span>}
                   </td>
                   <td>
-                    <input
-                      type="checkbox"
-                      checked={s.enabled}
-                      onChange={(e) => toggleSchedule.mutate({ id: s.id, enabled: e.target.checked })}
-                    />
+                    {canManageSchedules ? (
+                      <input
+                        type="checkbox"
+                        checked={s.enabled}
+                        onChange={(e) => toggleSchedule.mutate({ id: s.id, enabled: e.target.checked })}
+                      />
+                    ) : (
+                      s.enabled ? "si" : "no"
+                    )}
                   </td>
                   <td>
-                    <button className="btn-link" onClick={() => deleteSchedule.mutate(s.id)}>Eliminar</button>
+                    {canManageSchedules && (
+                      <button className="btn-link" onClick={() => deleteSchedule.mutate(s.id)}>Eliminar</button>
+                    )}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        )}
+        {toggleSchedule.isError && (
+          <p className="error-text">
+            No se pudo actualizar la regla.{" "}
+            <span className="error-detail">{connectionErrorDetail(toggleSchedule.error)}</span>
+          </p>
+        )}
+        {deleteSchedule.isError && (
+          <p className="error-text">
+            No se pudo eliminar la regla.{" "}
+            <span className="error-detail">{connectionErrorDetail(deleteSchedule.error)}</span>
+          </p>
         )}
       </div>
     </div>

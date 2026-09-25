@@ -24,13 +24,24 @@ const FIELD_OPTIONS = [
 type ConditionRow = { field: string; value: string };
 
 function buildDetection(conditions: ConditionRow[]): Record<string, unknown> {
-  const selection: Record<string, unknown> = {};
+  // Varias condiciones sobre el MISMO campo (ej. dos filas de "IP origen"
+  // con valores distintos) no se pueden cumplir a la vez con AND -- lo que
+  // el usuario quiere decir es "cualquiera de estos valores", que es
+  // exactamente el OR que sigma.py::_field_matches ya soporta para un campo
+  // con lista de valores. Por eso se acumulan en una lista en vez de que la
+  // ultima condicion pise a las anteriores en el dict `selection`.
+  const selection: Record<string, string[]> = {};
   for (const c of conditions) {
     if (!c.field || !c.value.trim()) continue;
     const values = c.value.split(",").map((v) => v.trim()).filter(Boolean);
-    selection[c.field] = values.length > 1 ? values : values[0];
+    if (values.length === 0) continue;
+    selection[c.field] = [...(selection[c.field] ?? []), ...values];
   }
-  return { selection_1: selection, condition: "selection_1" };
+  const normalized: Record<string, unknown> = {};
+  for (const [field, values] of Object.entries(selection)) {
+    normalized[field] = values.length > 1 ? values : values[0];
+  }
+  return { selection_1: normalized, condition: "selection_1" };
 }
 
 export default function Siem() {
@@ -42,6 +53,8 @@ export default function Siem() {
   const [ruleTags, setRuleTags] = useState("");
   const [conditions, setConditions] = useState<ConditionRow[]>([{ field: "event.category", value: "" }]);
   const [ruleFormError, setRuleFormError] = useState<string | null>(null);
+  const [ruleActionError, setRuleActionError] = useState<unknown>(null);
+  const [alertActionError, setAlertActionError] = useState<unknown>(null);
 
   const alerts = useQuery({
     queryKey: ["alerts"],
@@ -82,18 +95,30 @@ export default function Siem() {
   const toggleRule = useMutation({
     mutationFn: async ({ id, is_enabled }: { id: string; is_enabled: boolean }) =>
       (await siemApi.patch<SigmaRuleOut>(`/rules/${id}`, { is_enabled })).data,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["rules"] }),
+    onSuccess: () => {
+      setRuleActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["rules"] });
+    },
+    onError: (err: unknown) => setRuleActionError(err),
   });
 
   const deleteRule = useMutation({
     mutationFn: async (id: string) => siemApi.delete(`/rules/${id}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["rules"] }),
+    onSuccess: () => {
+      setRuleActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["rules"] });
+    },
+    onError: (err: unknown) => setRuleActionError(err),
   });
 
   const updateAlert = useMutation({
     mutationFn: async ({ id, status: newStatus }: { id: string; status: string }) =>
       (await siemApi.patch<AlertOut>(`/alerts/${id}`, { status: newStatus })).data,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["alerts"] }),
+    onSuccess: () => {
+      setAlertActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["alerts"] });
+    },
+    onError: (err: unknown) => setAlertActionError(err),
   });
 
   function onCreateRule() {
@@ -189,6 +214,12 @@ export default function Siem() {
               )}
             </tbody>
           </table>
+        )}
+        {alertActionError != null && (
+          <p className="error-text">
+            No se pudo actualizar la alerta.{" "}
+            <span className="error-detail">{connectionErrorDetail(alertActionError)}</span>
+          </p>
         )}
       </div>
 
@@ -303,6 +334,12 @@ export default function Siem() {
               )}
             </tbody>
           </table>
+        )}
+        {ruleActionError != null && (
+          <p className="error-text">
+            No se pudo actualizar la regla.{" "}
+            <span className="error-detail">{connectionErrorDetail(ruleActionError)}</span>
+          </p>
         )}
       </div>
     </div>

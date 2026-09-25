@@ -61,6 +61,14 @@ export default function Scans() {
   const [agentJobName, setAgentJobName] = useState("");
   const [agentJobTarget, setAgentJobTarget] = useState("");
 
+  // Errores de acciones sobre filas ya existentes (togglear/borrar) --
+  // separado de formError/createX.isError, que son solo para los
+  // formularios de arriba de cada tabla.
+  const [scheduleActionError, setScheduleActionError] = useState<unknown>(null);
+  const [agentActionError, setAgentActionError] = useState<unknown>(null);
+  const [scanActionError, setScanActionError] = useState<unknown>(null);
+  const [agentScanActionError, setAgentScanActionError] = useState<unknown>(null);
+
   const scans = useQuery({
     queryKey: ["scans"],
     queryFn: async () => (await scanApi.get<ScanJobOut[]>("/scans")).data,
@@ -94,12 +102,20 @@ export default function Scans() {
   const toggleSchedule = useMutation({
     mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) =>
       (await scanApi.patch<ScanScheduleOut>(`/scan-schedules/${id}`, { enabled })).data,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["scan-schedules"] }),
+    onSuccess: () => {
+      setScheduleActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["scan-schedules"] });
+    },
+    onError: (err: unknown) => setScheduleActionError(err),
   });
 
   const deleteSchedule = useMutation({
     mutationFn: async (id: string) => scanApi.delete(`/scan-schedules/${id}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["scan-schedules"] }),
+    onSuccess: () => {
+      setScheduleActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["scan-schedules"] });
+    },
+    onError: (err: unknown) => setScheduleActionError(err),
   });
 
   const agents = useQuery({
@@ -125,9 +141,11 @@ export default function Scans() {
   const deleteAgent = useMutation({
     mutationFn: async (id: string) => scanApi.delete(`/agents/${id}`),
     onSuccess: () => {
+      setAgentActionError(null);
       queryClient.invalidateQueries({ queryKey: ["scan-agents"] });
       queryClient.invalidateQueries({ queryKey: ["agent-scans"] });
     },
+    onError: (err: unknown) => setAgentActionError(err),
   });
 
   const createAgentScan = useMutation({
@@ -148,12 +166,20 @@ export default function Scans() {
 
   const deleteScan = useMutation({
     mutationFn: async (id: string) => scanApi.delete(`/scans/${id}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["scans"] }),
+    onSuccess: () => {
+      setScanActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["scans"] });
+    },
+    onError: (err: unknown) => setScanActionError(err),
   });
 
   const deleteAgentScan = useMutation({
     mutationFn: async (id: string) => scanApi.delete(`/agent-scans/${id}`),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["agent-scans"] }),
+    onSuccess: () => {
+      setAgentScanActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["agent-scans"] });
+    },
+    onError: (err: unknown) => setAgentScanActionError(err),
   });
 
   const createScans = useMutation({
@@ -363,6 +389,12 @@ export default function Scans() {
             </tbody>
           </table>
         )}
+        {scheduleActionError != null && (
+          <p className="error-text">
+            No se pudo actualizar la regla.{" "}
+            <span className="error-detail">{connectionErrorDetail(scheduleActionError)}</span>
+          </p>
+        )}
         {schedules.isError && (
           <p className="error-text">
             No se pudo conectar con scan-service.{" "}
@@ -437,6 +469,12 @@ export default function Scans() {
               ))}
             </tbody>
           </table>
+        )}
+        {agentActionError != null && (
+          <p className="error-text">
+            No se pudo eliminar el agente.{" "}
+            <span className="error-detail">{connectionErrorDetail(agentActionError)}</span>
+          </p>
         )}
         {agents.isError && (
           <p className="error-text">
@@ -525,6 +563,12 @@ export default function Scans() {
             </tbody>
           </table>
         )}
+        {agentScanActionError != null && (
+          <p className="error-text">
+            No se pudo eliminar el escaneo remoto.{" "}
+            <span className="error-detail">{connectionErrorDetail(agentScanActionError)}</span>
+          </p>
+        )}
         {agentScans.isError && (
           <p className="error-text">
             No se pudo conectar con scan-service.{" "}
@@ -583,6 +627,12 @@ export default function Scans() {
               )}
             </tbody>
           </table>
+        )}
+        {scanActionError != null && (
+          <p className="error-text">
+            No se pudo eliminar el escaneo.{" "}
+            <span className="error-detail">{connectionErrorDetail(scanActionError)}</span>
+          </p>
         )}
       </div>
     </div>

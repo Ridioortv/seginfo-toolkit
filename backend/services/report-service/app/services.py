@@ -187,6 +187,38 @@ async def delete_schedule(db: AsyncSession, schedule: ReportSchedule) -> None:
     await db.flush()
 
 
+def summarize_notify_result(results: list[dict]) -> str:
+    """Determina el estado REAL de una corrida de reporte programado a
+    partir de los resultados por canal que devuelve POST /notify de
+    notification-service (NotifyResult.results, una lista de dicts con al
+    menos 'status'). Funcion pura, sin I/O, para poder testearla sin
+    levantar httpx/DB.
+
+    Antes de este fix, run_scheduled_report solo miraba si la llamada
+    HTTP a /notify daba 2xx (`response.raise_for_status()`) e ignoraba el
+    body -- pero notify() siempre devuelve 200 aunque no haya enviado
+    nada, en dos casos que este fix cubre:
+
+    - `results` vacio: ningun canal matcheo el `channel_ids` pedido (por
+      ejemplo, el canal de email de la regla fue deshabilitado o
+      borrado despues de crear la regla) -> "failed", nadie recibe nada.
+    - algun resultado con status == "failed" (ej. SMTP_HOST mal
+      configurado, credenciales invalidas) -> "failed", aunque la
+      llamada HTTP a notification-service haya sido 200.
+
+    Si todos los resultados son "sent" y/o "simulated" -> "ok": un envio
+    "simulated" (NOTIFICATION_DRY_RUN=true, el default de la plataforma)
+    es un resultado intencional, no un error de esta corrida -- se
+    conserva el detalle completo (incluyendo si fue simulado) en
+    run_scheduled_report, que es quien tiene el `results` original para
+    armar el mensaje human-readable de last_status."""
+    if not results:
+        return "failed"
+    if any(r.get("status") == "failed" for r in results):
+        return "failed"
+    return "ok"
+
+
 async def run_scheduled_report(session_factory, schedule_id: str) -> None:
     """Llamado por el scheduler en proceso (APScheduler, ver app/main.py)
     cuando le toca disparar a una regla. No hay un usuario interactivo
@@ -247,6 +279,34 @@ async def run_scheduled_report(session_factory, schedule_id: str) -> None:
                 timeout=30.0,
             )
             response.raise_for_status()
+
+        # notification-service devuelve 200 aunque no se haya enviado
+        # nada de verdad (ej. `results: []` si el canal fue deshabilitado
+        # o borrado despues de crear la regla, o un resultado por canal
+        # con status "failed" si fallo el SMTP real) -- por eso hace falta
+        # leer el body en vez de confiar solo en el status HTTP. Ver
+        # summarize_notify_result.
+        notify_results = response.json().get("results", [])
+        if summarize_notify_result(notify_results) == "failed":
+            if not notify_results:
+                status_note = (
+                    f"failed: notification-service no encontro ningun canal habilitado para "
+                    f"channel_id={channel_id} (¿fue deshabilitado o borrado despues de crear la regla?)"
+                )[:500]
+            else:
+                failed_detail = "; ".join(
+                    f"{r.get('channel_type', '?')}: {r.get('error', 'sin detalle')}"
+                    for r in notify_results
+                    if r.get("status") == "failed"
+                )
+                status_note = f"failed: {failed_detail}"[:500]
+        else:
+            simulated = any(r.get("status") == "simulated" for r in notify_results)
+            status_note = (
+                "ok (simulado -- NOTIFICATION_DRY_RUN=true, no se mando ningun email real, ver docs/runbook.md)"
+                if simulated
+                else "ok"
+            )
     except Exception as exc:  # noqa: BLE001 -- se registra el error, nunca tumba el scheduler
         logger.error("fallo al ejecutar reporte programado", extra={"schedule_id": schedule_id, "error": str(exc)})
         status_note = f"error: {exc}"[:500]
