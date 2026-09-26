@@ -13,6 +13,51 @@ motores de ejecucion ofensiva ni integracion C2 (ver docs/architecture.md, secci
 - [x] Fase 5: report-service + notification-service + integration-service
 - [x] Fase 6: K8s + Terraform + CI/CD + documentacion final + expansion de frontend
 
+## Corrida de calidad (2026-09-26)
+
+Las 6 fases planificadas ya estaban completas (ver arriba) y la corrida anterior
+(2026-09-25) agrego el stack real de OpenVAS/GVM + el agente de escaneo remoto,
+asi que esta corrida se dedico a verificacion y a cerrar una brecha de
+documentacion que encontro, sin tocar codigo de los servicios:
+
+- **Verificacion completa**: se corrio pytest real (no solo `py_compile`) en
+  los 11 servicios backend con el venv compartido `backend/.venv` -- 182 tests,
+  todos en verde (auth 11, asset 7, scan 52, vuln 20, case 9, integration 7,
+  notification 9, report 14, siem 34, soar 13, purple 6). En el frontend,
+  `npm run test -- --run` (35 tests, todos en verde) y `npx tsc --noEmit`
+  (limpio, cero errores). `docker-compose.yml` se valido como YAML bien
+  formado con PyYAML (no hay Docker en esta maquina de automatizacion para
+  correr `docker compose config` de verdad -- eso ya lo cubre el job
+  `compose-validate` de CI en un runner con Docker). Se reviso `.env.example`
+  contra las variables que usa `docker-compose.yml`: todo esta declarado. Se
+  busco `TODO`/`FIXME`/`XXX` en todo `backend/` y `frontend/src`: no hay
+  ninguno real (los dos matches en backend son falsos positivos de texto,
+  "tXXXX" de una convencion de tags ATT&CK y la palabra "TODOS" en espanol).
+- **Brecha de documentacion encontrada y corregida**: la corrida del
+  2026-09-25 agrego ~15 servicios del stack GVM/OpenVAS y el
+  `remote-agent/` opcional al `docker-compose.yml`, pero `docs/architecture.md`
+  y `docs/security.md` nunca se actualizaron para reflejarlo -- quedaban
+  describiendo solo los 11 microservicios originales. Se agrego a
+  `docs/architecture.md` una seccion nueva ("Componentes agregados fuera de
+  los 11 microservicios") explicando el stack GVM (por que son ~15 servicios,
+  que red Docker aislada usan, por que `ospd-openvas` necesita capacidades de
+  red elevadas) y el `remote-agent` (que problema resuelve, modelo de
+  autenticacion). Se agregaron dos filas a la tabla STRIDE de
+  `docs/security.md`: en Spoofing, el modelo de autenticacion del
+  remote-agent (API key propia, solo se persiste el hash, nunca la key en
+  claro); en Elevation of Privilege, la elevacion real de `ospd-openvas`
+  (`NET_ADMIN`/`NET_RAW` + seccomp/apparmor sin confinar) con su mitigacion
+  (red Docker `gvm_internal` aislada sin salida a internet ni camino hacia el
+  resto de la plataforma, comunicacion por socket unix en vez de red,
+  `no-new-privileges`) y el pendiente (evaluar un perfil seccomp scoped si
+  Greenbone lo publica, o aislar ese contenedor en un host separado para
+  clientes con requisitos mas estrictos). Estos detalles ya estaban
+  documentados como comentarios en linea en `docker-compose.yml` (de la
+  corrida anterior) -- este cambio los sube al modelo de amenazas formal,
+  que es donde alguien evaluando el producto realmente los va a buscar.
+- No se toco codigo de ningun servicio: no hizo falta ningun fix, todo lo
+  que se corrio ya estaba en verde.
+
 ## Ultima corrida
 - Fecha: 2026-09-24
 - Tipo: mejora de calidad (las 6 fases planificadas ya estaban completas,
