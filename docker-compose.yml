@@ -590,6 +590,23 @@ services:
     ports:
       - "8013:8000"
 
+  cloud-service:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: backend/services/cloud-service/Dockerfile
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8014:8000"
+
   frontend:
     restart: unless-stopped
     build:
@@ -609,6 +626,7 @@ services:
       - integration-service
       - threatintel-service
       - asm-service
+      - cloud-service
     ports:
       - "5173:5173"
 

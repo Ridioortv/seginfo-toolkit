@@ -457,3 +457,49 @@ enriquecimiento), todos funciones puras sin I/O real; import de humo de
 `app.main` en ambos servicios nuevos (rutas registradas OK); 41 tests de
 vitest + `tsc --noEmit` limpio + `npm run build` exitoso en el frontend
 completo.
+
+## Nueva funcionalidad: Integraciones cloud, AWS (2026-09-26)
+
+Segunda de las 8 funcionalidades pedidas por Manu, priorizada como #2 ("Empresa
+con el 1 luego 2 luego 3", ya con superficie externa + threat intel hechos).
+AWS primero (Azure/GCP quedan para mas adelante, no se tocan en este cambio).
+
+**`cloud-service` (puerto 8014)**: trae automaticamente el inventario de una
+cuenta de AWS (instancias EC2, buckets S3, security groups) en lugar de
+cargarlo a mano, y detecta configuraciones peligrosas: buckets S3 publicos y
+security groups con puertos abiertos a `0.0.0.0/0`. 100% de solo lectura hacia
+AWS -- todas las llamadas son `Describe*`/`List*`/`Get*`, nunca se crea,
+modifica ni borra nada en la cuenta del cliente. Sync automatico cada
+`CLOUD_SYNC_INTERVAL_HOURS` horas (default 6) sobre todas las cuentas
+habilitadas de todas las organizaciones; una cuenta con credenciales invalidas
+o una llamada que falla (ej. `AccessDenied` en un bucket puntual) nunca frena
+el sync del resto.
+
+Las credenciales de AWS (`access_key_id`/`secret_access_key`) se cifran en la
+base con el mismo mecanismo ya usado para SSO/conectores
+(`backend/shared/crypto.py`, Fernet derivado de `ENCRYPTION_KEY`) y nunca se
+devuelven por la API en texto plano ni cifradas -- solo una version enmascarada
+del access key (`AKIA...WXYZ`). Los hallazgos de severidad alta/critica se
+reenvian a siem-service con el mismo patron best-effort ya usado por
+asm-service/scan-service.
+
+Nueva pagina de frontend "Integraciones Cloud" (nav, junto a "Superficie
+Externa"): conectar cuenta de AWS (con la politica IAM de solo lectura exacta
+documentada en el formulario), tabla de cuentas conectadas con estado del
+ultimo sync y boton "Sincronizar ahora", tabla de recursos descubiertos, tabla
+de hallazgos peligrosos con filtro pendiente/todos y boton "Reconocer".
+
+**Paso manual pendiente para Manu**: crear en AWS un usuario/rol IAM de SOLO
+LECTURA con esta politica exacta (ver comentario completo en `.env.example`):
+`ec2:DescribeInstances`, `ec2:DescribeSecurityGroups`, `s3:ListAllMyBuckets`,
+`s3:GetBucketAcl`, `s3:GetBucketPolicyStatus`, `s3:GetPublicAccessBlock`,
+`s3:GetBucketLocation` -- y despues conectar esa cuenta desde la pagina
+"Integraciones Cloud" (las credenciales se configuran ahi, nunca por variable
+de entorno). Como siempre, correr `docker compose build && docker compose up`
+para levantar el servicio nuevo (no se puede correr Docker desde este
+entorno).
+
+Verificacion antes de commitear: 30 tests nuevos en cloud-service (funciones
+puras, sin boto3/red/DB real) + 41 tests de vitest (sin cambios, no se tocaron
+utils) + `tsc --noEmit` limpio + `npm run build` exitoso en el frontend
+completo.

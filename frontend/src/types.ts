@@ -370,3 +370,47 @@ export interface SurfaceAlertOut {
   is_acknowledged: boolean;
   acknowledged_by: string;
 }
+
+export type CloudProvider = "aws";
+export type CloudResourceType = "ec2_instance" | "security_group" | "s3_bucket";
+export type CloudFindingType = "s3_bucket_public" | "security_group_open_world";
+export type FindingSeverity = "critical" | "high" | "medium";
+
+export interface CloudAccountOut {
+  id: string;
+  name: string;
+  provider: CloudProvider;
+  region: string;
+  access_key_id_masked: string;
+  is_enabled: boolean;
+  last_sync_at: string | null;
+  last_sync_status: "never" | "ok" | "error";
+  last_sync_error: string;
+  created_by: string;
+  created_at: string;
+}
+
+export interface CloudResourceOut {
+  id: string;
+  cloud_account_id: string;
+  resource_type: CloudResourceType;
+  external_id: string;
+  name: string;
+  region: string;
+  resource_metadata: Record<string, unknown>;
+  is_active: boolean;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+export interface CloudFindingOut {
+  id: string;
+  cloud_account_id: string;
+  resource_external_id: string;
+  finding_type: CloudFindingType;
+  severity: FindingSeverity;
+  detail: string;
+  created_at: string;
+  is_acknowledged: boolean;
+  acknowledged_by: string;
+}

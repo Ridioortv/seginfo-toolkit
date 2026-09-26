@@ -8,6 +8,7 @@ import Scans from "./pages/Scans";
 import Vulnerabilities from "./pages/Vulnerabilities";
 import Siem from "./pages/Siem";
 import Surface from "./pages/Surface";
+import Cloud from "./pages/Cloud";
 import Soar from "./pages/Soar";
 import Cases from "./pages/Cases";
 import PurpleTeam from "./pages/PurpleTeam";
@@ -37,6 +38,7 @@ export default function App() {
             <Route path="/vulnerabilities" element={<Vulnerabilities />} />
             <Route path="/siem" element={<Siem />} />
             <Route path="/surface" element={<Surface />} />
+            <Route path="/cloud" element={<Cloud />} />
             <Route path="/soar" element={<Soar />} />
             <Route path="/cases" element={<Cases />} />
             <Route path="/purple-team" element={<PurpleTeam />} />

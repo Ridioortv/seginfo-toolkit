@@ -97,6 +97,7 @@ export const notificationApi = makeClient(serviceUrl("VITE_NOTIFICATION_API_BASE
 export const integrationApi = makeClient(serviceUrl("VITE_INTEGRATION_API_BASE_URL", 8011));
 export const threatIntelApi = makeClient(serviceUrl("VITE_THREATINTEL_API_BASE_URL", 8012));
 export const asmApi = makeClient(serviceUrl("VITE_ASM_API_BASE_URL", 8013));
+export const cloudApi = makeClient(serviceUrl("VITE_CLOUD_API_BASE_URL", 8014));
 
 export interface TokenPair {
   access_token: string;

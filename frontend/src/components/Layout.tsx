@@ -6,6 +6,7 @@ const NAV_ITEMS = [
   { to: "/assets", label: "Activos" },
   { to: "/scans", label: "Escaneos" },
   { to: "/surface", label: "Superficie Externa" },
+  { to: "/cloud", label: "Integraciones Cloud" },
   { to: "/vulnerabilities", label: "Vulnerabilidades" },
   { to: "/siem", label: "SIEM" },
   { to: "/soar", label: "SOAR" },
