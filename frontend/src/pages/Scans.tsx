@@ -17,6 +17,7 @@ function scheduleWhen(s: ScanScheduleOut): string {
 }
 
 type ScannerType = "nmap" | "trivy" | "nuclei" | "openvas";
+type NmapMode = "fast" | "full";
 type NetworkScope = "lan" | "man" | "wan" | "custom";
 
 const SCOPE_LABELS: Record<NetworkScope, string> = {
@@ -43,6 +44,7 @@ export default function Scans() {
   const [name, setName] = useState("");
   const [scannerType, setScannerType] = useState<ScannerType>("nmap");
   const [scope, setScope] = useState<NetworkScope>("lan");
+  const [nmapMode, setNmapMode] = useState<NmapMode>("full");
   const [targetsText, setTargetsText] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<{ ok: number; failed: number } | null>(null);
@@ -197,7 +199,7 @@ export default function Scans() {
             name: name || `Escaneo ${SCOPE_LABELS[scope]}`,
             scanner_type: scannerType,
             target,
-            options: { network_scope: scope },
+            options: scannerType === "nmap" ? { network_scope: scope, mode: nmapMode } : { network_scope: scope },
           })
         )
       );
@@ -245,6 +247,16 @@ export default function Scans() {
               <option key={value} value={value}>{label}</option>
             ))}
           </select>
+          {scannerType === "nmap" && (
+            <select
+              value={nmapMode}
+              onChange={(e) => setNmapMode(e.target.value as NmapMode)}
+              title="Rapido: sin scripts NSE, top-100 puertos, mas veloz. Completo: deteccion de version + scripts NSE seguros, mas lento y mas exhaustivo."
+            >
+              <option value="fast">nmap rapido (top-100 puertos, sin scripts, mas veloz)</option>
+              <option value="full">nmap completo (deteccion + scripts seguros, mas lento)</option>
+            </select>
+          )}
         </div>
 
         <textarea

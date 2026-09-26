@@ -194,3 +194,71 @@ Ejecutada en 10 fases, cada una commiteada y pusheada por separado:
 Validacion: cada fase se verifico con pytest real de los servicios
 backend tocados, `tsc --noEmit`, `vitest run` y `npm run build` del
 frontend antes de commitear -- todo en verde en las 10 fases.
+
+## Escaneres: nmap/trivy/nuclei mas rapidos + OpenVAS real (2026-09-25)
+
+Pedido de Manu: "los scaneres... todos tardan mucho y openvas no anda directamente".
+
+- **nmap**: nuevo modo `fast`/`full` (toggle en "Nuevo escaneo" en la UI).
+  `full` es el comportamiento historico (-sV -sC --script default,safe,
+  timeout 180s). `fast` saca los scripts NSE (el mayor costo de tiempo),
+  se queda con -sV, limita a --top-ports 100 si no se especifican puertos,
+  y usa timeout 60s. Guardrail de scope (`_ALLOWED_EXTRA_FLAGS`) sin tocar.
+- **trivy**: la DB de CVEs se bajaba en CADA escaneo. Ahora se descarga
+  una vez al construir la imagen (Dockerfile) y se persiste en el volumen
+  `trivy_cache`; el driver corre con `--skip-db-update`; un job periodico
+  (`refresh_trivy_db`, cada 24hs via APScheduler) la mantiene actualizada
+  en segundo plano. Fallback automatico a descarga si la cache esta vacia
+  (primer arranque antes de que corra el refresh).
+- **nuclei**: mismo problema con las plantillas -- se bajan una vez al
+  construir la imagen, se persisten en `nuclei_templates`, el driver corre
+  con `-duc` (disable update check), y `refresh_nuclei_templates` las
+  actualiza cada 12hs en segundo plano.
+- **OpenVAS**: antes no estaba instalado, y el driver ni siquiera se
+  autenticaba ni disparaba un escaneo (solo hacia una consulta sin auth).
+  Ahora es un stack GVM (Greenbone Community Edition) real:
+  `docker-compose.yml` agrega ~16 servicios (feeds de NVTs, postgres
+  propio de GVM, gvmd, openvas-scanner, ospd-openvas -- sin la GUI web
+  gsa/gsad/nginx, que no hace falta para esto). `scan-service` habla con
+  gvmd via `gvm-cli` (paquete pip `gvm-tools`, agregado a su Dockerfile)
+  por el socket montado de gvmd. El driver nuevo
+  (`app/scanners/openvas.py`) hace el flujo GMP completo: descubre
+  dinamicamente config/scanner/port_list (no hardcodea UUIDs -- pueden
+  faltar en instalaciones nuevas), crea target+task, lo arranca, hace
+  poll hasta que termina (o timeout, `GVM_SCAN_TIMEOUT_SECONDS`, default
+  1500s) y trae los resultados reales.
+
+### Pasos manuales que le tocan a Manu (no puedo correr Docker desde aca)
+
+1. `docker compose build` (va a tardar mas que antes: ahora tambien
+   baja la DB de trivy y las plantillas de nuclei al construir la
+   imagen de scan-service) y despues `docker compose up -d`.
+2. **Primera sincronizacion del feed de GVM**: los contenedores
+   `vulnerability-tests`, `notus-data`, `scap-data`, etc. bajan el feed
+   completo de NVTs/CVEs de Greenbone la primera vez -- puede tardar
+   **horas** y ocupar **varios GB** de disco. `docker compose logs -f
+   gvmd` para ver el progreso; gvmd no queda realmente usable hasta que
+   terminen.
+3. **Bootstrap del usuario admin de GVM** (una sola vez, despues de que
+   gvmd este arriba):
+   ```
+   docker compose exec -u gvmd gvmd gvmd --user=admin --new-password='TU_PASSWORD_ACA'
+   ```
+   Despues completar `GVM_USER=admin` y `GVM_PASSWORD=TU_PASSWORD_ACA`
+   en `.env` (mismo valor que se paso arriba) y reiniciar scan-service
+   (`docker compose restart scan-service`).
+4. **Nota de seguridad**: el servicio `ospd-openvas` corre con
+   `cap_add: [NET_ADMIN, NET_RAW]` y `security_opt: [seccomp=unconfined,
+   apparmor=unconfined]` -- son capacidades reales de red de bajo nivel
+   que el motor de escaneo necesita para armar paquetes el mismo, no un
+   descuido. Es una elevacion de privilegios genuina sobre ESE
+   contenedor puntual (los demas servicios de SentinelOps no la tienen).
+5. Si algo falla al levantar el stack o al lanzar un escaneo OpenVAS,
+   mandame los logs (`docker compose logs scan-service gvmd
+   ospd-openvas`) para poder iterar -- no puedo ver los contenedores
+   corriendo desde aca.
+
+Validacion hecha desde aca: 52 tests de pytest en scan-service (nmap +
+trivy + nuclei + openvas, todos como funciones puras sin I/O real) en
+verde. No pude correr `docker compose build/up` (sin acceso a Docker en
+este entorno) -- eso queda pendiente de que Manu lo corra y reporte.

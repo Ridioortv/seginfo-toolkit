@@ -2,7 +2,14 @@
 exposiciones, malas configuraciones, huella tecnologica). Se excluyen
 explicitamente las categorias 'dos', 'fuzz' e 'intrusive': solo se
 ejecutan plantillas de deteccion pasiva/no invasiva. NUNCA se habilitan
-plantillas de explotacion activa."""
+plantillas de explotacion activa.
+
+Las plantillas se descargan una vez al construir la imagen (ver Dockerfile:
+`nuclei -update-templates`) y se refrescan en segundo plano cada 12hs (ver
+app/services.py::refresh_nuclei_templates, registrado en app/main.py). Por
+eso cada escaneo corre con -duc (disable update check): sin esto, nuclei
+chequeaba/actualizaba plantillas en CADA escaneo individual, que era la
+causa principal de que "tardara mucho"."""
 import asyncio
 import json
 from app.scanners.base import ScannerDriver, ScanResult
@@ -19,19 +26,26 @@ _SEVERITY_MAP = {
 }
 
 
+def _build_nuclei_cmd(target: str, options: dict) -> list[str]:
+    """Funcion pura (sin I/O) para poder testear la construccion del
+    comando sin ejecutar nuclei de verdad."""
+    cmd = [
+        "nuclei", "-target", target, "-etags", _EXCLUDED_TAGS,
+        "-jsonl", "-silent", "-no-interactsh", "-timeout", "10", "-duc",
+    ]
+    tags = options.get("tags")
+    if isinstance(tags, str) and tags:
+        safe_tags = ",".join(t.strip() for t in tags.split(",") if t.strip().isalnum())
+        if safe_tags:
+            cmd += ["-tags", safe_tags]
+    return cmd
+
+
 class NucleiDriver(ScannerDriver):
     binary_name = "nuclei"
 
     async def run(self, target: str, options: dict) -> ScanResult:
-        cmd = [
-            "nuclei", "-target", target, "-etags", _EXCLUDED_TAGS,
-            "-jsonl", "-silent", "-no-interactsh", "-timeout", "10",
-        ]
-        tags = options.get("tags")
-        if isinstance(tags, str) and tags:
-            safe_tags = ",".join(t.strip() for t in tags.split(",") if t.strip().isalnum())
-            if safe_tags:
-                cmd += ["-tags", safe_tags]
+        cmd = _build_nuclei_cmd(target, options)
 
         try:
             proc = await asyncio.create_subprocess_exec(

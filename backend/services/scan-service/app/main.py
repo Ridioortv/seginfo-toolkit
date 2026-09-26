@@ -9,6 +9,7 @@ from prometheus_client import Counter, make_asgi_app
 from sqlalchemy.ext.asyncio import AsyncSession
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.jobstores.base import JobLookupError
 
 from sqlalchemy import text
@@ -98,6 +99,30 @@ async def lifespan(app: FastAPI):
         for schedule in await services.list_schedules(db):
             if schedule.enabled:
                 _register_job(schedule)
+    # Refresh periodico de datos de escaner (DB de CVEs de trivy, plantillas
+    # de nuclei) en segundo plano -- asi cada escaneo individual no paga el
+    # costo de descarga/actualizacion (ver app/scanners/trivy.py y
+    # app/scanners/nuclei.py, que corren con --skip-db-update / -duc).
+    # next_run_time=ahora para que corra una vez apenas arranca el servicio
+    # (por si el volumen persistente esta vacio en el primer `docker compose up`)
+    # y despues cada N horas.
+    from datetime import datetime as _dt
+    scheduler.add_job(
+        services.refresh_trivy_db,
+        trigger=IntervalTrigger(hours=24),
+        id="trivy-db-refresh",
+        replace_existing=True,
+        next_run_time=_dt.now(),
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        services.refresh_nuclei_templates,
+        trigger=IntervalTrigger(hours=12),
+        id="nuclei-templates-refresh",
+        replace_existing=True,
+        next_run_time=_dt.now(),
+        misfire_grace_time=3600,
+    )
     scheduler.start()
     logger.info("scan-service iniciado", extra={"reglas_programadas": len(scheduler.get_jobs())})
     yield

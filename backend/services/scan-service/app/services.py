@@ -1,6 +1,7 @@
 """Business logic for scan-service: orquestacion de jobs de escaneo
 DEFENSIVOS (solo deteccion) y reenvio de hallazgos normalizados a
 vuln-service para priorizacion (CVSS/EPSS/KEV)."""
+import asyncio
 import os
 import secrets
 import hashlib
@@ -20,6 +21,56 @@ SIEM_SERVICE_URL = os.getenv("SIEM_SERVICE_URL", "http://siem-service:8000")
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+async def _run_refresh_cmd(cmd: list[str], label: str, timeout: int) -> None:
+    """Corre un comando de refresco de datos de escaner (DB de trivy,
+    templates de nuclei) en segundo plano. Nunca levanta excepcion --
+    un refresh fallido (red caida, binario ausente en un entorno de test,
+    etc.) solo se loguea, no debe tumbar el scheduler ni el servicio."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        if proc.returncode != 0:
+            logger.warning(
+                f"{label}: fallo (codigo {proc.returncode})",
+                extra={"stderr": stderr.decode(errors="replace")[:500]},
+            )
+        else:
+            logger.info(f"{label}: ok")
+    except FileNotFoundError:
+        logger.warning(f"{label}: binario no encontrado en este contenedor, se omite")
+    except asyncio.TimeoutError:
+        logger.warning(f"{label}: timeout ({timeout}s)")
+    except Exception as exc:  # noqa: BLE001 -- nunca debe tumbar el scheduler
+        logger.warning(f"{label}: error inesperado: {exc}")
+
+
+async def refresh_trivy_db() -> None:
+    """Refresca la base de datos de CVEs de trivy en segundo plano. Se
+    registra como job periodico de APScheduler (ver app/main.py) para que
+    cada escaneo individual pueda correr con --skip-db-update (ver
+    app/scanners/trivy.py) sin quedar con una DB eternamente vieja."""
+    from app.scanners.trivy import TRIVY_CACHE_DIR
+
+    await _run_refresh_cmd(
+        ["trivy", "image", "--download-db-only", "--cache-dir", TRIVY_CACHE_DIR],
+        "refresh_trivy_db",
+        timeout=600,
+    )
+
+
+async def refresh_nuclei_templates() -> None:
+    """Refresca las plantillas de nuclei en segundo plano (ver
+    app/scanners/nuclei.py, que corre con -duc para no pagar este costo
+    en cada escaneo individual)."""
+    await _run_refresh_cmd(
+        ["nuclei", "-update-templates", "-silent"],
+        "refresh_nuclei_templates",
+        timeout=300,
+    )
 
 
 async def create_scan_job(db: AsyncSession, payload, actor: str, organization_id: str) -> ScanJob:
