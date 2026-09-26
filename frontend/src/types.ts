@@ -117,6 +117,18 @@ export interface SigmaRuleOut {
   is_enabled: boolean;
 }
 
+export interface ThreatIntelHit {
+  score: number | null;
+  source: string;
+  categories: string[];
+  cached?: boolean;
+}
+
+export interface IpReputationOut extends ThreatIntelHit {
+  ip: string;
+  is_malicious: boolean | null;
+}
+
 export interface AlertOut {
   id: string;
   rule_id: string;
@@ -128,6 +140,7 @@ export interface AlertOut {
   acknowledged_by: string;
   notes: string;
   created_at: string;
+  threat_intel?: Record<string, ThreatIntelHit>;
 }
 
 export interface PlaybookOut {
@@ -327,4 +340,33 @@ export interface SsoConfigOut {
   client_id: string;
   default_role: string;
   enabled: boolean;
+}
+
+export interface MonitoredDomainOut {
+  id: string;
+  domain: string;
+  is_enabled: boolean;
+  created_by: string;
+  created_at: string;
+}
+
+export interface DiscoveredAssetOut {
+  id: string;
+  monitored_domain_id: string;
+  hostname: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  is_active: boolean;
+}
+
+export interface SurfaceAlertOut {
+  id: string;
+  monitored_domain_id: string;
+  alert_type: string;
+  hostname: string;
+  severity: string;
+  detail: string;
+  created_at: string;
+  is_acknowledged: boolean;
+  acknowledged_by: string;
 }

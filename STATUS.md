@@ -388,3 +388,72 @@ Verificacion: 204 tests de pytest (auth 16, asset 11, scan 60, vuln 20, case 15,
 integration 8, notification 10, report 14, siem 39, soar 14, purple 11) + 41
 tests de vitest + `tsc --noEmit` limpio + `npm run build` exitoso, todo en
 verde antes de commitear.
+
+## Nueva funcionalidad: Monitoreo de superficie externa + Inteligencia de amenazas (2026-09-26)
+
+Pedido de Manu: de la lista de 8 funcionalidades nuevas propuestas, arrancar
+por "Empresa con el 1 luego 2 luego 3" -- es decir, primero Monitoreo de
+superficie externa + Inteligencia de amenazas, despues integraciones cloud
+(AWS primero), despues escaneo de codigo/repositorios. El asistente con IA
+queda pospuesto: Manu todavia no tiene API key de Anthropic para esa parte.
+
+Se construyeron 2 microservicios nuevos en paralelo (sin superposicion de
+archivos: cada uno con su directorio propio + una pagina de frontend nueva
+exclusiva; `docker-compose.yml`/`.env.example`/`api.ts`/`types.ts`/
+`Layout.tsx`/`App.tsx` quedaron fuera del alcance de ambos agentes y se
+consolidaron centralmente despues).
+
+**`threatintel-service` (puerto 8012)**: consulta reputacion de IPs contra
+AbuseIPDB (y opcionalmente MISP) con cache de 24hs en `IpReputationCache`
+(sin `organization_id` -- la reputacion de una IP es un hecho global, no de
+tenant). Sin `ABUSEIPDB_API_KEY` configurada, nunca llama a la API externa
+(para no gastar el cupo del free tier, 1000/dia) y devuelve directamente "no
+se pudo chequear". `siem-service` ahora enriquece automaticamente cada alerta
+nueva: extrae las IPs del evento que la disparo, les pregunta a
+threatintel-service (`POST /internal/lookup-batch`, sin auth de usuario --
+solo alcanzable dentro de la red interna, mismo patron que el resto de
+`/internal/*`), y guarda en `Alert.threat_intel` solo las que resultaron
+maliciosas conocidas. Todo con el mismo patron best-effort ya usado para
+SOAR (`httpx.HTTPError` atrapado, nunca tumba la ingesta de logs). En el
+frontend, la pagina SIEM ahora tiene un buscador manual de IP y una columna/
+badge de Threat Intel en la tabla de alertas.
+
+**`asm-service` (puerto 8013)**: monitoreo de superficie externa 100% pasivo
+-- sin escaneo activo de puertos en ningun lado. Cada dominio que se agrega
+via `POST /domains` se chequea automaticamente cada `ASM_CHECK_INTERVAL_HOURS`
+horas (default 12): descubre subdominios nuevos consultando Certificate
+Transparency logs (`crt.sh`, solo GET a registros publicos ya existentes) y
+lee el certificado TLS de cada host expuesto (handshake estandar al puerto
+443, sin validar la cadena, solo para poder leer certificados vencidos o
+autofirmados sin que la lectura falle). Genera alertas automaticas
+(`SurfaceAlert`) cuando aparece un subdominio nuevo o cuando un certificado
+esta vencido o vence en <=7 dias (critico/alto) o <=30 dias (medio), con
+cooldown de 24hs para no duplicar la misma alerta. Las alertas de severidad
+alta/critica tambien se reenvian a siem-service. Nueva pagina de frontend
+"Superficie Externa" (nav, entre Escaneos y Vulnerabilidades): alta de
+dominios, tabla de dominios monitoreados con boton "Chequear ahora", tabla de
+subdominios descubiertos, tabla de alertas con filtro pendiente/todas.
+
+**Limitaciones conocidas** (documentadas por el equipo que lo construyo, no
+son bugs): borrar un dominio monitoreado no borra en cascada sus activos/
+alertas historicas (a proposito, para no perder historial); hay una ventana
+de carrera sin impacto real si se deshabilita un dominio justo despues de
+pedir "chequear ahora"; la lectura de certificados autofirmados/con cadena
+rota depende de que el modulo `cryptography` este disponible como fallback
+(ya viene instalado transitivamente) -- si fallara, se reporta un error
+explicito en vez de fallar mudo.
+
+**Paso manual pendiente para Manu**: conseguir una API key de AbuseIPDB
+(gratis, https://www.abuseipdb.com/account/api, 1000 consultas/dia) y
+pegarla en `ABUSEIPDB_API_KEY` del `.env` si quiere que threatintel-service
+haga chequeos reales -- sin eso, la funcionalidad sigue andando pero siempre
+devuelve "no se pudo chequear". MISP es opcional. Como siempre, correr
+`docker compose build && docker compose up` para levantar los servicios
+nuevos (no se puede correr Docker desde este entorno).
+
+Verificacion antes de commitear: 21 tests nuevos en threatintel-service + 23
+en asm-service + 48 en siem-service (40 preexistentes + 8 nuevas de
+enriquecimiento), todos funciones puras sin I/O real; import de humo de
+`app.main` en ambos servicios nuevos (rutas registradas OK); 41 tests de
+vitest + `tsc --noEmit` limpio + `npm run build` exitoso en el frontend
+completo.

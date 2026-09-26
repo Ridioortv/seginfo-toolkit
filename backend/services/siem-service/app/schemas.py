@@ -86,6 +86,9 @@ class AlertOut(BaseModel):
     matched_event: dict
     status: AlertStatus
     soar_triggered: bool
+    # {} si threatintel-service no respondio o ninguna IP del evento
+    # resulto maliciosa conocida -- ver app/models.py::Alert.threat_intel.
+    threat_intel: dict = {}
     acknowledged_by: str
     notes: str
     created_at: datetime

@@ -419,6 +419,7 @@ services:
       REDIS_HOST: redis
       OPENSEARCH_HOST: opensearch
       SOAR_SERVICE_URL: http://soar-service:8000
+      THREATINTEL_SERVICE_URL: http://threatintel-service:8000
     depends_on:
       postgres:
         condition: service_healthy
@@ -555,6 +556,40 @@ services:
     ports:
       - "8011:8000"
 
+  threatintel-service:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: backend/services/threatintel-service/Dockerfile
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8012:8000"
+
+  asm-service:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: backend/services/asm-service/Dockerfile
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8013:8000"
+
   frontend:
     restart: unless-stopped
     build:
@@ -572,6 +607,8 @@ services:
       - report-service
       - notification-service
       - integration-service
+      - threatintel-service
+      - asm-service
     ports:
       - "5173:5173"
 
