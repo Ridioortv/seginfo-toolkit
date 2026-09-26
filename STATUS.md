@@ -247,12 +247,37 @@ Pedido de Manu: "los scaneres... todos tardan mucho y openvas no anda directamen
    Despues completar `GVM_USER=admin` y `GVM_PASSWORD=TU_PASSWORD_ACA`
    en `.env` (mismo valor que se paso arriba) y reiniciar scan-service
    (`docker compose restart scan-service`).
-4. **Nota de seguridad**: el servicio `ospd-openvas` corre con
-   `cap_add: [NET_ADMIN, NET_RAW]` y `security_opt: [seccomp=unconfined,
-   apparmor=unconfined]` -- son capacidades reales de red de bajo nivel
-   que el motor de escaneo necesita para armar paquetes el mismo, no un
-   descuido. Es una elevacion de privilegios genuina sobre ESE
-   contenedor puntual (los demas servicios de SentinelOps no la tienen).
+4. **Nota de seguridad -- ospd-openvas (actualizado 2026-09-26)**: el
+   servicio `ospd-openvas` corre con `cap_add: [NET_ADMIN, NET_RAW]` y
+   `security_opt: [seccomp=unconfined, apparmor=unconfined]`. Esto NO se
+   puede sacar: el motor openvas-scanner arma paquetes crudos el mismo
+   (sockets raw, ICMP, IP_HDRINCL) para descubrimiento/fingerprinting de
+   host, y esos syscalls estan bloqueados por el perfil seccomp default
+   de Docker y por AppArmor -- asi lo requiere el propio compose oficial
+   de Greenbone, sin un perfil scoped alternativo documentado. Sacarlo
+   rompe el escaner.
+
+   Lo que si se hizo para achicar el impacto si ESE contenedor puntual
+   se ve comprometido (sin tocar esas dos capacidades, que son las que
+   de verdad hacen falta):
+   - `security_opt: no-new-privileges:true` -- bloquea escalar privilegios
+     via setuid/setgid en cualquier binario que corra adentro.
+   - Red Docker propia `gvm_internal` (`internal: true`, sin salida a
+     internet) para TODO el stack GVM/OpenVAS -- ningun otro servicio de
+     SentinelOps (postgres, redis, el resto de los microservicios)
+     comparte esa red. `scan-service` no la necesita: habla con `gvmd`
+     por el socket unix montado (`gvmd_socket_vol`), no por red. Asi,
+     aunque `ospd-openvas` se vea comprometido, no tiene ningun camino de
+     red hacia el resto de la plataforma.
+   - Se evaluo `cap_drop: [ALL]` (dejar solo NET_ADMIN/NET_RAW en vez de
+     heredar todo el set default de Docker encima) pero quedo afuera a
+     proposito: no puedo levantar el contenedor desde aca para confirmar
+     que el entrypoint de la imagen no necesita algun otro capability
+     (ej. CHOWN/SETUID al arrancar) -- romper el arranque a ciegas es
+     peor que dejar el mismo set que testea el compose oficial. Si
+     despues de que este todo andando lo queres mas restrictivo, se
+     puede probar `cap_drop: [ALL]` como cambio aislado y ver si el
+     contenedor sigue arrancando bien.
 5. Si algo falla al levantar el stack o al lanzar un escaneo OpenVAS,
    mandame los logs (`docker compose logs scan-service gvmd
    ospd-openvas`) para poder iterar -- no puedo ver los contenedores
