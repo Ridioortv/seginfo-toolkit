@@ -351,9 +351,15 @@ async def submit_agent_result(
     agent=Depends(get_agent_from_key),
     db: AsyncSession = Depends(get_db),
 ):
-    job = await services.submit_agent_result(db, agent, job_id, payload)
+    job = await services.get_agent_job_for_agent(db, agent, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job no encontrado o no pertenece a este agente")
+    if not services.is_submittable_status(job.status):
+        raise HTTPException(
+            status_code=409,
+            detail="Este job de escaneo remoto ya tiene un resultado final, no se puede sobreescribir",
+        )
+    job = await services.submit_agent_result(db, agent, job, payload)
     await db.commit()
     logger.info("resultado de escaneo remoto recibido", extra={"job_id": job_id, "status": payload.status})
     return job

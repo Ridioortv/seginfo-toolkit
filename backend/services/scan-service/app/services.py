@@ -215,6 +215,15 @@ async def run_scheduled_scan(session_factory, schedule_id: str) -> None:
             await db.commit()
 
 
+def driver_exception_error_message(exc: Exception) -> str:
+    """Mensaje guardado en ScanJob.error_message cuando el driver levanta una
+    excepcion no prevista (no capturada ya como ScanResult.error) -- funcion
+    pura, separada de execute_scan_job, para poder testear el formato y el
+    truncado a 2000 caracteres (limite de la columna, ver app/models.py)
+    sin correr un scanner de verdad ni tocar la DB."""
+    return f"Error inesperado del driver de escaneo: {exc}"[:2000]
+
+
 async def execute_scan_job(session_factory, job_id: str) -> None:
     """Corre en background (via BackgroundTasks). Usa su propia sesion de DB
     porque la request original ya termino cuando esto se ejecuta."""
@@ -236,7 +245,25 @@ async def execute_scan_job(session_factory, job_id: str) -> None:
         job.started_at = _now()
         await db.commit()
 
-        result = await driver.run(job.target, job.options or {})
+        # driver.run() ya atrapa sus propios errores esperados (binario
+        # ausente, timeout) y los devuelve como ScanResult.error -- pero un
+        # driver puede levantar una excepcion no prevista (permiso denegado
+        # al crear el subproceso, error de parseo no capturado, etc). Sin
+        # este try/except, esa excepcion se escapa de este background task
+        # (FastAPI solo la loguea, no hay nadie esperando la respuesta) y el
+        # job se queda en estado "running" para siempre: nunca pasa a un
+        # estado terminal, asi que ni se puede reintentar a mano ni se puede
+        # borrar (is_deletable_status exige completed/failed/scanner_unavailable).
+        try:
+            result = await driver.run(job.target, job.options or {})
+        except Exception as exc:  # noqa: BLE001 -- nunca debe dejar el job colgado en "running"
+            job = await db.get(ScanJob, job_id)
+            job.status = ScanStatus.failed
+            job.error_message = driver_exception_error_message(exc)
+            job.finished_at = _now()
+            await db.commit()
+            logger.error("scan fallo con excepcion no manejada", extra={"job_id": job_id, "error": str(exc)})
+            return
 
         job = await db.get(ScanJob, job_id)
         job.raw_result = (result.raw_output or "")[:200_000]
@@ -409,13 +436,30 @@ async def poll_agent_jobs(db: AsyncSession, agent: ScanAgent, max_jobs: int = 5)
     return jobs
 
 
-async def submit_agent_result(db: AsyncSession, agent: ScanAgent, job_id: str, payload) -> AgentScanJob | None:
+SUBMITTABLE_AGENT_JOB_STATUSES = {"pending", "assigned"}
+
+
+def is_submittable_status(status_value: str) -> bool:
+    """Un agente solo puede reportar el resultado de un job que todavia no
+    tiene un resultado final. Sin este chequeo, un doble submit (el agente
+    reintentando tras perder la respuesta del primer POST, o dos procesos
+    de agente corriendo por error con la misma api key) podia sobreescribir
+    un resultado ya guardado (completed/failed) y volver a reenviar los
+    mismos hallazgos a vuln-service/siem-service como si fueran nuevos."""
+    return status_value in SUBMITTABLE_AGENT_JOB_STATUSES
+
+
+async def get_agent_job_for_agent(db: AsyncSession, agent: ScanAgent, job_id: str) -> AgentScanJob | None:
+    """Nunca se deja que un agente vea/escriba el resultado de un job que no
+    es suyo -- ni por error de programacion del lado del agente, ni por una
+    key comprometida usada para adivinar ids de otro agente."""
     job = await db.get(AgentScanJob, job_id)
     if job is None or job.agent_id != agent.id:
-        # Nunca se deja que un agente escriba el resultado de un job que no
-        # es suyo -- ni por error de programacion del lado del agente, ni
-        # por una key comprometida usada para adivinar ids de otro agente.
         return None
+    return job
+
+
+async def submit_agent_result(db: AsyncSession, agent: ScanAgent, job: AgentScanJob, payload) -> AgentScanJob:
     job.status = payload.status
     job.findings = payload.findings
     job.error_message = payload.error_message[:2000]

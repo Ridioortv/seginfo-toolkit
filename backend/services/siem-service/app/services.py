@@ -211,11 +211,27 @@ async def get_alert(db: AsyncSession, alert_id: str, organization_id: str) -> Al
     return alert
 
 
+def _resolve_alert_update(
+    current_notes: str, current_acknowledged_by: str, payload_status, payload_notes: str | None, actor: str
+) -> tuple[str, str]:
+    """Funcion pura: calcula (notes, acknowledged_by) resultantes de aplicar
+    un AlertUpdate sobre los valores actuales. payload_notes es None cuando
+    el caller no mando notas (ej. los botones Reconocer/Cerrar de la UI, que
+    solo mandan {status}) -- en ese caso NO se debe pisar la nota ya
+    guardada. acknowledged_by solo se actualiza al pasar a 'acknowledged'
+    (bug historico: PATCH /alerts/{id} sobreescribia notes con "" en cada
+    cambio de estado porque AlertUpdate.notes tenia default "" en vez de
+    None, ver app/schemas.py::AlertUpdate)."""
+    new_notes = current_notes if payload_notes is None else payload_notes
+    new_acknowledged_by = actor if payload_status == AlertStatus.acknowledged else current_acknowledged_by
+    return new_notes, new_acknowledged_by
+
+
 async def update_alert(db: AsyncSession, alert: Alert, payload, actor: str) -> Alert:
     alert.status = payload.status
-    alert.notes = payload.notes
-    if payload.status == AlertStatus.acknowledged:
-        alert.acknowledged_by = actor
+    alert.notes, alert.acknowledged_by = _resolve_alert_update(
+        alert.notes, alert.acknowledged_by, payload.status, payload.notes, actor
+    )
     await db.flush()
     await db.refresh(alert)
     return alert

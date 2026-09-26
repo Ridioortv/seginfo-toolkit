@@ -55,6 +55,7 @@ export default function Siem() {
   const [ruleFormError, setRuleFormError] = useState<string | null>(null);
   const [ruleActionError, setRuleActionError] = useState<unknown>(null);
   const [alertActionError, setAlertActionError] = useState<unknown>(null);
+  const [seedDefaultsError, setSeedDefaultsError] = useState<unknown>(null);
 
   const alerts = useQuery({
     queryKey: ["alerts"],
@@ -67,7 +68,11 @@ export default function Siem() {
 
   const seedDefaults = useMutation({
     mutationFn: async () => (await siemApi.post<SigmaRuleOut[]>("/rules/seed-defaults")).data,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["rules"] }),
+    onSuccess: () => {
+      setSeedDefaultsError(null);
+      queryClient.invalidateQueries({ queryKey: ["rules"] });
+    },
+    onError: (err: unknown) => setSeedDefaultsError(err),
   });
 
   const createRule = useMutation({
@@ -238,6 +243,12 @@ export default function Siem() {
             <span className="empty-hint">{seedDefaults.data.length} regla(s) nueva(s) agregada(s).</span>
           )}
         </div>
+        {seedDefaultsError != null && (
+          <p className="error-text">
+            No se pudieron cargar las reglas recomendadas.{" "}
+            <span className="error-detail">{connectionErrorDetail(seedDefaultsError)}</span>
+          </p>
+        )}
 
         <h3 style={{ marginTop: 16 }}>Nueva regla</h3>
         <div className="inline-form">

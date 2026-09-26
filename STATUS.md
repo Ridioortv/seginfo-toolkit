@@ -332,3 +332,59 @@ Validacion hecha desde aca: 52 tests de pytest en scan-service (nmap +
 trivy + nuclei + openvas, todos como funciones puras sin I/O real) en
 verde. No pude correr `docker compose build/up` (sin acceso a Docker en
 este entorno) -- eso queda pendiente de que Manu lo corra y reporte.
+
+## Auditoria funcional completa + 17 bugs corregidos (2026-09-26)
+
+Pedido de Manu: "testeá toda la aplicación y arreglá lo que no anda". Se armo
+un brief de auditoria profesional (metodologia: leer cada endpoint/pagina real,
+rastrear cada boton hasta la DB y de vuelta, buscar RBAC/multi-tenancy roto,
+dry-run mal aplicado, errores no manejados) y se corrio en 5 grupos en paralelo,
+cada uno cubriendo un area de la plataforma, sin superposicion de archivos.
+Ningun grupo hizo commit por su cuenta -- se reviso y se consolido todo en un
+solo commit despues de correr los 204 tests backend + 41 tests frontend +
+tsc + build, todo en verde.
+
+**Bug critico de seguridad (auth-service)**: `POST /auth/mfa/enroll` permitia
+reemplazar el secret de MFA de un usuario que YA tenia MFA activo sin pedir
+ninguna prueba de que quien llamaba controlaba el dispositivo ya enrolado --
+alcanzaba con un access_token valido (15 min, robable via XSS/log/dispositivo
+prestado) para secuestrar el segundo factor de otra cuenta sin conocer su TOTP
+ni su contrasena, y la victima no veia ninguna señal (mfa_enabled seguia en
+True todo el tiempo). Ahora re-enrolar exige un TOTP valido del secret actual.
+
+**Otros bugs reales corregidos** (17 en total, detalle completo en el historial
+de commits): notas de analista borradas silenciosamente al cambiar el estado de
+una alerta SIEM (siem-service); un job de escaneo que quedaba en "running" para
+siempre si el driver tiraba una excepcion no prevista (scan-service); un agente
+remoto podia pisar el resultado de un job ya terminado (scan-service); un
+analyst podia desactivar un activo por PATCH esquivando la restriccion de rol
+del DELETE (asset-service); el dashboard ejecutivo mostraba "0 alertas/casos"
+en vez de distinguir "vacio" de "servicio caido" (Dashboard.tsx); reabrir un
+caso no limpiaba `resolved_at`, dejando metricas de MTTR con datos viejos
+(case-service); un ejercicio Purple Team sin tecnicas declaradas calculaba
+cobertura contra TODO el catalogo ATT&CK en vez de reportar 0 (purple-service);
+registro de acciones de playbook duplicado y desincronizado, le faltaban
+`create_ticket`/`notify` a una de las dos copias (soar-service); botones
+CSV/PDF de Reportes fallaban en silencio absoluto sin ningun mensaje de error
+(Reports.tsx); `HTTPException` no importado en notification-service e
+integration-service (un 404 esperado se convertia en 500 sin manejar); registro
+exitoso mostrado como fallido si el login automático posterior fallaba
+(Login.tsx); formulario de SSO y pantallas de facturacion arrastraban datos de
+la organizacion anterior al cambiar de organizacion elegida (Organizations.tsx,
+Billing.tsx); mutations sin `onError` en Siem.tsx/Soar.tsx (seedDefaults, panel
+de ejecuciones).
+
+**Cosas senaladas pero NO tocadas** (dudas explicitas de los agentes, no
+"arregladas a ciegas"): posible condicion de carrera en el hash chain del audit
+log de auth-service sin lock a nivel DB; `validate_id_token` (SSO/OIDC) confia
+en el `alg` del header del id_token en vez de una whitelist fija (mitigado por
+la libreria instalada, pero no es la practica mas correcta); contador
+Prometheus `alerts_created_total` que nunca se incrementa de verdad (bug de
+observabilidad, no afecta la UI); doble entrada de timeline en cada cambio de
+estado de un caso; exportacion XLSX mencionada en el alcance original pero
+nunca implementada (solo CSV/PDF) -- gap de alcance, no bug de comportamiento.
+
+Verificacion: 204 tests de pytest (auth 16, asset 11, scan 60, vuln 20, case 15,
+integration 8, notification 10, report 14, siem 39, soar 14, purple 11) + 41
+tests de vitest + `tsc --noEmit` limpio + `npm run build` exitoso, todo en
+verde antes de commitear.
