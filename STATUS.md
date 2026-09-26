@@ -503,3 +503,54 @@ Verificacion antes de commitear: 30 tests nuevos en cloud-service (funciones
 puras, sin boto3/red/DB real) + 41 tests de vitest (sin cambios, no se tocaron
 utils) + `tsc --noEmit` limpio + `npm run build` exitoso en el frontend
 completo.
+
+## Nueva funcionalidad: Escaneo de código y repositorios (2026-09-26)
+
+Tercera de las 8 funcionalidades pedidas por Manu, priorizada como #3
+(superficie externa/threat intel y cloud AWS ya hechas). Detecta contraseñas
+o claves subidas por error a un repositorio de código y dependencias
+vulnerables en el codigo, tal como se pidio.
+
+**`coderepo-service` (puerto 8015)**: el usuario registra un repositorio
+(URL HTTPS + rama + token opcional para repos privados). Un scheduler
+periodico (cada `CODEREPO_SCAN_INTERVAL_HOURS` horas, default 24) y un boton
+"Escanear ahora" clonan el repositorio COMPLETO (con todo el historial de
+git, no solo el checkout actual -- un secreto commiteado por error y borrado
+despues sigue expuesto en el historial) y corren dos herramientas
+especializadas:
+
+- **gitleaks**: revisa todo el historial de git buscando contraseñas, claves
+  privadas, tokens de AWS/GCP/Azure/GitHub, etc. Los hallazgos se guardan en
+  `coderepo-service` con severidad (`critical`/`high`/`medium` segun el tipo
+  de regla) -- el valor real del secreto NUNCA se guarda ni se muestra, solo
+  una version parcialmente oculta (ej `AKI••••••••••••WXYZ`).
+- **trivy fs**: revisa manifiestos de dependencias (package-lock.json,
+  requirements.txt, go.mod, etc.) contra la base de CVEs conocidas -- misma
+  herramienta que ya usa scan-service para imagenes de contenedor, pero con
+  su propia cache de DB separada (`coderepo_trivy_cache`, nunca comparte
+  volumen con scan-service). Estos hallazgos se reenvian directamente a
+  vuln-service (aparecen mezclados en la seccion Vulnerabilidades ya
+  existente, no se duplican en una tabla nueva).
+
+Es de solo lectura/analisis en todo momento: nunca se escribe nada en el
+repositorio del cliente ni se ejecuta codigo del repositorio (nunca se corre
+`npm install`, un build, un test, ni se importa nada de lo clonado). El
+token de GitHub de un repo privado se cifra con el mismo mecanismo ya usado
+para SSO/AWS (`backend/shared/crypto.py`) y nunca se devuelve por la API.
+
+Nueva pagina de frontend "Código y Repositorios" (nav, junto a
+"Integraciones Cloud"): alta de repositorio, tabla de repositorios con
+estado del ultimo escaneo y contadores de secretos/vulnerabilidades
+encontradas (con link directo a Vulnerabilidades), tabla de secretos
+encontrados con filtro pendiente/todos y boton "Reconocer".
+
+**Paso manual pendiente para Manu**: ninguno especial mas alla de
+`docker compose build && docker compose up` -- gitleaks/trivy/git se
+instalan solos en la imagen del servicio nuevo. Para repos privados, generar
+un token de acceso personal de solo lectura (GitHub: "read-only, contents")
+y pegarlo al conectar el repositorio desde la pagina.
+
+Verificacion antes de commitear: 46 tests nuevos en coderepo-service
+(funciones puras, sin git/gitleaks/trivy/red/DB real) + 41 tests de vitest
+(sin cambios) + `tsc --noEmit` limpio + `npm run build` exitoso en el
+frontend completo.

@@ -607,6 +607,29 @@ services:
     ports:
       - "8014:8000"
 
+  coderepo-service:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: backend/services/coderepo-service/Dockerfile
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+    volumes:
+      # Cache de la DB de CVEs de trivy -- PROPIO de este servicio, nunca
+      # el `trivy_cache` de scan-service (dos contenedores escribiendo la
+      # misma cache de trivy en simultaneo puede corromper el archivo
+      # bolt de la DB). Ver Dockerfile y app/services.py.
+      - coderepo_trivy_cache:/root/.cache/trivy
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8015:8000"
+
   frontend:
     restart: unless-stopped
     build:
@@ -627,6 +650,7 @@ services:
       - threatintel-service
       - asm-service
       - cloud-service
+      - coderepo-service
     ports:
       - "5173:5173"
 
@@ -650,6 +674,9 @@ volumes:
   # app/scanners/{trivy,nuclei}.py)
   trivy_cache:
   nuclei_templates:
+  # coderepo-service: cache persistente de trivy, PROPIA (nunca se
+  # comparte con scan-service, ver docstring del servicio arriba)
+  coderepo_trivy_cache:
   # OpenVAS/GVM (Greenbone Community Edition, subset headless)
   gpg_data_vol:
   scap_data_vol:

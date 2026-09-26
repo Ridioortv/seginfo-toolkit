@@ -414,3 +414,37 @@ export interface CloudFindingOut {
   is_acknowledged: boolean;
   acknowledged_by: string;
 }
+
+export type RepoScanStatus = "never" | "ok" | "error";
+export type SecretSeverity = "critical" | "high" | "medium";
+
+export interface RepoTargetOut {
+  id: string;
+  name: string;
+  repo_url: string;
+  branch: string;
+  has_token: boolean;
+  is_enabled: boolean;
+  last_scan_at: string | null;
+  last_scan_status: RepoScanStatus;
+  last_scan_error: string;
+  last_scan_secrets_found: number;
+  last_scan_vulnerabilities_found: number;
+  created_by: string;
+  created_at: string;
+}
+
+export interface SecretFindingOut {
+  id: string;
+  repo_target_id: string;
+  rule_id: string;
+  description: string;
+  file_path: string;
+  start_line: number | null;
+  commit_hash: string;
+  severity: SecretSeverity;
+  match_redacted: string;
+  created_at: string;
+  is_acknowledged: boolean;
+  acknowledged_by: string;
+}
