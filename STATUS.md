@@ -554,3 +554,50 @@ Verificacion antes de commitear: 46 tests nuevos en coderepo-service
 (funciones puras, sin git/gitleaks/trivy/red/DB real) + 41 tests de vitest
 (sin cambios) + `tsc --noEmit` limpio + `npm run build` exitoso en el
 frontend completo.
+
+## Resultados de escaneos legibles: criticidad y remediacion a la vista (2026-09-27)
+
+Manu pidio que los resultados de los escaneos se vean "de forma completa",
+"facilmente legible", con criticidad asignada y medidas de remediacion. Al
+revisar el codigo, `vuln-service` ya calculaba todo eso desde hace tiempo
+(severidad, CVSS, EPSS, si esta en CISA KEV, un `priority_score` combinado,
+y hasta pasos de remediacion sugeridos por regla en
+`app/remediation.py`) -- la brecha real era que el frontend no lo mostraba
+donde el usuario lo esperaba. No se duplico logica de remediacion en el
+cliente: se reuso `vuln-service` como fuente unica de verdad.
+
+- **`vuln-service`**: se agrego un filtro opcional `scan_job_id` a
+  `GET /vulnerabilities` (`app/main.py` + `app/services.py`) para poder
+  pedir "los hallazgos de ESTE escaneo puntual" sin tocar el modelo de
+  datos. Ojo (documentado como comentario en el codigo): si el mismo activo
+  se volvio a escanear despues, `ingest_findings` reasigna el
+  `scan_job_id` de una vulnerabilidad al escaneo MAS RECIENTE que la toco
+  -- este filtro muestra el estado actual de esas vulnerabilidades, no
+  necesariamente los hallazgos crudos de un escaneo viejo si hubo un
+  rescan.
+- **Pagina "Escaneos"**: cada escaneo (tanto en "Escaneos realizados" como
+  en "Escaneos remotos") tiene ahora un boton "Ver resultados" que despliega,
+  sin salir de la pagina, cada hallazgo con su badge de severidad, CVE,
+  paquete/version instalada -> version corregida (si aplica), puerto/servicio
+  (si aplica), descripcion, y la lista de pasos de remediacion sugeridos. Si
+  el escaneo fallo se muestra el motivo del error en vez de una tabla vacia;
+  si todavia esta en curso, se avisa que los resultados van a aparecer solos
+  cuando termine.
+- **Pagina "Vulnerabilidades"**: se agregaron filtros por severidad y por
+  estado (los resuelve el backend, via los mismos parametros que ya
+  soportaba `GET /vulnerabilities`) mas una busqueda de texto libre por
+  titulo/CVE/paquete (del lado del cliente, sobre el resultado ya filtrado).
+  El detalle expandido de cada fila ahora tambien muestra la descripcion
+  completa y tarjetas de paquete/puerto/origen antes de los pasos de
+  remediacion (que ya existian). Se agregaron tarjetas de resumen para
+  Criticas y Altas en la parte superior.
+
+Verificacion antes de commitear: los 20 tests existentes de vuln-service
+siguen en verde (pytest), import-sanity de `app.main` confirmando que las
+rutas quedan bien registradas, `tsc --noEmit` limpio y `npm run build`
+exitoso en el frontend completo.
+
+**Paso manual pendiente para Manu**: solo hace falta reconstruir
+`vuln-service` y `frontend` (no todo el stack) --
+`docker compose build vuln-service frontend` y despues
+`docker compose up -d vuln-service frontend`.

@@ -83,6 +83,7 @@ export interface VulnerabilityOut {
   description: string;
   severity: string;
   source_scanner: string;
+  scan_job_id: string | null;
   asset_id: string | null;
   package: string;
   installed_version: string;
