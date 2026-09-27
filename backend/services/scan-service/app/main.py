@@ -199,6 +199,23 @@ async def delete_scan(
     logger.info("scan job borrado", extra={"job_id": job_id, "actor": claims.get("sub")})
 
 
+@app.post("/scans/{job_id}/cancel", response_model=ScanJobOut)
+async def cancel_scan(
+    job_id: str,
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
+):
+    job = await services.get_scan_job(db, job_id, org_id_from_claims(claims))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job de escaneo no encontrado")
+    if not services.is_cancellable_status(job.status):
+        raise HTTPException(status_code=409, detail="Solo se pueden cancelar escaneos pendientes o en curso")
+    job = await services.cancel_scan_job(db, job)
+    await db.commit()
+    logger.info("scan job cancelado", extra={"job_id": job_id, "actor": claims.get("sub")})
+    return job
+
+
 @app.post("/scan-schedules", response_model=ScanScheduleOut, status_code=status.HTTP_201_CREATED)
 async def create_schedule(
     payload: ScanScheduleCreate,

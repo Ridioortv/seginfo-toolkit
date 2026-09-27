@@ -209,6 +209,7 @@ class OpenVasDriver(ScannerDriver):
 
         async def gvm_query(xml: str, timeout: int = 60) -> tuple[int, str, str]:
             cmd = _gvm_cmd(socket_path, user, password, xml)
+            proc = None
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -220,85 +221,117 @@ class OpenVasDriver(ScannerDriver):
                 proc.kill()
                 await proc.wait()
                 return -1, "", f"timeout ({timeout}s) hablando con gvmd"
+            except asyncio.CancelledError:
+                # Ver nmap.py: mata el gvm-cli que estaba esperando en vez de
+                # dejarlo huerfano. Esto NO detiene el escaneo del lado de
+                # gvmd/ospd-openvas -- eso lo maneja el except de mas abajo
+                # (best-effort stop_task).
+                if proc is not None:
+                    proc.kill()
+                    await proc.wait()
+                raise
             return proc.returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace")
 
-        # -- 1. Descubrimiento dinamico de config/scanner/port_list --------
-        rc, out, err = await gvm_query("<get_configs/>")
-        if rc != 0:
-            return ScanResult(raw_output=out, error=f"no se pudo consultar get_configs: {err[:1000]}")
-        config_id = _find_id_by_name(out, "config", _CONFIG_NAME_PREFERENCES)
-
-        rc, out, err = await gvm_query("<get_scanners/>")
-        if rc != 0:
-            return ScanResult(raw_output=out, error=f"no se pudo consultar get_scanners: {err[:1000]}")
-        scanner_id = _find_id_by_name(out, "scanner", _SCANNER_NAME_PREFERENCES)
-
-        rc, out, err = await gvm_query("<get_port_lists/>")
-        if rc != 0:
-            return ScanResult(raw_output=out, error=f"no se pudo consultar get_port_lists: {err[:1000]}")
-        port_list_id = _find_id_by_name(out, "port_list", _PORT_LIST_NAME_PREFERENCES)
-
-        if not (config_id and scanner_id and port_list_id):
-            return ScanResult(
-                raw_output="",
-                error=(
-                    "gvmd no tiene configuradas las entidades minimas para escanear "
-                    f"(config={config_id}, scanner={scanner_id}, port_list={port_list_id}). "
-                    "Puede que el feed de NVTs todavia no termino de sincronizar la primera vez "
-                    "-- ver README.md/STATUS.md sobre el tiempo de sincronizacion inicial."
-                ),
-            )
-
-        # -- 2. create_target / create_task / start_task --------------------
-        task_name = f"sentinelops-{target}-{int(time.time())}"
-        rc, out, err = await gvm_query(_build_create_target_xml(task_name, target, port_list_id))
-        if rc != 0 or not _response_status_ok(out):
-            return ScanResult(raw_output=out, error=f"no se pudo crear el target GVM: {err[:1000] or out[:1000]}")
-        target_id = _parse_response_id(out)
-        if not target_id:
-            return ScanResult(raw_output=out, error="create_target no devolvio un id de target")
-
-        rc, out, err = await gvm_query(_build_create_task_xml(task_name, target_id, config_id, scanner_id))
-        if rc != 0 or not _response_status_ok(out):
-            return ScanResult(raw_output=out, error=f"no se pudo crear el task GVM: {err[:1000] or out[:1000]}")
-        task_id = _parse_response_id(out)
-        if not task_id:
-            return ScanResult(raw_output=out, error="create_task no devolvio un id de task")
-
-        rc, out, err = await gvm_query(f"<start_task task_id='{task_id}'/>")
-        if rc != 0:
-            return ScanResult(raw_output=out, error=f"no se pudo iniciar el task GVM: {err[:1000]}")
-
-        # -- 3. Poll hasta terminal o timeout --------------------------------
-        deadline = time.monotonic() + _DEFAULT_SCAN_TIMEOUT
-        last_status, last_progress = "Requested", 0
-        while time.monotonic() < deadline:
-            await asyncio.sleep(_DEFAULT_POLL_INTERVAL)
-            rc, out, err = await gvm_query(f"<get_tasks task_id='{task_id}'/>")
+        # task_id se completa en el paso 2 -- se declara antes del try para
+        # que el except CancelledError de mas abajo sepa si ya existe un
+        # task GVM real corriendo (y haya que pedirle stop_task) o si la
+        # cancelacion llego antes de crear ninguno.
+        task_id: str | None = None
+        try:
+            # -- 1. Descubrimiento dinamico de config/scanner/port_list ----
+            rc, out, err = await gvm_query("<get_configs/>")
             if rc != 0:
-                continue  # error transitorio consultando estado -- reintenta en el proximo ciclo
-            parsed = _parse_task_status(out)
-            if parsed is None:
-                continue
-            last_status, last_progress = parsed
-            if last_status in _TERMINAL_TASK_STATUSES:
-                break
-        else:
-            return ScanResult(
-                raw_output="",
-                error=(
-                    f"timeout esperando que termine el escaneo GVM ({_DEFAULT_SCAN_TIMEOUT}s, "
-                    f"ultimo estado visto: {last_status} {last_progress}%). El escaneo puede seguir "
-                    "corriendo en gvmd -- subir GVM_SCAN_TIMEOUT_SECONDS si el target es grande."
-                ),
-            )
+                return ScanResult(raw_output=out, error=f"no se pudo consultar get_configs: {err[:1000]}")
+            config_id = _find_id_by_name(out, "config", _CONFIG_NAME_PREFERENCES)
 
-        if last_status != "Done":
-            return ScanResult(raw_output="", error=f"el escaneo GVM termino en estado '{last_status}', no 'Done'")
+            rc, out, err = await gvm_query("<get_scanners/>")
+            if rc != 0:
+                return ScanResult(raw_output=out, error=f"no se pudo consultar get_scanners: {err[:1000]}")
+            scanner_id = _find_id_by_name(out, "scanner", _SCANNER_NAME_PREFERENCES)
 
-        # -- 4. get_results ---------------------------------------------------
-        rc, out, err = await gvm_query(f"<get_results task_id='{task_id}' filter='rows=1000'/>", timeout=120)
-        if rc != 0:
-            return ScanResult(raw_output=out, error=f"no se pudieron obtener los resultados: {err[:1000]}")
+            rc, out, err = await gvm_query("<get_port_lists/>")
+            if rc != 0:
+                return ScanResult(raw_output=out, error=f"no se pudo consultar get_port_lists: {err[:1000]}")
+            port_list_id = _find_id_by_name(out, "port_list", _PORT_LIST_NAME_PREFERENCES)
 
-        return ScanResult(raw_output=out, findings=_parse_gmp_results(out))
+            if not (config_id and scanner_id and port_list_id):
+                return ScanResult(
+                    raw_output="",
+                    error=(
+                        "gvmd no tiene configuradas las entidades minimas para escanear "
+                        f"(config={config_id}, scanner={scanner_id}, port_list={port_list_id}). "
+                        "Puede que el feed de NVTs todavia no termino de sincronizar la primera vez "
+                        "-- ver README.md/STATUS.md sobre el tiempo de sincronizacion inicial."
+                    ),
+                )
+
+            # -- 2. create_target / create_task / start_task ----------------
+            task_name = f"sentinelops-{target}-{int(time.time())}"
+            rc, out, err = await gvm_query(_build_create_target_xml(task_name, target, port_list_id))
+            if rc != 0 or not _response_status_ok(out):
+                return ScanResult(raw_output=out, error=f"no se pudo crear el target GVM: {err[:1000] or out[:1000]}")
+            target_id = _parse_response_id(out)
+            if not target_id:
+                return ScanResult(raw_output=out, error="create_target no devolvio un id de target")
+
+            rc, out, err = await gvm_query(_build_create_task_xml(task_name, target_id, config_id, scanner_id))
+            if rc != 0 or not _response_status_ok(out):
+                return ScanResult(raw_output=out, error=f"no se pudo crear el task GVM: {err[:1000] or out[:1000]}")
+            task_id = _parse_response_id(out)
+            if not task_id:
+                return ScanResult(raw_output=out, error="create_task no devolvio un id de task")
+
+            rc, out, err = await gvm_query(f"<start_task task_id='{task_id}'/>")
+            if rc != 0:
+                return ScanResult(raw_output=out, error=f"no se pudo iniciar el task GVM: {err[:1000]}")
+
+            # -- 3. Poll hasta terminal o timeout ----------------------------
+            deadline = time.monotonic() + _DEFAULT_SCAN_TIMEOUT
+            last_status, last_progress = "Requested", 0
+            while time.monotonic() < deadline:
+                await asyncio.sleep(_DEFAULT_POLL_INTERVAL)
+                rc, out, err = await gvm_query(f"<get_tasks task_id='{task_id}'/>")
+                if rc != 0:
+                    continue  # error transitorio consultando estado -- reintenta en el proximo ciclo
+                parsed = _parse_task_status(out)
+                if parsed is None:
+                    continue
+                last_status, last_progress = parsed
+                if last_status in _TERMINAL_TASK_STATUSES:
+                    break
+            else:
+                return ScanResult(
+                    raw_output="",
+                    error=(
+                        f"timeout esperando que termine el escaneo GVM ({_DEFAULT_SCAN_TIMEOUT}s, "
+                        f"ultimo estado visto: {last_status} {last_progress}%). El escaneo puede seguir "
+                        "corriendo en gvmd -- subir GVM_SCAN_TIMEOUT_SECONDS si el target es grande."
+                    ),
+                )
+
+            if last_status != "Done":
+                return ScanResult(raw_output="", error=f"el escaneo GVM termino en estado '{last_status}', no 'Done'")
+
+            # -- 4. get_results -----------------------------------------------
+            rc, out, err = await gvm_query(f"<get_results task_id='{task_id}' filter='rows=1000'/>", timeout=120)
+            if rc != 0:
+                return ScanResult(raw_output=out, error=f"no se pudieron obtener los resultados: {err[:1000]}")
+
+            return ScanResult(raw_output=out, findings=_parse_gmp_results(out))
+        except asyncio.CancelledError:
+            # A diferencia de nmap/trivy/nuclei (un solo subproceso local
+            # nuestro), aca el escaneo real lo corre gvmd/ospd-openvas del
+            # otro lado del socket -- matar el gvm-cli que estaba esperando
+            # (ya lo hizo gvm_query arriba) NO detiene ese escaneo remoto.
+            # Si ya se llego a crear un task GVM, se le pide stop_task
+            # best-effort antes de propagar la cancelacion, para no dejar
+            # un escaneo real corriendo en gvmd huerfano de un job que en
+            # nuestra DB ya va a quedar 'cancelled'. Nunca debe tapar el
+            # CancelledError original: cualquier error de esta limpieza
+            # solo se ignora.
+            if task_id:
+                try:
+                    await gvm_query(f"<stop_task task_id='{task_id}'/>", timeout=15)
+                except Exception:  # noqa: BLE001 -- best-effort
+                    pass
+            raise

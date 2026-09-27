@@ -47,6 +47,7 @@ class TrivyDriver(ScannerDriver):
     async def run(self, target: str, options: dict) -> ScanResult:
         cmd = _build_trivy_cmd(target, options)
 
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -58,6 +59,13 @@ class TrivyDriver(ScannerDriver):
             proc.kill()
             await proc.wait()
             return ScanResult(raw_output="", error="timeout de escaneo (540s)")
+        except asyncio.CancelledError:
+            # Ver nmap.py: sin este kill(), trivy sigue corriendo huerfano
+            # dentro del contenedor aunque el job ya haya quedado cancelado.
+            if proc is not None:
+                proc.kill()
+                await proc.wait()
+            raise
 
         raw = stdout.decode(errors="replace")
         err = stderr.decode(errors="replace")
@@ -68,6 +76,7 @@ class TrivyDriver(ScannerDriver):
                 # reintentamos una sola vez permitiendo que trivy baje la
                 # DB, en vez de fallar el escaneo directamente.
                 fallback_cmd = [c for c in cmd if c not in ("--skip-db-update", "--skip-java-db-update")]
+                proc2 = None
                 try:
                     proc2 = await asyncio.create_subprocess_exec(
                         *fallback_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -77,6 +86,11 @@ class TrivyDriver(ScannerDriver):
                     proc2.kill()
                     await proc2.wait()
                     return ScanResult(raw_output="", error="timeout de escaneo (540s, incluyo descarga inicial de la DB)")
+                except asyncio.CancelledError:
+                    if proc2 is not None:
+                        proc2.kill()
+                        await proc2.wait()
+                    raise
                 raw2 = stdout2.decode(errors="replace")
                 if proc2.returncode not in (0, 1):
                     return ScanResult(raw_output=raw2, error=stderr2.decode(errors="replace")[:2000])

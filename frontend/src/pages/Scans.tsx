@@ -32,7 +32,8 @@ const SCOPE_LABELS: Record<NetworkScope, string> = {
 // memoria la notacion CIDR. Siempre editable antes de lanzar el escaneo.
 const LAN_PRESETS = ["192.168.0.0/24", "192.168.1.0/24", "10.0.0.0/24", "172.16.0.0/24"];
 
-const TERMINAL_STATUSES = new Set(["completed", "failed", "scanner_unavailable"]);
+const TERMINAL_STATUSES = new Set(["completed", "failed", "scanner_unavailable", "cancelled"]);
+const CANCELLABLE_STATUSES = new Set(["pending", "running"]);
 
 function scopeOf(job: ScanJobOut): string {
   const raw = job.options?.network_scope;
@@ -66,6 +67,7 @@ function ScanResultsPanel({
 }) {
   const isCompleted = status === "completed";
   const isTerminalFailure = status === "failed" || status === "scanner_unavailable";
+  const isCancelled = status === "cancelled";
 
   const results = useQuery({
     queryKey: ["scan-vulnerabilities", scanJobId],
@@ -74,6 +76,9 @@ function ScanResultsPanel({
     enabled: isCompleted,
   });
 
+  if (isCancelled) {
+    return <p className="empty-hint">Este escaneo fue cancelado -- no hay resultados.</p>;
+  }
   if (isTerminalFailure) {
     return (
       <p className="error-text">
@@ -272,6 +277,15 @@ export default function Scans() {
     onError: (err: unknown) => setScanActionError(err),
   });
 
+  const cancelScan = useMutation({
+    mutationFn: async (id: string) => (await scanApi.post<ScanJobOut>(`/scans/${id}/cancel`)).data,
+    onSuccess: () => {
+      setScanActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["scans"] });
+    },
+    onError: (err: unknown) => setScanActionError(err),
+  });
+
   const deleteAgentScan = useMutation({
     mutationFn: async (id: string) => scanApi.delete(`/agent-scans/${id}`),
     onSuccess: () => {
@@ -355,6 +369,20 @@ export default function Scans() {
             </select>
           )}
         </div>
+
+        {(scope === "lan" || scope === "man") && (
+          <div className="panel" style={{ marginTop: 8, marginBottom: 8, border: "1px solid #d9a900" }}>
+            <p style={{ margin: 0 }}>
+              <strong>Este escaneo corre DENTRO del contenedor Docker, no en la red real de esta PC.</strong> Docker
+              Desktop aisla al contenedor detras de NAT, asi que salvo que Docker tenga acceso directo a esa red, no
+              va a llegar a los dispositivos de tu {scope === "lan" ? "LAN" : "MAN"} y el escaneo va a terminar en
+              timeout despues de un par de minutos. Para escanear la red real de la oficina/sede, usa{" "}
+              <strong>"Escaneos remotos"</strong> mas abajo: un agente liviano corre fuera de Docker (en esta PC o en
+              cualquier otra con visibilidad a esa red) y hace polling hacia scan-service, sin que haga falta abrir
+              ningun puerto.
+            </p>
+          </div>
+        )}
 
         <textarea
           className="targets-textarea"
@@ -744,6 +772,15 @@ export default function Scans() {
                       <button className="btn-link" onClick={() => setExpandedScanId(expandedScanId === s.id ? null : s.id)}>
                         {expandedScanId === s.id ? "Ocultar resultados" : "Ver resultados"}
                       </button>
+                      {CANCELLABLE_STATUSES.has(s.status) && (
+                        <button
+                          className="btn-link"
+                          disabled={cancelScan.isPending}
+                          onClick={() => cancelScan.mutate(s.id)}
+                        >
+                          Cancelar
+                        </button>
+                      )}
                       {TERMINAL_STATUSES.has(s.status) && (
                         <button className="btn-link" onClick={() => deleteScan.mutate(s.id)}>Eliminar</button>
                       )}

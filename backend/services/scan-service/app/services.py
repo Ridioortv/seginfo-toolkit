@@ -108,7 +108,8 @@ async def get_scan_job(db: AsyncSession, job_id: str, organization_id: str) -> S
     return job
 
 
-TERMINAL_SCAN_STATUSES = {"completed", "failed", "scanner_unavailable"}
+TERMINAL_SCAN_STATUSES = {"completed", "failed", "scanner_unavailable", "cancelled"}
+CANCELLABLE_SCAN_STATUSES = {"pending", "running"}
 
 
 def is_deletable_status(status_value) -> bool:
@@ -117,6 +118,68 @@ def is_deletable_status(status_value) -> bool:
     background_tasks o esperando el proximo polling del agente."""
     value = status_value.value if hasattr(status_value, "value") else status_value
     return value in TERMINAL_SCAN_STATUSES
+
+
+def is_cancellable_status(status_value) -> bool:
+    """Solo tiene sentido cancelar un escaneo que todavia no llego a un
+    estado terminal -- uno completed/failed/scanner_unavailable/cancelled ya
+    no tiene nada corriendo que cancelar."""
+    value = status_value.value if hasattr(status_value, "value") else status_value
+    return value in CANCELLABLE_SCAN_STATUSES
+
+
+# --- Cancelacion de escaneos en curso ---
+# Diccionario en memoria (job_id -> asyncio.Task) de los escaneos que estan
+# corriendo AHORA en este mismo proceso de scan-service. Alcanza con que sea
+# en memoria (no en la DB) porque solo tiene sentido cancelar un escaneo
+# mientras el proceso que lo esta corriendo sigue vivo: si el contenedor se
+# reinicio, cualquier job que haya quedado "running" en la DB ya esta
+# huerfano de todas formas (nadie lo esta corriendo), y cancel_scan_job mas
+# abajo lo detecta (no hay tarea registrada) y lo marca cancelado
+# directamente sin necesidad de matar nada. Un solo dict de proceso alcanza
+# porque scan-service corre como una sola instancia -- mismo supuesto que ya
+# usa el scheduler de ScanSchedule (ver app/main.py).
+_RUNNING_SCAN_TASKS: dict[str, "asyncio.Task"] = {}
+
+
+def register_running_scan(job_id: str, task: "asyncio.Task") -> None:
+    _RUNNING_SCAN_TASKS[job_id] = task
+
+
+def unregister_running_scan(job_id: str) -> None:
+    _RUNNING_SCAN_TASKS.pop(job_id, None)
+
+
+def cancel_running_scan(job_id: str) -> bool:
+    """Pide la cancelacion del escaneo si esta corriendo en ESTE proceso
+    (via Task.cancel() -- ver execute_scan_job, que atrapa el
+    CancelledError resultante para matar el subproceso del driver y dejar
+    el job en estado 'cancelled' en vez de dejarlo colgado). Devuelve False
+    si no hay ninguna tarea viva registrada para ese job_id (ya termino, o
+    quedo huerfana de un reinicio del contenedor) -- en ese caso quien
+    llama tiene que marcar el estado 'cancelled' a mano, no hay nada que
+    matar."""
+    task = _RUNNING_SCAN_TASKS.get(job_id)
+    if task is None or task.done():
+        return False
+    task.cancel()
+    return True
+
+
+async def cancel_scan_job(db: AsyncSession, job: ScanJob) -> ScanJob:
+    """Cancela un escaneo pending/running (ver is_cancellable_status, que ya
+    se valido en el endpoint antes de llamar aca). Si hay una tarea viva
+    corriendo este job en este proceso, le pide la cancelacion -- el propio
+    execute_scan_job termina de escribir el estado final cuando el
+    CancelledError le llega. Si no hay ninguna tarea viva (job huerfano de
+    un reinicio del contenedor, o todavia no llego a registrarse), se marca
+    cancelado aca mismo porque no hay nada corriendo que vaya a hacerlo."""
+    if not cancel_running_scan(job.id):
+        job.status = ScanStatus.cancelled
+        job.error_message = "Cancelado por el usuario"
+        job.finished_at = _now()
+        await db.flush()
+    return job
 
 
 async def delete_scan_job(db: AsyncSession, job: ScanJob) -> None:
@@ -225,62 +288,102 @@ def driver_exception_error_message(exc: Exception) -> str:
 
 
 async def execute_scan_job(session_factory, job_id: str) -> None:
-    """Corre en background (via BackgroundTasks). Usa su propia sesion de DB
-    porque la request original ya termino cuando esto se ejecuta."""
-    async with session_factory() as db:
-        job = await db.get(ScanJob, job_id)
-        if job is None:
-            return
+    """Corre en background (via BackgroundTasks, o desde run_scheduled_scan
+    para las reglas programadas). Usa su propia sesion de DB porque la
+    request original ya termino cuando esto se ejecuta.
 
-        driver = get_driver(job.scanner_type)
-        if not driver.is_available():
-            job.status = ScanStatus.scanner_unavailable
-            job.error_message = f"El binario '{driver.binary_name}' no esta disponible en este contenedor"
-            job.finished_at = _now()
-            await db.commit()
-            logger.warning("scanner no disponible", extra={"job_id": job_id, "scanner": job.scanner_type.value})
-            return
+    Se auto-registra en _RUNNING_SCAN_TASKS mientras corre (via
+    asyncio.current_task()) para que POST /scans/{id}/cancel pueda pedirle
+    la cancelacion con Task.cancel() -- sea quien sea quien haya arrancado
+    esta corrutina (BackgroundTasks de FastAPI o el scheduler de
+    APScheduler), asyncio.current_task() devuelve la misma Task real que
+    la esta ejecutando.
 
-        job.status = ScanStatus.running
-        job.started_at = _now()
-        await db.commit()
-
-        # driver.run() ya atrapa sus propios errores esperados (binario
-        # ausente, timeout) y los devuelve como ScanResult.error -- pero un
-        # driver puede levantar una excepcion no prevista (permiso denegado
-        # al crear el subproceso, error de parseo no capturado, etc). Sin
-        # este try/except, esa excepcion se escapa de este background task
-        # (FastAPI solo la loguea, no hay nadie esperando la respuesta) y el
-        # job se queda en estado "running" para siempre: nunca pasa a un
-        # estado terminal, asi que ni se puede reintentar a mano ni se puede
-        # borrar (is_deletable_status exige completed/failed/scanner_unavailable).
-        try:
-            result = await driver.run(job.target, job.options or {})
-        except Exception as exc:  # noqa: BLE001 -- nunca debe dejar el job colgado en "running"
+    Todo el cuerpo queda envuelto en un try/except CancelledError (no solo
+    la llamada al driver): la cancelacion puede llegar en cualquier punto
+    de espera, incluso antes de que el driver arranque a correr. Ese
+    CancelledError se atrapa aca y NUNCA se re-lanza -- si escapara,
+    run_scheduled_scan no lo atraparia con su `except Exception` (desde
+    Python 3.8, CancelledError hereda de BaseException a proposito, para
+    que nadie lo confunda con un error real del scanner), y quedaria como
+    una excepcion sin manejar en el background task de FastAPI."""
+    task = asyncio.current_task()
+    if task is not None:
+        register_running_scan(job_id, task)
+    try:
+        async with session_factory() as db:
             job = await db.get(ScanJob, job_id)
-            job.status = ScanStatus.failed
-            job.error_message = driver_exception_error_message(exc)
-            job.finished_at = _now()
+            if job is None:
+                return
+
+            driver = get_driver(job.scanner_type)
+            if not driver.is_available():
+                job.status = ScanStatus.scanner_unavailable
+                job.error_message = f"El binario '{driver.binary_name}' no esta disponible en este contenedor"
+                job.finished_at = _now()
+                await db.commit()
+                logger.warning("scanner no disponible", extra={"job_id": job_id, "scanner": job.scanner_type.value})
+                return
+
+            job.status = ScanStatus.running
+            job.started_at = _now()
             await db.commit()
-            logger.error("scan fallo con excepcion no manejada", extra={"job_id": job_id, "error": str(exc)})
-            return
 
-        job = await db.get(ScanJob, job_id)
-        job.raw_result = (result.raw_output or "")[:200_000]
-        job.finished_at = _now()
-        if result.error:
-            job.status = ScanStatus.failed
-            job.error_message = result.error[:2000]
-            logger.error("scan fallo", extra={"job_id": job_id, "error": result.error[:500]})
-        else:
-            job.status = ScanStatus.completed
-            job.findings = result.findings
-            logger.info("scan completado", extra={"job_id": job_id, "hallazgos": len(result.findings)})
-        await db.commit()
+            # driver.run() ya atrapa sus propios errores esperados (binario
+            # ausente, timeout) y los devuelve como ScanResult.error -- pero un
+            # driver puede levantar una excepcion no prevista (permiso denegado
+            # al crear el subproceso, error de parseo no capturado, etc). Sin
+            # este try/except, esa excepcion se escapa de este background task
+            # (FastAPI solo la loguea, no hay nadie esperando la respuesta) y el
+            # job se queda en estado "running" para siempre: nunca pasa a un
+            # estado terminal, asi que ni se puede reintentar a mano ni se puede
+            # borrar (is_deletable_status exige un estado terminal).
+            try:
+                result = await driver.run(job.target, job.options or {})
+            except Exception as exc:  # noqa: BLE001 -- nunca debe dejar el job colgado en "running"
+                job = await db.get(ScanJob, job_id)
+                job.status = ScanStatus.failed
+                job.error_message = driver_exception_error_message(exc)
+                job.finished_at = _now()
+                await db.commit()
+                logger.error("scan fallo con excepcion no manejada", extra={"job_id": job_id, "error": str(exc)})
+                return
 
-        if result.findings:
-            await _forward_findings_to_vuln_service(job)
-            await _forward_findings_to_siem_service(job)
+            job = await db.get(ScanJob, job_id)
+            job.raw_result = (result.raw_output or "")[:200_000]
+            job.finished_at = _now()
+            if result.error:
+                job.status = ScanStatus.failed
+                job.error_message = result.error[:2000]
+                logger.error("scan fallo", extra={"job_id": job_id, "error": result.error[:500]})
+            else:
+                job.status = ScanStatus.completed
+                job.findings = result.findings
+                logger.info("scan completado", extra={"job_id": job_id, "hallazgos": len(result.findings)})
+            await db.commit()
+
+            if result.findings:
+                await _forward_findings_to_vuln_service(job)
+                await _forward_findings_to_siem_service(job)
+    except asyncio.CancelledError:
+        # El usuario pidio cancelar (POST /scans/{id}/cancel -> cancel_scan_job
+        # -> cancel_running_scan -> Task.cancel()). Los drivers ya atrapan este
+        # mismo CancelledError junto al subproceso que tengan corriendo para
+        # matarlo antes de volver a levantarlo (ver app/scanners/*.py) -- aca
+        # solo queda dejar el job en un estado terminal. Se abre una sesion
+        # NUEVA porque la sesion de arriba puede haber quedado en un estado
+        # intermedio inconsistente si la cancelacion llego a mitad de un
+        # commit/flush.
+        async with session_factory() as db:
+            job = await db.get(ScanJob, job_id)
+            if job is not None and is_cancellable_status(job.status):
+                job.status = ScanStatus.cancelled
+                job.error_message = "Cancelado por el usuario"
+                job.finished_at = _now()
+                await db.commit()
+        logger.info("scan cancelado", extra={"job_id": job_id})
+    finally:
+        unregister_running_scan(job_id)
 
 
 async def _forward_findings_to_vuln_service(job: ScanJob) -> None:

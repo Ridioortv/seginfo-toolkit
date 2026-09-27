@@ -71,6 +71,7 @@ class NmapDriver(ScannerDriver):
     async def run(self, target: str, options: dict) -> ScanResult:
         cmd, proc_timeout, mode = _build_nmap_cmd(target, options)
 
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -92,9 +93,20 @@ class NmapDriver(ScannerDriver):
                     "(ej. 192.168.x.x), recorda que este escaneo corre DENTRO del contenedor "
                     "Docker, no en la red real de la PC: Docker Desktop aisla al contenedor "
                     "detras de NAT, asi que no llega a los dispositivos de tu LAN salvo que "
-                    "el propio Docker corra con acceso a esa red."
+                    "el propio Docker corra con acceso a esa red -- usa 'Escaneos remotos' "
+                    "con un agente para escanear la LAN real."
                 ),
             )
+        except asyncio.CancelledError:
+            # El usuario cancelo el escaneo desde la UI (POST
+            # /scans/{id}/cancel). Igual que en el timeout: sin este kill(),
+            # nmap sigue corriendo huerfano dentro del contenedor aunque el
+            # job ya haya quedado marcado como cancelado. Se relanza para
+            # que execute_scan_job se entere y escriba el estado final.
+            if proc is not None:
+                proc.kill()
+                await proc.wait()
+            raise
 
         raw = stdout.decode(errors="replace")
         if proc.returncode != 0:

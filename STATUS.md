@@ -601,3 +601,56 @@ exitoso en el frontend completo.
 `vuln-service` y `frontend` (no todo el stack) --
 `docker compose build vuln-service frontend` y despues
 `docker compose up -d vuln-service frontend`.
+
+## Cancelar escaneos en curso + aviso de aislamiento de red LAN en Docker (2026-09-27)
+
+Manu reporto que sus escaneos nmap de LAN (ej. 192.168.x.x) siempre terminan
+en el timeout de 180s, y pidio poder cancelar un escaneo que quedo
+"running". Dos cosas separadas, ambas resueltas:
+
+- **Cancelar un escaneo pending/running**: nuevo endpoint
+  `POST /scans/{id}/cancel` en `scan-service`. Cada corrida de
+  `execute_scan_job` se auto-registra (via `asyncio.current_task()`) en un
+  registro en memoria (`_RUNNING_SCAN_TASKS`, un solo dict de proceso --
+  mismo supuesto que ya usa el scheduler de `ScanSchedule`) mientras corre;
+  cancelar le pide `Task.cancel()` a esa tarea, y cada driver
+  (nmap/trivy/nuclei/openvas) atrapa el `CancelledError` resultante para
+  matar el subproceso en curso (nmap/trivy/nuclei) antes de re-lanzarlo --
+  sin esto, el binario seguia corriendo huerfano dentro del contenedor
+  aunque el job ya quedara marcado como cancelado, igual que ya pasaba con
+  el timeout. El driver de OpenVAS es un caso especial: el escaneo real lo
+  corre gvmd/ospd-openvas del otro lado del socket, no un subproceso local
+  nuestro, asi que ademas se le manda un `stop_task` GMP best-effort al
+  task remoto para no dejarlo corriendo huerfano ahi tambien. Si no hay
+  ninguna tarea viva registrada para ese job (por ejemplo, quedo "running"
+  huerfano de un reinicio del contenedor), se marca cancelado directamente
+  en la DB -- no hay nada que matar. Nuevo estado `cancelled` en
+  `ScanStatus`, cuenta como estado terminal (se puede borrar despues, igual
+  que completed/failed/scanner_unavailable). En el frontend, cada fila de
+  "Escaneos realizados" en estado pending/running ahora tiene un boton
+  "Cancelar".
+- **Aviso de aislamiento de red antes de escanear, no despues de esperar
+  180s**: el timeout de nmap contra un rango LAN/oficina no es un bug --
+  Docker Desktop aisla al contenedor de `scan-service` detras de NAT, y no
+  hay forma confiable de darle acceso real a la LAN de la PC desde ahi
+  (`network_mode: host` en Docker Desktop para Windows/Mac no expone la
+  LAN real del host como en Linux nativo). La solucion real a esto ya
+  existia en el producto -- el agente de "Escaneos remotos" corre FUERA de
+  Docker y si llega a la LAN -- pero el usuario solo se entraba de la
+  limitacion despues de esperar el timeout completo. Se agrego un aviso
+  visible en el formulario "Nuevo escaneo" en cuanto se elige ambito LAN o
+  MAN, explicando el aislamiento de Docker y señalando directamente a
+  "Escaneos remotos" como la forma correcta de escanear la red real.
+
+Verificacion antes de commitear: 68 tests en scan-service (62 existentes +
+6 nuevos de la logica de cancelacion, sin DB ni drivers reales) todos en
+verde, import-sanity de `app.main` confirmando que `POST /scans/{id}/cancel`
+queda bien registrado, `tsc --noEmit` limpio y `npm run build` exitoso en
+el frontend completo.
+
+**Paso manual pendiente para Manu**: solo hace falta reconstruir
+`scan-service` y `frontend` -- `docker compose build scan-service frontend`
+y despues `docker compose up -d scan-service frontend`. Nota: cancelar un
+escaneo de agente remoto ("Escaneos remotos") todavia no esta soportado --
+esos corren en `remote-agent/agent.py`, un proceso aparte que hace polling,
+y cancelarlos requeriria cambiar ese protocolo. Quedo fuera de esta corrida.

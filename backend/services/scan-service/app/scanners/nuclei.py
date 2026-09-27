@@ -47,6 +47,7 @@ class NucleiDriver(ScannerDriver):
     async def run(self, target: str, options: dict) -> ScanResult:
         cmd = _build_nuclei_cmd(target, options)
 
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -58,6 +59,13 @@ class NucleiDriver(ScannerDriver):
             proc.kill()
             await proc.wait()
             return ScanResult(raw_output="", error="timeout de escaneo (600s)")
+        except asyncio.CancelledError:
+            # Ver nmap.py: sin este kill(), nuclei sigue corriendo huerfano
+            # dentro del contenedor aunque el job ya haya quedado cancelado.
+            if proc is not None:
+                proc.kill()
+                await proc.wait()
+            raise
 
         raw = stdout.decode(errors="replace")
         if proc.returncode not in (0, 1) and not raw.strip():
