@@ -5,6 +5,7 @@ import { scanApi, vulnApi } from "../services/api";
 import type { ScanJobOut, ScanScheduleOut, ScanAgentOut, ScanAgentCreated, AgentScanJobOut, VulnerabilityOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { SeverityBadge, StatusBadge } from "../components/Badge";
+import { RunningIndicator } from "../components/RunningIndicator";
 import { connectionErrorDetail } from "../utils/errors";
 
 const DAY_LABELS = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"];
@@ -858,6 +859,12 @@ export default function Scans() {
                     <td>
                       <StatusBadge value={j.status} />
                       {j.error_message && <span className="error-detail">{j.error_message}</span>}
+                      {(j.status === "pending" || j.status === "assigned") && (
+                        <RunningIndicator
+                          since={j.assigned_at ?? j.created_at}
+                          label={j.status === "pending" ? "en cola" : `${j.scanner_type} corriendo`}
+                        />
+                      )}
                     </td>
                     <td>{j.findings.length}</td>
                     <td>{new Date(j.created_at).toLocaleString()}</td>
@@ -946,6 +953,12 @@ export default function Scans() {
                       <StatusBadge value={s.status} />
                       {s.error_message && (
                         <span className="error-detail">{s.error_message}</span>
+                      )}
+                      {(s.status === "pending" || s.status === "running") && (
+                        <RunningIndicator
+                          since={s.started_at ?? s.created_at}
+                          label={s.status === "pending" ? "en cola" : `${s.scanner_type} corriendo`}
+                        />
                       )}
                     </td>
                     <td>{s.findings.length}</td>
