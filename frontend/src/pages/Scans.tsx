@@ -712,6 +712,28 @@ export default function Scans() {
             </tbody>
           </table>
         )}
+        {agents.data && (() => {
+          // "Agente LAN" es el unico que ve la red real (192.168.x.x, etc.)
+          // -- si nunca hizo polling, o hace mucho que no aparece, lo mas
+          // probable es que agente-lan.ps1 no este corriendo en ninguna PC
+          // todavia. Se lo recordamos aca en vez de dejar que se entere
+          // recien cuando un escaneo de LAN se quede pending.
+          const lanAgent = agents.data.find((a) => a.is_protected && a.name.toLowerCase().includes("lan"));
+          if (!lanAgent) return null;
+          const lastSeenMs = lanAgent.last_seen_at ? new Date(lanAgent.last_seen_at).getTime() : null;
+          const staleMs = 5 * 60 * 1000;
+          const isStale = lastSeenMs == null || Date.now() - lastSeenMs > staleMs;
+          if (!isStale) return null;
+          return (
+            <p style={{ color: "var(--warning)", marginTop: 8 }}>
+              "{lanAgent.name}" {lastSeenMs == null ? "todavia no hizo polling" : "hace rato que no aparece"} --
+              para escanear tu red real (192.168.x.x, etc.) necesitas tenerlo corriendo en una PC con
+              visibilidad a esa red. Doble-clic en <code className="mono">remote-agent/Instalar-Agente-LAN.bat</code>{" "}
+              en esa PC (una sola vez, no hace falta ser administrador) y queda andando solo de ahi en adelante,
+              incluso despues de reiniciar Windows.
+            </p>
+          );
+        })()}
         {agentActionError != null && (
           <p className="error-text">
             No se pudo eliminar el agente.{" "}

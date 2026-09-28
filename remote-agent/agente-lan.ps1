@@ -3,12 +3,124 @@
 # NO requiere Python, ni nmap, ni instalar NADA: usa PowerShell + .NET, que
 # ya vienen con Windows. Corre en el host (ve la red real), escanea puertos
 # de la LAN y reporta a scan-service. Se autentica como el agente "Agente LAN".
+#
+# Uso:
+#   .\agente-lan.ps1            arranca el agente en primer plano (Ctrl+C
+#                                para detener) -- para probarlo una vez o
+#                                ver en vivo que esta haciendo.
+#   .\agente-lan.ps1 -Install   lo deja instalado para que arranque SOLO
+#                                cada vez que inicies sesion en Windows, sin
+#                                tener que abrir nada de nuevo -- no hace
+#                                falta ser administrador. Tambien lo arranca
+#                                ya mismo, sin esperar al proximo login.
+#   .\agente-lan.ps1 -Status    muestra si esta instalado, corriendo, y las
+#                                ultimas lineas de su log.
+#   .\agente-lan.ps1 -Uninstall lo saca de los programas de inicio (no borra
+#                                este archivo, solo deja de arrancar solo).
 # ==========================================================================
-$ErrorActionPreference = "Stop"
-$scriptDir = $PSScriptRoot
-$root      = Split-Path -Parent $scriptDir
-$envFile   = Join-Path $root ".env"
+param(
+    [switch]$Install,
+    [switch]$Uninstall,
+    [switch]$Status
+)
 
+$ErrorActionPreference = "Stop"
+$scriptDir  = $PSScriptRoot
+$scriptPath = Join-Path $scriptDir "agente-lan.ps1"
+$root       = Split-Path -Parent $scriptDir
+$envFile    = Join-Path $root ".env"
+$logPath    = Join-Path $scriptDir "agente-lan.log"
+$TaskName   = "SentinelOps Agente LAN"
+
+function Write-Log([string]$msg) {
+    # Escribe en pantalla (si hay consola visible, ej. corriendo a mano) Y
+    # en un archivo de log (para cuando corre instalado, en segundo plano,
+    # sin ventana) -- asi hay donde mirar si algo no anda sin tener que
+    # dejar el agente corriendo en primer plano todo el tiempo.
+    $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $msg"
+    Write-Host $line
+    try { Add-Content -Path $logPath -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue } catch {}
+}
+
+# --------------------------------------------------------------------------
+# Instalacion como tarea de Windows -- para que "trabaje automaticamente":
+# se registra para arrancar solo al iniciar sesion, no necesita quedar una
+# ventana abierta, y si Windows lo reinicia (o se cae por un error) vuelve a
+# arrancar solo. Usa el modulo ScheduledTasks que ya viene con Windows 10/11
+# -- no instala nada nuevo, y no pide ser administrador (se registra para
+# tu propio usuario, con permisos normales).
+# --------------------------------------------------------------------------
+function Install-AgentTask {
+    $psExe = (Get-Process -Id $PID).Path
+    $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($existing) {
+        Write-Host "Ya estaba instalado -- lo vuelvo a registrar por si cambio la ruta o el usuario."
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+    }
+
+    $action = New-ScheduledTaskAction -Execute $psExe `
+        -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
+    $trigger = New-ScheduledTaskTrigger -AtLogOn
+    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 `
+        -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
+
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
+        -Principal $principal -Settings $settings `
+        -Description "SentinelOps: agente LAN, escanea la red real (192.168.x.x, etc.) desde este host. Instalado por agente-lan.ps1 -Install." `
+        -Force | Out-Null
+
+    Write-Host "Instalado: el Agente LAN va a arrancar solo cada vez que inicies sesion en Windows."
+    Write-Host "Arrancandolo ahora tambien, para no tener que cerrar sesion y volver a entrar..."
+    try {
+        Start-ScheduledTask -TaskName $TaskName
+        Start-Sleep -Seconds 2
+        Write-Host "Listo. Revisa la tabla de agentes en SentinelOps (pestana Escaneos) -- 'Agente LAN' deberia mostrar 'Ultima vez visto' con la hora de ahora en unos segundos."
+        Write-Host "Log en: $logPath"
+    } catch {
+        Write-Host "Se instalo, pero no pude arrancarlo ya mismo ($($_.Exception.Message)). Va a arrancar solo la proxima vez que inicies sesion."
+    }
+}
+
+function Uninstall-AgentTask {
+    $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $existing) {
+        Write-Host "No estaba instalado como tarea de inicio (nada para sacar)."
+        return
+    }
+    try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch {}
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    Write-Host "Desinstalado: el Agente LAN ya no arranca solo con Windows."
+    Write-Host "Si tenia una instancia corriendo, puede tardar unos segundos en detenerse."
+}
+
+function Show-AgentStatus {
+    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $task) {
+        Write-Host "No esta instalado. Corre: .\agente-lan.ps1 -Install"
+        return
+    }
+    $info = Get-ScheduledTaskInfo -TaskName $TaskName
+    Write-Host "Instalado. Estado de la tarea: $($task.State)"
+    Write-Host "Ultima corrida: $($info.LastRunTime)   Resultado: $($info.LastTaskResult) (0 = OK)"
+    Write-Host "Proxima corrida programada (proximo login): $($info.NextRunTime)"
+    if (Test-Path $logPath) {
+        Write-Host "--- Ultimas lineas del log ($logPath) ---"
+        Get-Content $logPath -Tail 10
+    } else {
+        Write-Host "Todavia no genero log -- puede que no haya arrancado todavia."
+    }
+}
+
+if ($Install)   { Install-AgentTask; exit 0 }
+if ($Uninstall) { Uninstall-AgentTask; exit 0 }
+if ($Status)    { Show-AgentStatus; exit 0 }
+
+# --------------------------------------------------------------------------
+# A partir de aca: el agente en si (igual que antes), corra instalado como
+# tarea (en segundo plano, sin ventana) o a mano con Iniciar-Agente-LAN.bat.
+# --------------------------------------------------------------------------
 $key = $null
 if (Test-Path $envFile) {
     foreach ($line in Get-Content $envFile) {
@@ -78,20 +190,27 @@ function Submit-Result([string]$jobId, [string]$status, $findings, [string]$err)
         -Headers @{ "X-Agent-Key" = $key; "Content-Type" = "application/json" } -Body $body -TimeoutSec 30 | Out-Null
 }
 
-Write-Host "============================================================"
-Write-Host " SentinelOps - Agente LAN (PowerShell nativo) iniciado."
-Write-Host " No requiere Python ni nmap. Escanea la red real desde el host."
-Write-Host " scan-service: $scanUrl   polling cada ${pollInterval}s   (Ctrl+C para detener)"
-Write-Host "============================================================"
+Write-Log "============================================================"
+Write-Log "SentinelOps - Agente LAN (PowerShell nativo) iniciado."
+Write-Log "No requiere Python ni nmap. Escanea la red real desde el host."
+Write-Log "scan-service: $scanUrl   polling cada ${pollInterval}s   (Ctrl+C para detener)"
+Write-Log "============================================================"
 
 while ($true) {
     try {
         $resp = Invoke-RestMethod -Uri "$scanUrl/agents/poll" -Method Post -Headers $headers -TimeoutSec 30
         foreach ($job in @($resp.jobs)) {
             $jobId = $job.id; $target = $job.target; $scanner = $job.scanner_type
-            Write-Host "job $($jobId.Substring(0,8)): $scanner -> $target ..."
+            Write-Log "job $($jobId.Substring(0,8)): $scanner -> $target ..."
             if ($scanner -ne "nmap") {
-                Submit-Result $jobId "failed" @() "El Agente LAN (PowerShell) solo hace descubrimiento de puertos (nmap). Para $scanner usa el Agente Docker."
+                # Este agente es PowerShell puro (sin instalar nada) y solo
+                # sabe hacer descubrimiento de puertos al estilo nmap -- no
+                # trae nuclei/trivy/openvas. Ojo: para un target de LAN,
+                # el Agente Docker TAMPOCO puede (esta detras del NAT de
+                # Docker Desktop) -- asi que mandar para alla no resuelve
+                # nada si el target es de LAN. Mensaje honesto en vez de
+                # mandar al usuario en circulos entre los dos agentes.
+                Submit-Result $jobId "failed" @() "El Agente LAN (PowerShell) todavia solo hace descubrimiento de puertos (nmap) -- no tiene $scanner instalado. Si '$target' es alcanzable desde internet o desde la PC del Agente Docker, proba ese agente. Si es un target de LAN, hoy no hay forma de correr $scanner ahi."
                 continue
             }
             $hostsList = Expand-Hosts $target
@@ -103,10 +222,10 @@ while ($true) {
                 }
             }
             Submit-Result $jobId "completed" $findings ""
-            Write-Host "job $($jobId.Substring(0,8)): completado, $($findings.Count) hallazgo(s)"
+            Write-Log "job $($jobId.Substring(0,8)): completado, $($findings.Count) hallazgo(s)"
         }
     } catch {
-        Write-Host "error hablando con scan-service: $($_.Exception.Message)"
+        Write-Log "error hablando con scan-service: $($_.Exception.Message)"
     }
     Start-Sleep -Seconds $pollInterval
 }

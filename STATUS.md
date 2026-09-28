@@ -903,3 +903,92 @@ el NAT). Vale la pena confirmar que la tabla de agentes en `/scans`
 muestre a "Agente LAN" con una fecha reciente en "Ultima vez visto" antes
 de lanzar un escaneo de LAN.
 
+## Agente LAN: instalacion en un solo paso + aviso claro de sus limites (2026-09-28)
+
+Manu: "quiero que remote-agent/agente-lan.ps1 se cree al darle lanzar
+escaneo remoto asi trabaja automaticamente y no tengo que estar
+creandolo yo ni el cliente, ante todo tiene que ser facil de usar".
+
+Antes de tocar nada se investigo si era posible que scan-service (corre
+DENTRO de Docker) arranque el proceso solo al lanzar un escaneo -- no lo
+es: Docker esta aislado del host por diseno (es justo el motivo de que
+exista un Agente LAN aparte), asi que ningun backend puede lanzar un
+proceso en la PC del cliente por su cuenta. Se le pregunto a Manu como
+prefiere resolver el primer arranque en una maquina nueva, y eligio
+instalarlo como tarea de Windows que arranca sola.
+
+De paso, revisando `agente-lan.ps1` a fondo salio a la luz la causa real
+de fondo del "nuclei no anda con el Agente LAN" de la seccion anterior:
+el script PowerShell nativo de este agente (hecho asi para NO requerir
+instalar nada -- ni Python ni nmap) **solo implementa descubrimiento de
+puertos al estilo nmap** -- nunca soporto nuclei/trivy/openvas, ni antes
+ni ahora. El fix de la carrera entre agentes (turno anterior) resuelve
+que el job llegue al agente correcto, pero un nuclei contra un target de
+LAN sigue sin tener quien lo resuelva: ni el Agente Docker (bloqueado
+por el NAT) ni el Agente LAN (nunca tuvo nuclei). El README afirmaba lo
+contrario (que el Agente LAN era "la solucion real" para esos 3
+scanners) -- estaba desactualizado/incorrecto, se corrigio.
+
+Cambios:
+
+- `agente-lan.ps1` gana `-Install` / `-Uninstall` / `-Status`: `-Install`
+  se registra como tarea de Windows (modulo `ScheduledTasks`, ya viene
+  con Windows 10/11 -- no instala nada nuevo) que arranca sola en cada
+  inicio de sesion, sin pedir ser administrador, y la arranca ya mismo
+  de paso (no hay que cerrar sesion y volver a entrar). Corre oculto
+  (`-WindowStyle Hidden`, sin ventana) y ahora loguea a
+  `remote-agent/agente-lan.log` ademas de la consola (agrega
+  `Write-Log`), para poder diagnosticar sin dejarlo en primer plano.
+  `-Status` muestra si esta instalado, la ultima corrida y las ultimas
+  lineas del log; `-Uninstall` lo saca de los programas de inicio.
+- Nuevo `Instalar-Agente-LAN.bat`: doble-clic UNA VEZ y queda instalado
+  -- pensado para Manu y, mas adelante, para un cliente sin conocimientos
+  tecnicos. `Iniciar-Agente-LAN.bat` (ya existia) se mantiene para correrlo
+  a mano en una ventana visible (probarlo una vez, ver en vivo).
+- El mensaje que devuelve un job de nuclei/trivy/openvas contra el
+  Agente LAN ya no manda al usuario en circulos ("usa el Agente
+  Docker" -- que tambien lo va a rechazar si es un target de LAN):
+  ahora explica que este agente todavia no soporta ese scanner y cuando
+  tiene sentido probar el Agente Docker (solo si el target es
+  alcanzable desde internet/host, no LAN).
+- `Scans.tsx`: si "Agente LAN" nunca hizo polling o hace mas de 5
+  minutos que no aparece, la tabla de agentes muestra un aviso con la
+  instruccion exacta (doble-clic en `Instalar-Agente-LAN.bat`) en vez de
+  dejar que el usuario se entere recien cuando un escaneo de LAN se
+  quede pending.
+- `README.md`: se reemplazo el `schtasks` manual (con la ruta del repo
+  de Manu hardcodeada) por instrucciones de `Instalar-Agente-LAN.bat`,
+  se corrigio "requiere nmap instalado" (el script no lo requiere, hace
+  su propio TCP scan nativo) y se aclaro en la seccion de troubleshooting
+  que el Agente LAN no reemplaza a trivy/nuclei/openvas contra la LAN.
+
+Verificacion: revision manual linea por linea del PowerShell (sin
+interprete de PowerShell disponible en este entorno para correrlo --
+mismo criterio que ya se uso para `agent.py` cuando no hay forma de
+ejecutarlo real, ver secciones anteriores), balance de llaves/parentesis
+chequeado por script. `tsc --noEmit` y `npm run build` limpios en el
+frontend completo. Suite de scan-service sin cambios de backend en esta
+seccion, sigue 106/106 verde.
+
+**Fuera de alcance, a decidir con Manu**: nuclei/trivy/openvas contra
+targets de LAN siguen sin tener quien los resuelva (ver arriba) -- la
+unica forma hoy es correr `remote-agent/agent.py` (el agente Python
+completo) directo en una PC con esos binarios instalados, lo cual ya no
+es "cero instalacion". Si Manu quiere esto resuelto de forma mas
+automatica (ej. que `agente-lan.ps1` use nuclei.exe/trivy.exe si estan
+instalados, con nmap nativo como fallback), es un cambio de alcance
+mayor -- no se decidio unilateralmente en este turno, queda pendiente de
+confirmar.
+
+**Paso manual pendiente para Manu**: instalar el Agente LAN una vez en
+cada PC que vaya a ver una red real (la tuya y, mas adelante, la de cada
+cliente) -- doble-clic en `remote-agent/Instalar-Agente-LAN.bat`. No
+hace falta reconstruir ni reiniciar el stack de Docker para esto (no se
+toco `scan-service` en esta seccion), pero conviene reconstruir el
+frontend para ver el aviso nuevo en la tabla de agentes:
+
+```powershell
+docker compose build --no-cache frontend
+docker compose up -d
+```
+

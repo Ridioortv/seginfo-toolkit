@@ -173,10 +173,16 @@ para priorizacion (CVSS/EPSS/KEV), igual que un escaneo normal.
   binario real -- ver `AGENT_FORCE_INTERNAL_NMAP`); trivy/nuclei/openvas
   no, y con `AGENT_BEHIND_DOCKER_NAT=1` (ya seteado para el Agente
   Docker en `docker-compose.yml`) esos 3 fallan al toque con un mensaje
-  claro en vez de quedarse varios minutos intentando conectar. La
-  solucion real es usar el **Agente LAN** (`agente-lan.ps1`, corre
-  FUERA de Docker en una PC con visibilidad real a esa red) para esos 3
-  scanners contra targets de LAN.
+  claro en vez de quedarse varios minutos intentando conectar.
+  **Importante**: el Agente LAN (`agente-lan.ps1`) NO es un reemplazo
+  para trivy/nuclei/openvas contra la LAN -- es un script PowerShell
+  nativo pensado para no requerir instalar nada, y por eso solo sabe
+  hacer descubrimiento de puertos (nmap). Contra un target de LAN, hoy
+  no hay forma de correr esos 3 scanners con ninguno de los dos agentes
+  bootstrap; si de verdad los necesitas ahi, la unica opcion es correr
+  `remote-agent/agent.py` (el agente Python completo, con los 4
+  scanners) directo en una PC con visibilidad real a esa red, con los
+  binarios que necesites instalados ahi.
 - **Varios jobs asignados a la vez, uno lento no debería trabar a los
   demas**: el agente los corre en threads separados (hasta
   `AGENT_MAX_CONCURRENT_JOBS`, default 8) -- un openvas/nuclei que tarda
@@ -198,27 +204,47 @@ defecto se crean dos:
   Docker Desktop escanea internet y la propia PC (`host.docker.internal`),
   **no** la LAN.
 - **Agente LAN** -> corre en el **host** (fuera de Docker) para llegar a la
-  red real (`192.168.x.x`). Se arranca con `remote-agent/agente-lan.ps1`
-  (o doble-clic en `Iniciar-Agente-LAN.bat`). Requiere `nmap` instalado en
-  esa PC.
+  red real (`192.168.x.x`). Es un script PowerShell nativo
+  (`remote-agent/agente-lan.ps1`) que **no requiere instalar nada** --
+  ni Python ni nmap -- porque hace su propio descubrimiento de puertos
+  con PowerShell + .NET. A cambio, solo sabe hacer eso: descubrimiento
+  de puertos (equivalente a nmap), no trivy/nuclei/openvas (ver nota en
+  "Si algo no funciona" arriba).
 
 Las api keys de ambos estan en `.env` (`REMOTE_AGENT_DOCKER_KEY` y
 `REMOTE_AGENT_LAN_KEY`) -- son las que se pegan en la UI al lanzar un
-escaneo remoto. Cambialas por valores propios en un despliegue real.
+escaneo remoto (o se autocompletan solas si elegis uno de estos dos
+agentes bootstrap, ver la tabla de agentes en `/scans`). Cambialas por
+valores propios en un despliegue real.
 
-### Que el Agente LAN arranque solo con Windows
+### Instalar el Agente LAN (un solo paso, sin ser administrador)
 
-Registralo como tarea al iniciar sesion (una sola vez, PowerShell como tu
-usuario). Ajusta la ruta si tu repo esta en otro lado:
+Antes habia que registrar una tarea de Windows a mano con `schtasks` y
+editar la ruta del repo en el comando. Ahora alcanza con doble-clic en
+**`Instalar-Agente-LAN.bat`** (dentro de `remote-agent/`), una sola vez:
+deja el Agente LAN corriendo en segundo plano YA MISMO, y ademas
+registrado para que arranque solo en cada inicio de sesion de Windows de
+ahi en adelante -- nunca mas hay que abrir nada a mano, ni dejar ninguna
+ventana abierta, ni en tu PC ni en la de un cliente.
+
+Bajo el capot, `Instalar-Agente-LAN.bat` corre
+`agente-lan.ps1 -Install`, que usa el modulo `ScheduledTasks` que ya
+trae Windows 10/11 (no instala nada nuevo) para registrar la tarea con
+tu propio usuario -- no hace falta ser administrador. Otros comandos
+utiles (desde `remote-agent/`, en PowerShell):
 
 ```powershell
-schtasks /Create /SC ONLOGON /TN "SentinelOps Agente LAN" ^
-  /TR "powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"C:\Users\manue\Documents\seginfo-toolkit\remote-agent\agente-lan.ps1\"" ^
-  /RL LIMITED /F
+.gente-lan.ps1 -Status      # esta instalado? corriendo? ver el log
+.gente-lan.ps1 -Uninstall   # sacarlo de los programas de inicio
 ```
 
-Desde el proximo inicio de sesion, el Agente LAN queda corriendo en segundo
-plano. Para quitarlo: `schtasks /Delete /TN "SentinelOps Agente LAN" /F`.
+El log queda en `remote-agent/agente-lan.log` -- util para revisar que
+paso si la tabla de agentes en `/scans` no muestra a "Agente LAN" con
+una fecha reciente en "Ultima vez visto".
+
+Para correrlo a mano, en una ventana visible (por ejemplo para probarlo
+una vez o mirarlo en vivo), doble-clic en `Iniciar-Agente-LAN.bat` en
+cambio -- se detiene si cerras esa ventana.
 
 ### Probar todo el pipeline sin escanear nada real
 
