@@ -141,6 +141,138 @@ $svcNames = @{ 21="ftp";22="ssh";23="telnet";25="smtp";53="domain";80="http";110
   445="microsoft-ds";993="imaps";995="pop3s";1433="ms-sql";3306="mysql";3389="ms-wbt-server";
   5432="postgresql";5900="vnc";6379="redis";8080="http-proxy";8443="https-alt";9200="opensearch";27017="mongodb" }
 
+# --------------------------------------------------------------------------
+# nuclei/trivy: si estan instalados en ESTA PC (basta con que
+# `nuclei`/`trivy` respondan desde una consola cualquiera, no hace falta
+# nada mas), este agente los usa de verdad -- mismos flags/restricciones
+# que el driver in-container (app/scanners/nuclei.py, app/scanners/
+# trivy.py) y que remote-agent/agent.py, para mantener la misma postura
+# de seguridad (solo deteccion, nunca explotacion activa). Se chequea en
+# CADA job, no solo al arrancar, para que instalarlos mientras el agente
+# ya esta corriendo funcione sin tener que reiniciarlo. Si no estan, el
+# job vuelve con un mensaje claro en vez de intentarlo (openvas sigue sin
+# soporte aca: necesita el motor completo de Greenbone, no un binario
+# suelto).
+# --------------------------------------------------------------------------
+$NucleiSeverityMap = @{ critical="critical"; high="high"; medium="medium"; low="low"; info="info"; unknown="info" }
+$TrivySeverityMap  = @{ CRITICAL="critical"; HIGH="high"; MEDIUM="medium"; LOW="low"; UNKNOWN="info" }
+
+function Invoke-ScannerBinary([string]$exe, [string[]]$scannerArgs, [int]$timeoutSeconds) {
+    # Corre un binario externo (nuclei/trivy) con limite de tiempo real --
+    # equivalente a subprocess.run(..., timeout=N) de Python: si se pasa
+    # el timeout, lo mata y devuelve TimedOut=true en vez de colgar el
+    # loop de polling para siempre.
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $exe
+        foreach ($a in $scannerArgs) { $psi.ArgumentList.Add($a) }
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+        $exited = $proc.WaitForExit($timeoutSeconds * 1000)
+        if (-not $exited) {
+            try { $proc.Kill() } catch {}
+            return @{ TimedOut = $true; Stdout = ""; Stderr = ""; ExitCode = -1 }
+        }
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        return @{ TimedOut = $false; Stdout = $stdout; Stderr = $stderr; ExitCode = $proc.ExitCode }
+    } catch {
+        return @{ TimedOut = $false; Stdout = ""; Stderr = $_.Exception.Message; ExitCode = -1 }
+    }
+}
+
+function Get-NucleiFindings([string]$rawJsonl) {
+    $findings = @()
+    foreach ($line in ($rawJsonl -split "`n")) {
+        $line = $line.Trim()
+        if (-not $line) { continue }
+        try { $ev = $line | ConvertFrom-Json } catch { continue }
+        $info = $ev.info
+        $sev = "info"
+        if ($info -and $info.severity -and $NucleiSeverityMap.ContainsKey([string]$info.severity)) { $sev = $NucleiSeverityMap[[string]$info.severity] }
+        $cve = $null
+        if ($info -and $info.classification -and $info.classification.'cve-id') {
+            $cveList = @($info.classification.'cve-id')
+            if ($cveList.Count -gt 0) { $cve = $cveList[0] }
+        }
+        $title = "hallazgo nuclei"
+        if ($info -and $info.name) { $title = $info.name } elseif ($ev.'template-id') { $title = $ev.'template-id' }
+        $desc = ""
+        if ($info -and $info.description) { $desc = [string]$info.description; $desc = $desc.Substring(0, [Math]::Min(1000, $desc.Length)) }
+        $findings += @{ title = $title; description = $desc; severity = $sev; cve_id = $cve; service = $ev.'matched-at' }
+    }
+    return $findings
+}
+
+function Invoke-NucleiScan([string]$target, $options) {
+    $scannerArgs = @("-target", $target, "-etags", "dos,fuzz,intrusive", "-jsonl", "-silent", "-no-interactsh", "-timeout", "10", "-duc")
+    $tags = $null
+    if ($options -and $options.tags) { $tags = [string]$options.tags }
+    if ($tags) {
+        $safeTags = @()
+        foreach ($t in ($tags -split ",")) {
+            $tt = $t.Trim()
+            if ($tt -and ($tt -match '^[a-zA-Z0-9]+$')) { $safeTags += $tt }
+        }
+        if ($safeTags.Count -gt 0) { $scannerArgs += @("-tags", ($safeTags -join ",")) }
+    }
+    $nucleiCmd = Get-Command nuclei -ErrorAction SilentlyContinue
+    $result = Invoke-ScannerBinary -exe $nucleiCmd.Source -scannerArgs $scannerArgs -timeoutSeconds 600
+    if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (600s) contra $target" } }
+    if (($result.ExitCode -ne 0) -and ($result.ExitCode -ne 1) -and (-not $result.Stdout.Trim())) {
+        $errMsg = $result.Stderr; $errMsg = $errMsg.Substring(0, [Math]::Min(2000, $errMsg.Length))
+        return @{ Raw = $result.Stdout; Findings = @(); Error = $errMsg }
+    }
+    return @{ Raw = $result.Stdout; Findings = (Get-NucleiFindings $result.Stdout); Error = "" }
+}
+
+function Get-TrivyFindings([string]$rawJson) {
+    $findings = @()
+    if (-not $rawJson.Trim()) { return $findings }
+    try { $payload = $rawJson | ConvertFrom-Json } catch { return $findings }
+    foreach ($result in @($payload.Results)) {
+        if (-not $result) { continue }
+        $targetName = $result.Target
+        foreach ($vuln in @($result.Vulnerabilities)) {
+            if (-not $vuln) { continue }
+            $sev = "info"
+            $vulnSev = [string]$vuln.Severity
+            if ($vulnSev -and $TrivySeverityMap.ContainsKey($vulnSev)) { $sev = $TrivySeverityMap[$vulnSev] }
+            $descSrc = ""
+            if ($vuln.Title) { $descSrc = [string]$vuln.Title } elseif ($vuln.Description) { $descSrc = [string]$vuln.Description }
+            $desc = $descSrc.Substring(0, [Math]::Min(1000, $descSrc.Length))
+            $findings += @{
+                title = "$($vuln.VulnerabilityID) en $($vuln.PkgName) ($targetName)"
+                description = $desc
+                severity = $sev
+                cve_id = $vuln.VulnerabilityID
+                package = $vuln.PkgName
+                installed_version = $vuln.InstalledVersion
+                fixed_version = $vuln.FixedVersion
+            }
+        }
+    }
+    return $findings
+}
+
+function Invoke-TrivyScan([string]$target, [string]$mode) {
+    $subcommand = if ($mode -eq "fs") { "fs" } else { "image" }
+    $scannerArgs = @($subcommand, "--format", "json", "--quiet", "--timeout", "8m", $target)
+    $trivyCmd = Get-Command trivy -ErrorAction SilentlyContinue
+    $result = Invoke-ScannerBinary -exe $trivyCmd.Source -scannerArgs $scannerArgs -timeoutSeconds 600
+    if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (600s) contra $target" } }
+    if (($result.ExitCode -ne 0) -and ($result.ExitCode -ne 1)) {
+        $errMsg = $result.Stderr; $errMsg = $errMsg.Substring(0, [Math]::Min(2000, $errMsg.Length))
+        return @{ Raw = $result.Stdout; Findings = @(); Error = $errMsg }
+    }
+    return @{ Raw = $result.Stdout; Findings = (Get-TrivyFindings $result.Stdout); Error = "" }
+}
+
 function Expand-Hosts([string]$target) {
     if ($target -notmatch '/') { return @($target) }
     try {
@@ -181,18 +313,30 @@ function Scan-HostPorts([string]$h, [int[]]$portList, [int]$timeoutMs = 800) {
     return $open
 }
 
-function Submit-Result([string]$jobId, [string]$status, $findings, [string]$err) {
-    $fjson = @()
-    foreach ($f in $findings) { $fjson += ($f | ConvertTo-Json -Compress) }
-    $arr = "[" + ($fjson -join ",") + "]"
-    $body = "{""status"":""$status"",""findings"":$arr,""raw_output"":""agente LAN (PowerShell)"",""error_message"":""$err""}"
+function Submit-Result([string]$jobId, [string]$status, $findings, [string]$err, [string]$rawOutput = "agente LAN (PowerShell)") {
+    # Construye el body entero como objeto y lo serializa UNA vez con
+    # ConvertTo-Json -- antes se armaba a mano con string concatenation
+    # ("...""raw_output"":""$rawOutput""..."), lo que se rompia apenas
+    # $rawOutput o $err trajeran una comilla (justo lo que trae SIEMPRE
+    # un JSON real de nuclei/trivy).
+    $payload = @{
+        status = $status
+        findings = @($findings)
+        raw_output = $rawOutput
+        error_message = $err
+    }
+    $body = $payload | ConvertTo-Json -Depth 8 -Compress
     Invoke-RestMethod -Uri "$scanUrl/agents/results/$jobId" -Method Post `
         -Headers @{ "X-Agent-Key" = $key; "Content-Type" = "application/json" } -Body $body -TimeoutSec 30 | Out-Null
 }
 
+$startupNucleiCmd = Get-Command nuclei -ErrorAction SilentlyContinue
+$startupTrivyCmd = Get-Command trivy -ErrorAction SilentlyContinue
 Write-Log "============================================================"
 Write-Log "SentinelOps - Agente LAN (PowerShell nativo) iniciado."
-Write-Log "No requiere Python ni nmap. Escanea la red real desde el host."
+Write-Log "Puertos (estilo nmap): siempre disponible, sin instalar nada."
+Write-Log "nuclei: $(if ($startupNucleiCmd) { "disponible ($($startupNucleiCmd.Source))" } else { "no instalado -- esos jobs van a fallar con un mensaje claro" })"
+Write-Log "trivy:  $(if ($startupTrivyCmd) { "disponible ($($startupTrivyCmd.Source))" } else { "no instalado -- esos jobs van a fallar con un mensaje claro" })"
 Write-Log "scan-service: $scanUrl   polling cada ${pollInterval}s   (Ctrl+C para detener)"
 Write-Log "============================================================"
 
@@ -202,27 +346,64 @@ while ($true) {
         foreach ($job in @($resp.jobs)) {
             $jobId = $job.id; $target = $job.target; $scanner = $job.scanner_type
             Write-Log "job $($jobId.Substring(0,8)): $scanner -> $target ..."
-            if ($scanner -ne "nmap") {
-                # Este agente es PowerShell puro (sin instalar nada) y solo
-                # sabe hacer descubrimiento de puertos al estilo nmap -- no
-                # trae nuclei/trivy/openvas. Ojo: para un target de LAN,
-                # el Agente Docker TAMPOCO puede (esta detras del NAT de
-                # Docker Desktop) -- asi que mandar para alla no resuelve
-                # nada si el target es de LAN. Mensaje honesto en vez de
-                # mandar al usuario en circulos entre los dos agentes.
-                Submit-Result $jobId "failed" @() "El Agente LAN (PowerShell) todavia solo hace descubrimiento de puertos (nmap) -- no tiene $scanner instalado. Si '$target' es alcanzable desde internet o desde la PC del Agente Docker, proba ese agente. Si es un target de LAN, hoy no hay forma de correr $scanner ahi."
+
+            if ($scanner -eq "nmap") {
+                $hostsList = Expand-Hosts $target
+                $findings = @()
+                foreach ($h in $hostsList) {
+                    foreach ($op in (Scan-HostPorts $h $ports)) {
+                        $svc = if ($svcNames.ContainsKey($op)) { $svcNames[$op] } else { "" }
+                        $findings += @{ title = "Puerto abierto $op/tcp ($svc) en $h"; description = "detectado por el Agente LAN (PowerShell, sin nmap)"; severity = "info"; port = $op; service = $svc }
+                    }
+                }
+                Submit-Result $jobId "completed" $findings ""
+                Write-Log "job $($jobId.Substring(0,8)): completado, $($findings.Count) hallazgo(s)"
                 continue
             }
-            $hostsList = Expand-Hosts $target
-            $findings = @()
-            foreach ($h in $hostsList) {
-                foreach ($op in (Scan-HostPorts $h $ports)) {
-                    $svc = if ($svcNames.ContainsKey($op)) { $svcNames[$op] } else { "" }
-                    $findings += @{ title = "Puerto abierto $op/tcp ($svc) en $h"; description = "detectado por el Agente LAN (PowerShell, sin nmap)"; severity = "info"; port = $op; service = $svc }
+
+            if ($scanner -eq "nuclei") {
+                $nucleiCmd = Get-Command nuclei -ErrorAction SilentlyContinue
+                if (-not $nucleiCmd) {
+                    Submit-Result $jobId "failed" @() "nuclei.exe no esta instalado en esta PC (o no esta en el PATH). Instalalo (https://github.com/projectdiscovery/nuclei#install-nuclei) y el proximo job de nuclei va a andar solo, sin reiniciar el agente."
+                    Write-Log "job $($jobId.Substring(0,8)): rechazado -- nuclei no esta instalado"
+                    continue
                 }
+                $res = Invoke-NucleiScan $target $job.options
+                if ($res.Error) {
+                    Submit-Result $jobId "failed" @() $res.Error $res.Raw
+                    Write-Log "job $($jobId.Substring(0,8)): fallo -- $($res.Error)"
+                } else {
+                    Submit-Result $jobId "completed" $res.Findings "" $res.Raw
+                    Write-Log "job $($jobId.Substring(0,8)): completado, $($res.Findings.Count) hallazgo(s)"
+                }
+                continue
             }
-            Submit-Result $jobId "completed" $findings ""
-            Write-Log "job $($jobId.Substring(0,8)): completado, $($findings.Count) hallazgo(s)"
+
+            if ($scanner -eq "trivy") {
+                $trivyCmd = Get-Command trivy -ErrorAction SilentlyContinue
+                if (-not $trivyCmd) {
+                    Submit-Result $jobId "failed" @() "trivy.exe no esta instalado en esta PC (o no esta en el PATH). Instalalo (https://aquasecurity.github.io/trivy) y el proximo job de trivy va a andar solo, sin reiniciar el agente."
+                    Write-Log "job $($jobId.Substring(0,8)): rechazado -- trivy no esta instalado"
+                    continue
+                }
+                $mode = "image"
+                if ($job.options -and $job.options.mode) { $mode = [string]$job.options.mode }
+                $res = Invoke-TrivyScan $target $mode
+                if ($res.Error) {
+                    Submit-Result $jobId "failed" @() $res.Error $res.Raw
+                    Write-Log "job $($jobId.Substring(0,8)): fallo -- $($res.Error)"
+                } else {
+                    Submit-Result $jobId "completed" $res.Findings "" $res.Raw
+                    Write-Log "job $($jobId.Substring(0,8)): completado, $($res.Findings.Count) hallazgo(s)"
+                }
+                continue
+            }
+
+            # openvas u otro scanner desconocido: sigue sin soporte aca --
+            # openvas necesita el motor completo de Greenbone (gvmd), no
+            # un binario suelto que se pueda invocar como nuclei/trivy.
+            Submit-Result $jobId "failed" @() "El Agente LAN no puede correr '$scanner' -- necesita el motor completo de Greenbone (gvmd), que este agente PowerShell no corre. Si '$target' es alcanzable desde internet o desde la PC del Agente Docker, proba ese agente."
+            Write-Log "job $($jobId.Substring(0,8)): rechazado -- '$scanner' no soportado por este agente"
         }
     } catch {
         Write-Log "error hablando con scan-service: $($_.Exception.Message)"

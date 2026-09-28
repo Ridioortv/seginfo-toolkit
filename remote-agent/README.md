@@ -174,15 +174,17 @@ para priorizacion (CVSS/EPSS/KEV), igual que un escaneo normal.
   no, y con `AGENT_BEHIND_DOCKER_NAT=1` (ya seteado para el Agente
   Docker en `docker-compose.yml`) esos 3 fallan al toque con un mensaje
   claro en vez de quedarse varios minutos intentando conectar.
-  **Importante**: el Agente LAN (`agente-lan.ps1`) NO es un reemplazo
-  para trivy/nuclei/openvas contra la LAN -- es un script PowerShell
-  nativo pensado para no requerir instalar nada, y por eso solo sabe
-  hacer descubrimiento de puertos (nmap). Contra un target de LAN, hoy
-  no hay forma de correr esos 3 scanners con ninguno de los dos agentes
-  bootstrap; si de verdad los necesitas ahi, la unica opcion es correr
-  `remote-agent/agent.py` (el agente Python completo, con los 4
-  scanners) directo en una PC con visibilidad real a esa red, con los
-  binarios que necesites instalados ahi.
+  **El Agente LAN (`agente-lan.ps1`) SI puede correr nuclei y trivy
+  contra la LAN**, pero no de cero: si encuentra `nuclei.exe`/`trivy.exe`
+  instalados (en el PATH) en la PC donde corre, los usa de verdad, con
+  los mismos flags/restricciones que el driver in-container (solo
+  deteccion, nunca explotacion activa). Si no los encuentra, ese job
+  vuelve con un mensaje claro que dice que instalar -- y el PROXIMO job
+  ya funciona, sin reiniciar el agente (se chequea en cada job, no solo
+  al arrancar). openvas sigue sin soporte aca (necesita el motor
+  completo de Greenbone, no un binario suelto); para eso la unica opcion
+  es correr `remote-agent/agent.py` (el agente Python completo) directo
+  en una PC con visibilidad real a esa red.
 - **Varios jobs asignados a la vez, uno lento no debería trabar a los
   demas**: el agente los corre en threads separados (hasta
   `AGENT_MAX_CONCURRENT_JOBS`, default 8) -- un openvas/nuclei que tarda
@@ -205,11 +207,14 @@ defecto se crean dos:
   **no** la LAN.
 - **Agente LAN** -> corre en el **host** (fuera de Docker) para llegar a la
   red real (`192.168.x.x`). Es un script PowerShell nativo
-  (`remote-agent/agente-lan.ps1`) que **no requiere instalar nada** --
-  ni Python ni nmap -- porque hace su propio descubrimiento de puertos
-  con PowerShell + .NET. A cambio, solo sabe hacer eso: descubrimiento
-  de puertos (equivalente a nmap), no trivy/nuclei/openvas (ver nota en
-  "Si algo no funciona" arriba).
+  (`remote-agent/agente-lan.ps1`) que **no requiere instalar nada** para
+  el descubrimiento de puertos (equivalente a nmap) -- lo hace con
+  PowerShell + .NET puro. Si ademas instalas `nuclei`/`trivy` en esa
+  misma PC (basta con que queden en el PATH), el agente los detecta
+  solo y los usa tambien contra targets de LAN -- sin instalar nada mas
+  de este lado, sin tocar `docker-compose.yml`, sin reiniciar el agente.
+  openvas sigue sin soporte aca (ver nota en "Si algo no funciona"
+  arriba).
 
 Las api keys de ambos estan en `.env` (`REMOTE_AGENT_DOCKER_KEY` y
 `REMOTE_AGENT_LAN_KEY`) -- son las que se pegan en la UI al lanzar un

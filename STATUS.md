@@ -992,3 +992,59 @@ docker compose build --no-cache frontend
 docker compose up -d
 ```
 
+## Agente LAN: soporte real de nuclei/trivy (no solo puertos) (2026-09-28)
+
+Manu probo un nuclei contra el Agente LAN y volvio a fallar (con el
+mensaje honesto agregado en la seccion anterior: "todavia solo hace
+descubrimiento de puertos... no tiene nuclei instalado"). Le pregunte
+directamente como prefiere resolverlo -- instalar los binarios reales en
+la PC del Agente LAN, o dejarlo como esta (solo puertos, nuclei/trivy
+solo para targets de internet via Agente Docker) -- y eligio la primera.
+
+`agente-lan.ps1` ahora detecta `nuclei.exe`/`trivy.exe` con
+`Get-Command` en CADA job (no solo al arrancar, para que instalarlos
+mientras el agente ya esta corriendo funcione sin reiniciarlo) y, si
+estan en el PATH, los corre de verdad contra el target -- mismos flags
+que el driver in-container y `agent.py` (nuclei: `-etags
+dos,fuzz,intrusive -jsonl -silent -no-interactsh -duc`, sin exploit ni
+scripts intrusivos; trivy: `image`/`fs --format json`), y el mismo
+parseo de resultados (severidad, cve_id, paquete/version para trivy;
+severidad, cve_id, matched-at para nuclei) para que las respuestas se
+vean iguales sin importar que agente las corrio. Si no estan instalados,
+el job vuelve con un mensaje que dice exactamente que instalar y un link
+-- y el PROXIMO job de ese scanner ya funciona solo, sin reiniciar nada.
+openvas sigue sin soporte aca (necesita el motor completo de Greenbone,
+no un binario suelto invocable como nuclei/trivy).
+
+Correr un binario externo con limite de tiempo real (y poder matarlo si
+se cuelga) no es trivial en PowerShell puro -- se agrego
+`Invoke-ScannerBinary`, que usa `System.Diagnostics.Process`
+directamente (en vez de `Start-Process`, que no da control fino de
+timeout+kill) para lograr el equivalente de `subprocess.run(...,
+timeout=N)` de Python.
+
+De paso se corrigio un bug latente en `Submit-Result`: armaba el JSON a
+mano con concatenacion de strings (`"...""raw_output"":""$raw""..."`),
+lo cual se rompia apenas `$raw` o el mensaje de error trajeran una
+comilla -- exactamente lo que trae SIEMPRE un JSON real de nuclei/trivy.
+No se habia notado antes porque el unico raw_output que mandaba este
+agente era un string fijo sin comillas ("agente LAN (PowerShell)"). Se
+reemplazo por construir el payload entero como objeto y serializarlo una
+sola vez con `ConvertTo-Json`, que escapa todo correctamente.
+
+Verificacion: revision manual linea por linea del PowerShell (sin
+interprete disponible en este entorno, mismo criterio que las secciones
+anteriores de agente-lan.ps1), balance de llaves/parentesis/corchetes
+chequeado por script. README actualizado (ya no dice que el Agente LAN
+"no reemplaza" a nuclei/trivy -- ahora aclara que si puede, si estan
+instalados). Suite de scan-service sin cambios de backend, sigue
+106/106 verde.
+
+**Paso manual pendiente para Manu**: instalar `nuclei` y/o `trivy` en la
+PC donde corre el Agente LAN (deben quedar en el PATH -- probalo
+abriendo una consola nueva y corriendo `nuclei -version` / `trivy
+--version`). No hace falta reiniciar `Iniciar-Agente-LAN.bat` ni la
+tarea instalada: el agente los detecta solos en el proximo job. No hay
+que reconstruir nada de Docker para esto (no se toco `scan-service` ni
+`docker-compose.yml`).
+
