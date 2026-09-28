@@ -95,6 +95,7 @@ services:
   # bootstrap del usuario admin (docker compose exec -u gvmd gvmd gvmd
   # --user=admin --new-password=...).
   vulnerability-tests:
+    profiles: ["openvas"]
     image: registry.community.greenbone.net/community/vulnerability-tests
     environment:
       FEED_RELEASE: "24.10"
@@ -105,6 +106,7 @@ services:
       - gvm_internal
 
   notus-data:
+    profiles: ["openvas"]
     image: registry.community.greenbone.net/community/notus-data
     environment:
       KEEP_ALIVE: 1
@@ -114,6 +116,7 @@ services:
       - gvm_internal
 
   scap-data:
+    profiles: ["openvas"]
     image: registry.community.greenbone.net/community/scap-data
     environment:
       KEEP_ALIVE: 1
@@ -123,6 +126,7 @@ services:
       - gvm_internal
 
   cert-bund-data:
+    profiles: ["openvas"]
     image: registry.community.greenbone.net/community/cert-bund-data
     environment:
       KEEP_ALIVE: 1
@@ -132,6 +136,7 @@ services:
       - gvm_internal
 
   dfn-cert-data:
+    profiles: ["openvas"]
     image: registry.community.greenbone.net/community/dfn-cert-data
     environment:
       KEEP_ALIVE: 1
@@ -144,6 +149,7 @@ services:
       - gvm_internal
 
   data-objects:
+    profiles: ["openvas"]
     image: registry.community.greenbone.net/community/data-objects
     environment:
       FEED_RELEASE: "24.10"
@@ -154,6 +160,7 @@ services:
       - gvm_internal
 
   report-formats:
+    profiles: ["openvas"]
     image: registry.community.greenbone.net/community/report-formats
     environment:
       FEED_RELEASE: "24.10"
@@ -167,6 +174,7 @@ services:
       - gvm_internal
 
   gpg-data:
+    profiles: ["openvas"]
     image: registry.community.greenbone.net/community/gpg-data
     volumes:
       - gpg_data_vol:/mnt
@@ -174,6 +182,7 @@ services:
       - gvm_internal
 
   gvm-redis:
+    profiles: ["openvas"]
     # Redis PROPIO de GVM/ospd-openvas -- servicio y nombre distintos del
     # `redis` que ya usa el resto de SentinelOps (sin colision: cada uno
     # con su propio volumen de socket unix, ninguno expone puerto TCP).
@@ -185,6 +194,7 @@ services:
       - gvm_internal
 
   pg-gvm:
+    profiles: ["openvas"]
     image: registry.community.greenbone.net/community/pg-gvm:stable
     restart: unless-stopped
     volumes:
@@ -197,6 +207,7 @@ services:
       - gvm_internal
 
   pg-gvm-migrator:
+    profiles: ["openvas"]
     image: registry.community.greenbone.net/community/pg-gvm-migrator:stable
     volumes:
       - gvm_psql_data_vol:/var/lib/postgresql
@@ -205,6 +216,7 @@ services:
       - gvm_internal
 
   gvmd:
+    profiles: ["openvas"]
     image: registry.community.greenbone.net/community/gvmd:stable
     restart: unless-stopped
     volumes:
@@ -234,6 +246,7 @@ services:
       - gvm_internal
 
   configure-openvas:
+    profiles: ["openvas"]
     image: registry.community.greenbone.net/community/openvas-scanner:stable
     volumes:
       - openvas_data_vol:/mnt
@@ -252,6 +265,7 @@ services:
       - gvm_internal
 
   openvas:
+    profiles: ["openvas"]
     image: registry.community.greenbone.net/community/openvas-scanner:stable
     volumes:
       - openvas_data_vol:/etc/openvas
@@ -269,6 +283,7 @@ services:
       - gvm_internal
 
   openvasd:
+    profiles: ["openvas"]
     image: registry.community.greenbone.net/community/openvas-scanner:stable
     restart: unless-stopped
     environment:
@@ -293,6 +308,7 @@ services:
       - gvm_internal
 
   ospd-openvas:
+    profiles: ["openvas"]
     # NET_ADMIN/NET_RAW + seccomp/apparmor sin confinar son ineliminables:
     # el motor openvas-scanner arma paquetes crudos el mismo (sockets raw,
     # ICMP, IP_HDRINCL) para descubrimiento/fingerprinting de host, y esos
@@ -386,10 +402,41 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      gvmd:
-        condition: service_started
     ports:
       - "8003:8000"
+
+  # Agente de escaneo remoto que corre DENTRO del stack. Reusa la imagen de
+  # scan-service (ya trae nmap/trivy/nuclei + gvm-cli) y hace polling a
+  # scan-service ejecutando los jobs asignados al "Agente Docker". Se
+  # auto-registra via BOOTSTRAP_AGENTS (ver .env). Por el NAT de Docker
+  # Desktop solo llega a internet y a la propia PC (host.docker.internal),
+  # NO a la LAN -- para la LAN esta el agente de host (ver remote-agent/
+  # README.md). build con el MISMO Dockerfile que scan-service: buildkit
+  # reusa toda la cache, asi que no reconstruye nada pesado.
+  remote-agent:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: backend/services/scan-service/Dockerfile
+    command: ["python", "/agent.py"]
+    environment:
+      SCAN_SERVICE_URL: http://scan-service:8000
+      AGENT_API_KEY: ${REMOTE_AGENT_DOCKER_KEY}
+      POLL_INTERVAL_SECONDS: "10"
+      # Usa el escaner TCP interno (connect) en vez del binario nmap: connect()
+      # atraviesa el NAT de Docker Desktop, asi el Agente Docker puede escanear
+      # la LAN real (nmap normal falla por su descubrimiento ICMP/ARP).
+      AGENT_FORCE_INTERNAL_NMAP: "1"
+    # No es un servidor web (corre agent.py, no uvicorn), asi que el
+    # healthcheck de la imagen no aplica -> lo desactivamos para que no
+    # figure "unhealthy".
+    healthcheck:
+      disable: true
+    volumes:
+      - ./remote-agent/agent.py:/agent.py:ro
+    depends_on:
+      scan-service:
+        condition: service_healthy
 
   vuln-service:
     restart: unless-stopped

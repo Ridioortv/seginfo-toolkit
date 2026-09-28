@@ -32,7 +32,6 @@ const SCOPE_LABELS: Record<NetworkScope, string> = {
 // memoria la notacion CIDR. Siempre editable antes de lanzar el escaneo.
 const LAN_PRESETS = ["192.168.0.0/24", "192.168.1.0/24", "10.0.0.0/24", "172.16.0.0/24"];
 
-const TERMINAL_STATUSES = new Set(["completed", "failed", "scanner_unavailable", "cancelled"]);
 const CANCELLABLE_STATUSES = new Set(["pending", "running"]);
 
 function scopeOf(job: ScanJobOut): string {
@@ -144,6 +143,8 @@ export default function Scans() {
   const [targetsText, setTargetsText] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<{ ok: number; failed: number } | null>(null);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadName, setUploadName] = useState("");
 
   const [schedName, setSchedName] = useState("");
   const [schedScannerType, setSchedScannerType] = useState<ScannerType>("nmap");
@@ -156,8 +157,12 @@ export default function Scans() {
   const [agentName, setAgentName] = useState("");
   const [justCreatedKey, setJustCreatedKey] = useState<{ agentName: string; apiKey: string } | null>(null);
   const [agentJobAgentId, setAgentJobAgentId] = useState("");
+  const [agentJobScannerType, setAgentJobScannerType] = useState<ScannerType>("nmap");
   const [agentJobName, setAgentJobName] = useState("");
   const [agentJobTarget, setAgentJobTarget] = useState("");
+  // Api key del agente elegido: se pide al lanzar (ademas del login) y el
+  // backend la valida contra ese agente antes de crear el job.
+  const [agentJobApiKey, setAgentJobApiKey] = useState("");
 
   // Errores de acciones sobre filas ya existentes (togglear/borrar) --
   // separado de formError/createX.isError, que son solo para los
@@ -257,13 +262,16 @@ export default function Scans() {
       (
         await scanApi.post<AgentScanJobOut>("/agent-scans", {
           agent_id: agentJobAgentId,
+          scanner_type: agentJobScannerType,
           name: agentJobName,
           target: agentJobTarget,
+          api_key: agentJobApiKey,
         })
       ).data,
     onSuccess: () => {
       setAgentJobName("");
       setAgentJobTarget("");
+      setAgentJobApiKey("");
       queryClient.invalidateQueries({ queryKey: ["agent-scans"] });
     },
   });
@@ -293,6 +301,47 @@ export default function Scans() {
       queryClient.invalidateQueries({ queryKey: ["agent-scans"] });
     },
     onError: (err: unknown) => setAgentScanActionError(err),
+  });
+
+  // Borrado masivo para limpiar la vista. Se borra fila por fila (best-effort):
+  // si alguna falla, las demas igual se borran.
+  const deleteAllAgentScans = useMutation({
+    mutationFn: async () => {
+      const jobs = agentScans.data ?? [];
+      await Promise.allSettled(jobs.map((j) => scanApi.delete(`/agent-scans/${j.id}`)));
+    },
+    onSuccess: () => {
+      setAgentScanActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["agent-scans"] });
+    },
+    onError: (err: unknown) => setAgentScanActionError(err),
+  });
+
+  const deleteAllScans = useMutation({
+    mutationFn: async () => {
+      const jobs = (scans.data ?? []).filter((s) => s.status !== "running");
+      await Promise.allSettled(jobs.map((s) => scanApi.delete(`/scans/${s.id}`)));
+    },
+    onSuccess: () => {
+      setScanActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["scans"] });
+    },
+    onError: (err: unknown) => setScanActionError(err),
+  });
+
+  const uploadScan = useMutation({
+    mutationFn: async () => {
+      if (!uploadFile) throw new Error("Elegi un archivo primero.");
+      const form = new FormData();
+      form.append("file", uploadFile);
+      form.append("name", uploadName);
+      return (await scanApi.post<ScanJobOut>("/scans/upload", form)).data;
+    },
+    onSuccess: () => {
+      setUploadFile(null);
+      setUploadName("");
+      queryClient.invalidateQueries({ queryKey: ["scans"] });
+    },
   });
 
   const createScans = useMutation({
@@ -425,6 +474,39 @@ export default function Scans() {
           <p className={lastResult.failed > 0 ? "error-text" : "empty-hint"}>
             {lastResult.ok} escaneo(s) creado(s){lastResult.failed > 0 ? `, ${lastResult.failed} fallaron` : ""}.
           </p>
+        )}
+      </div>
+
+      <div className="panel">
+        <h2>Escanear imagen o paquete con Trivy (subir archivo)</h2>
+        <p className="empty-hint">
+          Subi una <strong>imagen de contenedor</strong> exportada con{" "}
+          <code className="mono">docker save nombre:tag -o imagen.tar</code> (archivo .tar), o un{" "}
+          <strong>manifiesto de dependencias</strong> (requirements.txt, package-lock.json, pom.xml, go.sum...).
+          Trivy busca CVEs conocidos y el resultado aparece abajo en "Escaneos realizados". Limite 600 MB.
+        </p>
+        <div className="inline-form">
+          <input type="file" onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)} />
+          <input placeholder="Nombre (opcional)" value={uploadName} onChange={(e) => setUploadName(e.target.value)} />
+          <button
+            className="btn-primary"
+            onClick={() => uploadScan.mutate()}
+            disabled={uploadScan.isPending || !uploadFile}
+          >
+            {uploadScan.isPending ? "Escaneando..." : "Subir y escanear con Trivy"}
+          </button>
+        </div>
+        {uploadFile && (
+          <p className="empty-hint">Archivo: {uploadFile.name} ({Math.round(uploadFile.size / 1024)} KB)</p>
+        )}
+        {uploadScan.isError && (
+          <p className="error-text">
+            No se pudo escanear el archivo.{" "}
+            <span className="error-detail">{connectionErrorDetail(uploadScan.error)}</span>
+          </p>
+        )}
+        {uploadScan.isSuccess && (
+          <p className="empty-hint">Escaneo completado -- mira el resultado en "Escaneos realizados" mas abajo.</p>
         )}
       </div>
 
@@ -624,9 +706,11 @@ export default function Scans() {
       <div className="panel">
         <h2>Escaneos remotos</h2>
         <p className="empty-hint">
-          Solo nmap por ahora (es lo unico que sabe correr remote-agent/agent.py). El agente elegido se lo lleva en
-          su siguiente polling y manda el resultado solo -- puede tardar unos segundos segun su intervalo de
-          polling configurado.
+          Elegi el scanner (nmap / trivy / nuclei / openvas), el agente y el target. El agente elegido se lleva el
+          job en su siguiente polling y manda el resultado solo -- puede tardar unos segundos segun su intervalo de
+          polling. Cada scanner necesita su binario instalado en la maquina del agente (openvas necesita ademas el
+          stack GVM ahi mismo); si falta, el job vuelve con un error claro. Para lanzar tenes que pegar la api key
+          del agente (la que te mostro al registrarlo): se valida contra ese agente antes de crear el escaneo.
         </p>
 
         {agents.data && agents.data.length === 0 && (
@@ -640,6 +724,16 @@ export default function Scans() {
               <option key={a.id} value={a.id}>{a.name}</option>
             ))}
           </select>
+          <select
+            value={agentJobScannerType}
+            onChange={(e) => setAgentJobScannerType(e.target.value as ScannerType)}
+            title="El binario del scanner elegido tiene que estar instalado en la maquina del agente. openvas necesita ademas el stack GVM ahi mismo."
+          >
+            <option value="nmap">nmap (puertos/servicios)</option>
+            <option value="trivy">trivy (imagenes/paquetes)</option>
+            <option value="nuclei">nuclei (plantillas de deteccion)</option>
+            <option value="openvas">openvas (requiere GVM en el agente)</option>
+          </select>
           <input placeholder="Nombre (opcional)" value={agentJobName} onChange={(e) => setAgentJobName(e.target.value)} />
           <input
             className="mono"
@@ -647,10 +741,18 @@ export default function Scans() {
             value={agentJobTarget}
             onChange={(e) => setAgentJobTarget(e.target.value)}
           />
+          <input
+            type="password"
+            className="mono"
+            placeholder="Api key del agente"
+            value={agentJobApiKey}
+            onChange={(e) => setAgentJobApiKey(e.target.value)}
+            title="La api key que te mostro la UI al registrar el agente. Se valida contra el agente elegido antes de lanzar."
+          />
           <button
             className="btn-primary"
             onClick={() => createAgentScan.mutate()}
-            disabled={createAgentScan.isPending || !agentJobAgentId || !agentJobTarget.trim()}
+            disabled={createAgentScan.isPending || !agentJobAgentId || !agentJobTarget.trim() || !agentJobApiKey.trim()}
           >
             {createAgentScan.isPending ? "Creando..." : "Lanzar escaneo remoto"}
           </button>
@@ -660,6 +762,17 @@ export default function Scans() {
             No se pudo crear el escaneo remoto.{" "}
             <span className="error-detail">{connectionErrorDetail(createAgentScan.error)}</span>
           </p>
+        )}
+        {(agentScans.data?.length ?? 0) > 0 && (
+          <div style={{ marginTop: 8 }}>
+            <button
+              className="btn-secondary"
+              disabled={deleteAllAgentScans.isPending}
+              onClick={() => deleteAllAgentScans.mutate()}
+            >
+              {deleteAllAgentScans.isPending ? "Limpiando..." : "Limpiar todos los escaneos remotos"}
+            </button>
+          </div>
         )}
 
         {agentScans.data && (
@@ -695,9 +808,7 @@ export default function Scans() {
                       >
                         {expandedAgentScanId === j.id ? "Ocultar resultados" : "Ver resultados"}
                       </button>
-                      {TERMINAL_STATUSES.has(j.status) && (
-                        <button className="btn-link" onClick={() => deleteAgentScan.mutate(j.id)}>Eliminar</button>
-                      )}
+                      <button className="btn-link" onClick={() => deleteAgentScan.mutate(j.id)}>Eliminar</button>
                     </td>
                   </tr>
                   {expandedAgentScanId === j.id && (
@@ -731,6 +842,17 @@ export default function Scans() {
 
       <div className="panel">
         <h2>Escaneos realizados</h2>
+        {(scans.data?.length ?? 0) > 0 && (
+          <div style={{ marginBottom: 8 }}>
+            <button
+              className="btn-secondary"
+              disabled={deleteAllScans.isPending}
+              onClick={() => deleteAllScans.mutate()}
+            >
+              {deleteAllScans.isPending ? "Limpiando..." : "Limpiar escaneos (menos los en curso)"}
+            </button>
+          </div>
+        )}
         {scans.isLoading && <p className="empty-hint">Cargando...</p>}
         {scans.isError && (
           <p className="error-text">
@@ -781,7 +903,7 @@ export default function Scans() {
                           Cancelar
                         </button>
                       )}
-                      {TERMINAL_STATUSES.has(s.status) && (
+                      {s.status !== "running" && (
                         <button className="btn-link" onClick={() => deleteScan.mutate(s.id)}>Eliminar</button>
                       )}
                     </td>

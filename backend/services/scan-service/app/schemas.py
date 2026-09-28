@@ -129,12 +129,20 @@ AgentJobStatus = Literal["pending", "assigned", "completed", "failed"]
 class AgentScanJobCreate(BaseModel):
     agent_id: str = Field(..., min_length=1)
     name: str = ""
-    # Por ahora el agente remoto (remote-agent/agent.py) solo sabe correr
-    # nmap -- se restringe aca para no crear jobs que ningun agente pueda
-    # ejecutar. Ampliar cuando el agente soporte mas scanners.
-    scanner_type: Literal["nmap"] = "nmap"
+    # El agente remoto (remote-agent/agent.py) ahora sabe correr los cuatro
+    # escaneres. nmap/trivy/nuclei son binarios sueltos que el agente corre
+    # localmente; openvas requiere ademas un stack GVM en la maquina del
+    # agente (si no lo tiene, el agente reporta un error claro en vez de
+    # colgarse). Ver remote-agent/agent.py.
+    scanner_type: Literal["nmap", "trivy", "nuclei", "openvas"] = "nmap"
     target: str = Field(..., min_length=1)
     options: dict = Field(default_factory=dict)
+    # Al LANZAR un escaneo remoto desde la UI se exige tambien la api key del
+    # agente elegido (ademas del JWT del usuario): se valida contra el hash
+    # guardado de ese agente (ver main.py::create_agent_scan y
+    # services.agent_key_matches). NUNCA se persiste -- solo se usa para
+    # validar en el momento de crear el job.
+    api_key: str = Field(..., min_length=1, description="Api key del agente elegido")
 
     @field_validator("target")
     @classmethod

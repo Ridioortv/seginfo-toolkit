@@ -203,8 +203,10 @@ class OpenVasDriver(ScannerDriver):
         if not user or not password:
             return ScanResult(
                 raw_output="",
-                error="Faltan credenciales GMP (GVM_USER/GVM_PASSWORD). Corre el bootstrap de gvmd "
-                "documentado en README.md/STATUS.md y completa esas variables en .env.",
+                error="OpenVAS esta APAGADO por defecto en esta instalacion (el motor Greenbone/GVM "
+                "no esta levantado, o faltan GVM_USER/GVM_PASSWORD en .env). Para activarlo segui "
+                "openvas/LEEME.md -- en resumen: openvas/Encender-OpenVAS.ps1 y luego "
+                "openvas/Configurar-OpenVAS.ps1. Mientras tanto, usa nmap / nuclei / trivy.",
             )
 
         async def gvm_query(xml: str, timeout: int = 60) -> tuple[int, str, str]:

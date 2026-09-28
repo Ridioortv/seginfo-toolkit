@@ -5,9 +5,9 @@ import asyncio
 import os
 import secrets
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
 from app.models import ScanJob, ScanStatus, ScanSchedule, ScanAgent, AgentScanJob
@@ -73,6 +73,74 @@ async def refresh_nuclei_templates() -> None:
     )
 
 
+async def scan_uploaded_file_with_trivy(db: AsyncSession, file_path: str, display_name: str, actor: str, organization_id: str) -> ScanJob:
+    """Escanea con trivy un archivo SUBIDO por el usuario (imagen .tar exportada
+    con `docker save`, o un manifiesto de paquetes/carpeta) y guarda el
+    resultado como un ScanJob normal -- aparece en 'Escaneos realizados' y se
+    reenvia a vuln-service/siem-service igual que cualquier escaneo."""
+    from app.scanners.trivy import _parse_trivy_json, TRIVY_CACHE_DIR
+    lower = display_name.lower()
+    if lower.endswith((".tar", ".tar.gz", ".tgz")):
+        cmd = ["trivy", "image", "--input", file_path]
+        modo = "imagen"
+    else:
+        cmd = ["trivy", "fs", file_path]
+        modo = "paquetes"
+    cmd += ["--format", "json", "--quiet", "--timeout", "8m", "--cache-dir", TRIVY_CACHE_DIR,
+            "--skip-db-update", "--skip-java-db-update"]
+
+    job = ScanJob(
+        organization_id=organization_id,
+        name=f"trivy ({modo}): {display_name}"[:255],
+        scanner_type=ScannerType.trivy,
+        target=display_name[:500],
+        options={"mode": "upload"},
+        created_by=actor,
+        status=ScanStatus.running,
+        started_at=_now(),
+    )
+    db.add(job)
+    await db.flush()
+
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=540)
+    except FileNotFoundError:
+        job.status = ScanStatus.scanner_unavailable
+        job.error_message = "trivy no esta disponible en este contenedor"
+        job.finished_at = _now()
+        await db.flush()
+        return job
+    except asyncio.TimeoutError:
+        if proc is not None:
+            proc.kill()
+            await proc.wait()
+        job.status = ScanStatus.failed
+        job.error_message = "timeout de escaneo (540s)"
+        job.finished_at = _now()
+        await db.flush()
+        return job
+
+    raw = stdout.decode(errors="replace")
+    job.raw_result = raw[:200_000]
+    job.finished_at = _now()
+    if proc.returncode not in (0, 1):
+        job.status = ScanStatus.failed
+        job.error_message = (stderr.decode(errors="replace")[:2000]
+                             or f"trivy salio con codigo {proc.returncode}")
+    else:
+        job.findings = _parse_trivy_json(raw)
+        job.status = ScanStatus.completed
+    await db.flush()
+    if job.status == ScanStatus.completed and job.findings:
+        await _forward_findings_to_vuln_service(job)
+        await _forward_findings_to_siem_service(job)
+    return job
+
+
 async def create_scan_job(db: AsyncSession, payload, actor: str, organization_id: str) -> ScanJob:
     job = ScanJob(
         organization_id=organization_id,
@@ -126,6 +194,14 @@ def is_cancellable_status(status_value) -> bool:
     no tiene nada corriendo que cancelar."""
     value = status_value.value if hasattr(status_value, "value") else status_value
     return value in CANCELLABLE_SCAN_STATUSES
+
+
+def is_running_status(status_value) -> bool:
+    """True solo si el escaneo esta corriendo AHORA (tiene un background task
+    vivo en este proceso). Se usa para no borrar un escaneo por debajo de su
+    propia tarea. pending y los estados terminales SI se pueden borrar."""
+    value = status_value.value if hasattr(status_value, "value") else status_value
+    return value == "running"
 
 
 # --- Cancelacion de escaneos en curso ---
@@ -448,6 +524,64 @@ def _hash_agent_key(api_key: str) -> str:
     return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
 
 
+def agent_key_matches(agent: ScanAgent, api_key: str) -> bool:
+    """True si `api_key` en texto plano corresponde al agente dado (mismo
+    hash guardado, ver _hash_agent_key). Se usa para exigir la api key del
+    agente al LANZAR un escaneo remoto desde la UI, ademas del JWT del
+    usuario: asi un escaneo remoto solo se puede crear si quien lo lanza
+    conoce tambien la key del agente que lo va a ejecutar. Comparacion via
+    el hash ya guardado -- la key en texto plano nunca se persiste."""
+    return bool(api_key) and agent.key_hash == _hash_agent_key(api_key)
+
+
+async def ensure_bootstrap_agent(db: AsyncSession, name: str, api_key: str, organization_id: str) -> bool:
+    """Crea (idempotente) un agente pre-provisionado desde configuracion
+    (env BOOTSTRAP_AGENTS, ver main.py::lifespan). Sirve para que los
+    agentes "siempre encendidos" -- el contenedor remote-agent y el agente
+    de host de la LAN -- queden dados de alta solos al arrancar el stack,
+    sin tener que registrarlos a mano desde la UI. Idempotente por key_hash:
+    si ya existe un agente con esa misma key no hace nada, asi reiniciar el
+    servicio no duplica agentes. Devuelve True si lo creo, False si ya
+    estaba. La key la elige el operador (en .env), a diferencia de
+    create_agent que la genera el servidor -- por eso aca no se devuelve la
+    key en texto plano: ya la tiene quien configuro el .env."""
+    key_hash = _hash_agent_key(api_key)
+    existing = (await db.execute(select(ScanAgent).where(ScanAgent.key_hash == key_hash))).scalar_one_or_none()
+    if existing is not None:
+        # Si ya existe pero quedo en otro org (ej. se creo en DEFAULT antes de
+        # saber el org real del usuario), lo movemos para que aparezca en su UI.
+        if existing.organization_id != organization_id:
+            existing.organization_id = organization_id
+            existing.name = name
+            await db.flush()
+        return False
+    db.add(ScanAgent(organization_id=organization_id, name=name, key_hash=key_hash, created_by="bootstrap"))
+    await db.flush()
+    return True
+
+
+async def detect_primary_organization(db: AsyncSession, fallback: str) -> str:
+    """Devuelve el organization_id 'real' de este deployment: el de los
+    agentes o jobs que ya creo un usuario. Sirve para que los agentes
+    bootstrap queden en el MISMO org que usa la cuenta (que puede NO ser
+    DEFAULT segun como se registro) y asi aparezcan en su UI. Si todavia no
+    hay datos de usuario, usa el fallback."""
+    q = await db.execute(
+        select(ScanAgent.organization_id)
+        .where(ScanAgent.created_by != "bootstrap", ScanAgent.organization_id.isnot(None))
+        .order_by(ScanAgent.created_at.desc()).limit(1)
+    )
+    org = q.scalar_one_or_none()
+    if org:
+        return org
+    q = await db.execute(
+        select(AgentScanJob.organization_id)
+        .where(AgentScanJob.organization_id.isnot(None))
+        .order_by(AgentScanJob.created_at.desc()).limit(1)
+    )
+    return q.scalar_one_or_none() or fallback
+
+
 async def create_agent(db: AsyncSession, payload, actor: str, organization_id: str) -> tuple[ScanAgent, str]:
     api_key = secrets.token_urlsafe(32)
     agent = ScanAgent(
@@ -525,12 +659,30 @@ async def poll_agent_jobs(db: AsyncSession, agent: ScanAgent, max_jobs: int = 5)
     mismo paso, para que un segundo poll (del mismo agente reiniciado, o de
     una instancia duplicada por error) no se lleve el mismo job dos veces."""
     agent.last_seen_at = _now()
-    result = await db.execute(
-        select(AgentScanJob)
-        .where(AgentScanJob.agent_id == agent.id, AgentScanJob.status == "pending")
-        .order_by(AgentScanJob.created_at.asc())
-        .limit(max_jobs)
-    )
+    if agent.created_by == "bootstrap":
+        # Worker universal (el agente siempre-encendido): toma cualquier job
+        # pendiente sin importar a que agente lo mandaron ni de que org sea, y
+        # ademas RECUPERA jobs que quedaron "assigned" hace mas de 10 min sin
+        # terminar (huerfanos de un reinicio del agente antes de reportar) --
+        # sin esto, un job tomado justo antes de un restart quedaria "assigned"
+        # para siempre.
+        stale_before = _now() - timedelta(minutes=10)
+        query = select(AgentScanJob).where(
+            or_(
+                AgentScanJob.status == "pending",
+                and_(
+                    AgentScanJob.status == "assigned",
+                    AgentScanJob.assigned_at.isnot(None),
+                    AgentScanJob.assigned_at < stale_before,
+                ),
+            )
+        )
+    else:
+        # Un agente normal solo ve SUS propios jobs pendientes.
+        query = select(AgentScanJob).where(
+            AgentScanJob.agent_id == agent.id, AgentScanJob.status == "pending"
+        )
+    result = await db.execute(query.order_by(AgentScanJob.created_at.asc()).limit(max_jobs))
     jobs = list(result.scalars().all())
     for job in jobs:
         job.status = "assigned"
@@ -557,7 +709,12 @@ async def get_agent_job_for_agent(db: AsyncSession, agent: ScanAgent, job_id: st
     es suyo -- ni por error de programacion del lado del agente, ni por una
     key comprometida usada para adivinar ids de otro agente."""
     job = await db.get(AgentScanJob, job_id)
-    if job is None or job.agent_id != agent.id:
+    if job is None:
+        return None
+    # Un agente normal solo puede tocar sus propios jobs; un worker bootstrap
+    # (ver poll_agent_jobs) puede reportar el de cualquiera, porque es el que
+    # los ejecuta todos.
+    if agent.created_by != "bootstrap" and job.agent_id != agent.id:
         return None
     return job
 

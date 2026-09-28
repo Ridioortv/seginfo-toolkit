@@ -145,3 +145,45 @@ para priorizacion (CVSS/EPSS/KEV), igual que un escaneo normal.
   mismos timeouts que scan-service (180s por escaneo, 30s por host que
   no responde) -- si necesitas escanear rangos grandes, es mejor dividir
   en varios jobs mas chicos que un solo `/24` entero.
+
+---
+
+## Produccion: agentes que se crean y arrancan solos
+
+Ya no hace falta registrar el agente a mano ni correr comandos sueltos.
+scan-service **auto-registra** los agentes definidos en `BOOTSTRAP_AGENTS`
+(en `.env`) al arrancar -- es idempotente, reiniciar no duplica nada. Por
+defecto se crean dos:
+
+- **Agente Docker (internet/host)** -> corre como el contenedor
+  `remote-agent` dentro del stack (misma imagen que scan-service, ya trae
+  nmap/trivy/nuclei). Arranca solo con `docker compose up`. Por el NAT de
+  Docker Desktop escanea internet y la propia PC (`host.docker.internal`),
+  **no** la LAN.
+- **Agente LAN** -> corre en el **host** (fuera de Docker) para llegar a la
+  red real (`192.168.x.x`). Se arranca con `remote-agent/agente-lan.ps1`
+  (o doble-clic en `Iniciar-Agente-LAN.bat`). Requiere `nmap` instalado en
+  esa PC.
+
+Las api keys de ambos estan en `.env` (`REMOTE_AGENT_DOCKER_KEY` y
+`REMOTE_AGENT_LAN_KEY`) -- son las que se pegan en la UI al lanzar un
+escaneo remoto. Cambialas por valores propios en un despliegue real.
+
+### Que el Agente LAN arranque solo con Windows
+
+Registralo como tarea al iniciar sesion (una sola vez, PowerShell como tu
+usuario). Ajusta la ruta si tu repo esta en otro lado:
+
+```powershell
+schtasks /Create /SC ONLOGON /TN "SentinelOps Agente LAN" ^
+  /TR "powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"C:\Users\manue\Documents\seginfo-toolkit\remote-agent\agente-lan.ps1\"" ^
+  /RL LIMITED /F
+```
+
+Desde el proximo inicio de sesion, el Agente LAN queda corriendo en segundo
+plano. Para quitarlo: `schtasks /Delete /TN "SentinelOps Agente LAN" /F`.
+
+### Probar todo el pipeline sin escanear nada real
+
+`python remote-agent/test_pipeline.py` (ver cabecera del archivo) ejercita
+el ciclo completo para los 4 scanners y valida la seguridad de la api key.

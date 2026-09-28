@@ -11,6 +11,7 @@ import enum
 import pytest
 
 from app.services import (
+    is_running_status,
     cancel_running_scan,
     is_cancellable_status,
     register_running_scan,
@@ -91,3 +92,24 @@ class TestCancelRunningScan:
         # nunca llego a registrarse (job is None) -- no debe explotar.
         unregister_running_scan("nunca-se-registro")
         unregister_running_scan("nunca-se-registro")
+
+
+class TestIsRunningStatus:
+    """is_running_status: separado de is_deletable_status -- un escaneo
+    'running' NO se puede borrar (is_deletable_status ya lo cubre), pero
+    ademas necesitamos saber especificamente si tiene una Task viva en ESTE
+    proceso (running) para no pisarle el resultado por debajo mientras
+    corre; pending y los estados terminales no tienen ese riesgo."""
+    def test_running_is_running_status(self):
+        assert is_running_status("running") is True
+
+    def test_pending_and_terminal_are_not_running_status(self):
+        assert is_running_status("pending") is False
+        assert is_running_status("completed") is False
+        assert is_running_status("failed") is False
+        assert is_running_status("cancelled") is False
+        assert is_running_status("scanner_unavailable") is False
+
+    def test_accepts_enum_members_not_just_strings(self):
+        assert is_running_status(_FakeStatusEnum.running) is True
+        assert is_running_status(_FakeStatusEnum.completed) is False

@@ -3,7 +3,9 @@
 app/scanners/base.py y docs/architecture.md para el alcance."""
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks
+import shutil
+import tempfile
+from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, make_asgi_app
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -99,6 +101,32 @@ async def lifespan(app: FastAPI):
         for schedule in await services.list_schedules(db):
             if schedule.enabled:
                 _register_job(schedule)
+
+    # Auto-provision de agentes de escaneo remoto "siempre encendidos" (ver
+    # BOOTSTRAP_AGENTS en .env): se dan de alta solos al arrancar, sin
+    # registro manual desde la UI. Idempotente. Nunca debe tumbar el
+    # arranque, aunque el JSON venga mal formado.
+    # TODO el bloque va envuelto: el auto-registro NUNCA debe impedir que
+    # arranque scan-service. Cualquier error aca (JSON malo, DB, etc.) solo
+    # se loguea y el servicio arranca igual.
+    try:
+        import json as _json
+        _raw_bootstrap = os.getenv("BOOTSTRAP_AGENTS", "").strip()
+        if _raw_bootstrap:
+            _entries = _json.loads(_raw_bootstrap)
+            async with SessionLocal() as db:
+                _org = await services.detect_primary_organization(db, DEFAULT_ORGANIZATION_ID)
+                for _entry in _entries or []:
+                    _name = (_entry or {}).get("name")
+                    _key = (_entry or {}).get("key")
+                    if not _name or not _key:
+                        continue
+                    if await services.ensure_bootstrap_agent(db, _name, _key, _org):
+                        logger.info("agente bootstrap creado", extra={"agent_name": _name, "org": _org})
+                await db.commit()
+                logger.info("agentes bootstrap en org", extra={"org": _org})
+    except Exception as _exc:  # noqa: BLE001 -- el auto-registro nunca tumba el arranque
+        logger.warning("no se pudieron provisionar agentes bootstrap", extra={"error": str(_exc)})
     # Refresh periodico de datos de escaner (DB de CVEs de trivy, plantillas
     # de nuclei) en segundo plano -- asi cada escaneo individual no paga el
     # costo de descarga/actualizacion (ver app/scanners/trivy.py y
@@ -165,6 +193,40 @@ async def create_scan(
     return job
 
 
+_MAX_UPLOAD_BYTES = 600 * 1024 * 1024  # 600 MB
+
+
+@app.post("/scans/upload", response_model=ScanJobOut, status_code=status.HTTP_201_CREATED)
+async def upload_scan(
+    file: UploadFile = File(...),
+    name: str = Form(""),
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sube un archivo (imagen .tar exportada con `docker save`, o un
+    manifiesto de paquetes: requirements.txt, package-lock.json, etc.) y lo
+    escanea con trivy. El resultado queda como un escaneo normal."""
+    content = await file.read()
+    if len(content) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="El archivo supera el limite de 600 MB")
+    safe_name = os.path.basename(file.filename or "archivo")
+    display_name = name or safe_name
+    tmpdir = tempfile.mkdtemp(prefix="trivy-upload-")
+    try:
+        dest = os.path.join(tmpdir, safe_name)
+        with open(dest, "wb") as fh:
+            fh.write(content)
+        job = await services.scan_uploaded_file_with_trivy(
+            db, dest, display_name, claims.get("sub", ""), org_id_from_claims(claims)
+        )
+        await db.commit()
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    scan_jobs_total.labels(scanner_type="trivy").inc()
+    logger.info("scan de archivo subido creado", extra={"job_id": job.id, "archivo": display_name})
+    return job
+
+
 @app.get("/scans", response_model=list[ScanJobOut])
 async def list_scans(
     status_filter: str | None = None,
@@ -192,8 +254,8 @@ async def delete_scan(
     job = await services.get_scan_job(db, job_id, org_id_from_claims(claims))
     if job is None:
         raise HTTPException(status_code=404, detail="Job de escaneo no encontrado")
-    if not services.is_deletable_status(job.status):
-        raise HTTPException(status_code=409, detail="Solo se pueden borrar escaneos ya finalizados")
+    if services.is_running_status(job.status):
+        raise HTTPException(status_code=409, detail="No se puede borrar un escaneo en curso; cancelalo primero")
     await services.delete_scan_job(db, job)
     await db.commit()
     logger.info("scan job borrado", extra={"job_id": job_id, "actor": claims.get("sub")})
@@ -318,6 +380,10 @@ async def create_agent_scan(
     agent = await services.get_agent(db, payload.agent_id, organization_id)
     if agent is None:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
+    # Se exige la api key del agente elegido ademas del JWT: lanzar un
+    # escaneo remoto requiere conocer la key del agente que lo ejecutara.
+    if not services.agent_key_matches(agent, payload.api_key):
+        raise HTTPException(status_code=401, detail="La api key no corresponde al agente elegido")
     job = await services.create_agent_scan_job(db, payload, claims.get("sub", ""), organization_id)
     await db.commit()
     logger.info("job de escaneo remoto creado", extra={"job_id": job.id, "agent_id": payload.agent_id})
@@ -342,8 +408,6 @@ async def delete_agent_scan(
     job = await services.get_agent_scan_job(db, job_id, org_id_from_claims(claims))
     if job is None:
         raise HTTPException(status_code=404, detail="Job de escaneo remoto no encontrado")
-    if not services.is_deletable_status(job.status):
-        raise HTTPException(status_code=409, detail="Solo se pueden borrar escaneos ya finalizados")
     await services.delete_agent_scan_job(db, job)
     await db.commit()
     logger.info("scan job remoto borrado", extra={"job_id": job_id, "actor": claims.get("sub")})
