@@ -181,6 +181,7 @@ export default function Scans() {
   const [scheduleActionError, setScheduleActionError] = useState<unknown>(null);
   const [agentActionError, setAgentActionError] = useState<unknown>(null);
   const [scanActionError, setScanActionError] = useState<unknown>(null);
+  const [scanCancelError, setScanCancelError] = useState<unknown>(null);
   const [agentScanActionError, setAgentScanActionError] = useState<unknown>(null);
 
   // Fila expandida (a lo sumo una por tabla) mostrando los resultados
@@ -192,6 +193,7 @@ export default function Scans() {
   const scans = useQuery({
     queryKey: ["scans"],
     queryFn: async () => (await scanApi.get<ScanJobOut[]>("/scans")).data,
+    refetchInterval: 10_000,
   });
 
   const schedules = useQuery({
@@ -330,10 +332,10 @@ export default function Scans() {
   const cancelScan = useMutation({
     mutationFn: async (id: string) => (await scanApi.post<ScanJobOut>(`/scans/${id}/cancel`)).data,
     onSuccess: () => {
-      setScanActionError(null);
+      setScanCancelError(null);
       queryClient.invalidateQueries({ queryKey: ["scans"] });
     },
-    onError: (err: unknown) => setScanActionError(err),
+    onError: (err: unknown) => setScanCancelError(err),
   });
 
   const deleteAgentScan = useMutation({
@@ -1073,6 +1075,13 @@ export default function Scans() {
           <p className="error-text">
             No se pudo eliminar el escaneo.{" "}
             <span className="error-detail">{connectionErrorDetail(scanActionError)}</span>
+          </p>
+        )}
+        {scanCancelError != null && (
+          <p className="error-text">
+            No se pudo cancelar el escaneo -- probablemente ya termino (completed/failed) antes de que
+            llegara el pedido de cancelacion.{" "}
+            <span className="error-detail">{connectionErrorDetail(scanCancelError)}</span>
           </p>
         )}
       </div>

@@ -122,6 +122,11 @@ async def execute_uploaded_scan_job(session_factory, job_id: str, file_path: str
             job = await db.get(ScanJob, job_id)
             if job is None:
                 return
+            if job.status == ScanStatus.cancelled:
+                # Ver el mismo chequeo en execute_scan_job -- sin esto, un
+                # archivo cancelado mientras todavia estaba "pending" se
+                # terminaba escaneando igual, pisando el estado cancelado.
+                return
             job.status = ScanStatus.running
             job.started_at = _now()
             await db.commit()
@@ -497,6 +502,15 @@ async def execute_scan_job(session_factory, job_id: str) -> None:
         async with session_factory() as db:
             job = await db.get(ScanJob, job_id)
             if job is None:
+                return
+            if job.status == ScanStatus.cancelled:
+                # Lo cancelaron (POST /scans/{id}/cancel -> cancel_scan_job)
+                # ANTES de que esta tarea llegara a arrancar y registrarse en
+                # _RUNNING_SCAN_TASKS -- sin este chequeo, lo de abajo pisa
+                # el estado 'cancelled' con 'running' y despues 'completed',
+                # como si la cancelacion nunca hubiera pasado (asi se veia
+                # "el boton cancelar no funciona": cancelaba, pero el job
+                # terminaba solo igual con resultados).
                 return
 
             driver = get_driver(job.scanner_type)
