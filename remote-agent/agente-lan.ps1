@@ -250,8 +250,19 @@ function Invoke-NucleiScan([string]$target, $options) {
         }
         if ($safeTags.Count -gt 0) { $scannerArgs += @("-tags", ($safeTags -join ",")) }
     }
-    $result = Invoke-ScannerBinary -exe (Resolve-ScannerBinary "nuclei") -scannerArgs $scannerArgs -timeoutSeconds 600
-    if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (600s) contra $target" } }
+    # 420s (7 min), NO 600 -- el backend considera "huerfano" (y se lo
+    # puede dar a otro agente bootstrap, incluso a este mismo en su
+    # proximo poll) un job 'assigned' hace 10 min o mas (ver
+    # poll_agent_jobs/agent_can_claim_job en scan-service). Con el timeout
+    # local en exactamente 600s (los mismos 10 min), cualquier latencia de
+    # red al mandar Submit-Result alcanzaba para que el backend ya lo
+    # hubiera dado de baja como huerfano -- este mismo agente lo volvia a
+    # tomar en su siguiente poll y arrancaba nuclei de cero, sin llegar
+    # nunca a un estado final (el contador de "corriendo hace" volvia a 0
+    # una y otra vez). Con margen de 3 min de sobra, Submit-Result llega
+    # siempre antes de que el backend lo de por huerfano.
+    $result = Invoke-ScannerBinary -exe (Resolve-ScannerBinary "nuclei") -scannerArgs $scannerArgs -timeoutSeconds 420
+    if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (420s) contra $target" } }
     if (($result.ExitCode -ne 0) -and ($result.ExitCode -ne 1) -and (-not $result.Stdout.Trim())) {
         $errMsg = $result.Stderr; $errMsg = $errMsg.Substring(0, [Math]::Min(2000, $errMsg.Length))
         return @{ Raw = $result.Stdout; Findings = @(); Error = $errMsg }
@@ -290,9 +301,15 @@ function Get-TrivyFindings([string]$rawJson) {
 
 function Invoke-TrivyScan([string]$target, [string]$mode) {
     $subcommand = if ($mode -eq "fs") { "fs" } else { "image" }
-    $scannerArgs = @($subcommand, "--format", "json", "--quiet", "--timeout", "8m", $target)
-    $result = Invoke-ScannerBinary -exe (Resolve-ScannerBinary "trivy") -scannerArgs $scannerArgs -timeoutSeconds 600
-    if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (600s) contra $target" } }
+    # Mismo motivo que en Invoke-NucleiScan: el timeout de trivy (interno,
+    # via --timeout) y el limite duro de este wrapper tienen que quedar
+    # los dos comodos por debajo de los 10 min que usa el backend para
+    # recuperar un job 'assigned' huerfano -- si no, el backend se lo
+    # puede volver a repartir antes de que Submit-Result llegue a avisar
+    # que termino (o que hizo timeout), y el job nunca sale de "assigned".
+    $scannerArgs = @($subcommand, "--format", "json", "--quiet", "--timeout", "6m", $target)
+    $result = Invoke-ScannerBinary -exe (Resolve-ScannerBinary "trivy") -scannerArgs $scannerArgs -timeoutSeconds 420
+    if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (420s) contra $target" } }
     if (($result.ExitCode -ne 0) -and ($result.ExitCode -ne 1)) {
         $errMsg = $result.Stderr; $errMsg = $errMsg.Substring(0, [Math]::Min(2000, $errMsg.Length))
         return @{ Raw = $result.Stdout; Findings = @(); Error = $errMsg }
