@@ -654,3 +654,80 @@ y despues `docker compose up -d scan-service frontend`. Nota: cancelar un
 escaneo de agente remoto ("Escaneos remotos") todavia no esta soportado --
 esos corren en `remote-agent/agent.py`, un proceso aparte que hace polling,
 y cancelarlos requeriria cambiar ese protocolo. Quedo fuera de esta corrida.
+
+## Subida de imagenes a trivy, agente remoto multi-scanner, OpenVAS opcional, dashboard de imagenes/paquetes (2026-09-28)
+
+Habia un cambio grande (935 lineas, 9 archivos) sin commitear en el repo,
+generado antes de esta corrida, que ya implementaba bastante de lo que
+Manu pidio a continuacion: subir una imagen/manifiesto para escanearlo con
+trivy, un agente remoto que corre los 4 scanners, y OpenVAS/GVM detras de
+un profile opcional (esto ultimo, ademas, resuelve el crash de
+`scap-data`/`data-objects` que se venia arrastrando por falta de espacio
+en Docker Desktop). Se reviso ese cambio (74 tests en verde -- 68 previos +
+6 nuevos para `is_running_status` y `agent_key_matches`, import-sanity de
+`app.main`, YAML valido con las dependencias del profile "openvas"
+consistentes, tsc + build limpios) y se commiteo aparte
+(`fd88d15`), excluyendo expresamente "sentinel para sofi" (un export propio
+de Manu para un cliente, sin relacion con el desarrollo).
+
+A partir de ahi, dos pedidos puntuales de Manu:
+
+- **nuclei en el agente remoto quedaba "assigned" sin completar**:
+  `run_nuclei` en `remote-agent/agent.py` no tenia el flag `-duc` que si
+  tiene el driver in-container -- sin el, nuclei chequea/baja templates
+  nuevas en CADA escaneo, lo que puede tardar varios minutos segun la
+  conexion de la maquina del agente (el loop del agente nunca crashea, ya
+  atrapa cualquier excepcion, asi que no era un cuelgue sino la demora real
+  del chequeo). Se agrego `-duc` y un refresco propio en background (una
+  vez al arrancar y despues cada 12hs, igual que `refresh_nuclei_templates`
+  en scan-service) para que las templates no queden desactualizadas para
+  siempre. README actualizado: la seccion "Requisitos" solo mencionaba nmap
+  y quedo vieja cuando se agrego soporte multi-scanner.
+
+- **Dashboard de imagenes y paquetes escaneados con trivy**: trivy normal
+  solo reporta paquetes CON un CVE conocido (`Results[].Vulnerabilities`).
+  Se agrego el flag `--list-all-pkgs` (en el driver in-container y en el
+  path de archivos subidos) para que el JSON traiga ademas
+  `Results[].Packages`, el inventario COMPLETO independientemente de si
+  tiene CVE o no. Nueva columna `ScanJob.packages` (JSON, con su
+  `ALTER TABLE ADD COLUMN IF NOT EXISTS` para instalaciones existentes,
+  igual que se hizo con `organization_id`), nuevo endpoint
+  `GET /scan-images` que agrupa por imagen/target y se queda con el
+  escaneo mas reciente de cada una (reescanear actualiza en vez de
+  duplicar), y pagina nueva en el frontend ("Imagenes y Paquetes", nueva
+  entrada de navegacion) con el listado de imagenes + paquetes expandibles
+  por imagen y filtro de busqueda. La logica de agrupacion se separo en
+  una funcion pura (`services.build_image_inventory`) para poder testearla
+  sin DB, como el resto de las reglas de negocio de este servicio.
+  **Fuera de alcance**: los escaneos trivy lanzados via "Escaneos remotos"
+  (agente) no alimentan este dashboard todavia -- solo los escaneos
+  normales y los subidos por archivo.
+
+Verificacion antes de commitear: 87 tests en scan-service (74 anteriores +
+13 nuevos: `_parse_trivy_packages` y el flag `--list-all-pkgs` en
+`test_trivy_driver.py`, `build_image_inventory` en
+`test_image_inventory.py`), import-sanity de `app.main` confirmando
+`GET /scan-images`, tsc --noEmit limpio y `npm run build` exitoso en el
+frontend completo. `remote-agent/agent.py` no tiene suite de pytest (su
+verificacion establecida es `test_pipeline.py` con el stack real
+levantado) -- se verifico con `py_compile` + revision manual.
+
+**Paso manual pendiente para Manu**: esta vez el cambio es grande y toca
+`docker-compose.yml` (perfiles + servicio `remote-agent` nuevo) y el
+schema de la DB (columna `packages`) ademas del codigo de
+`scan-service`/`frontend` -- conviene reconstruir TODO el stack, no solo
+dos servicios:
+
+```powershell
+docker compose build
+docker compose up -d
+```
+
+Con esto, GVM/OpenVAS **no** arranca (esta detras del profile `openvas`,
+ver `openvas/LEEME.md` en la raiz para prenderlo cuando haga falta un
+assessment profundo autenticado). El `ALTER TABLE ... ADD COLUMN` corre
+solo al arrancar `scan-service`, asi que la columna `packages` se crea
+sola en la base existente sin perder datos. Los dos agentes remotos
+("Agente Docker" y "Agente LAN") se auto-registran solos -- el Agente LAN
+necesita ademas correr `remote-agent/agente-lan.ps1` en la PC que va a ver
+la LAN real (ver `remote-agent/README.md`).

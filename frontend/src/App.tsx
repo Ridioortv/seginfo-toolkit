@@ -5,6 +5,7 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import Dashboard from "./pages/Dashboard";
 import Assets from "./pages/Assets";
 import Scans from "./pages/Scans";
+import ImageInventory from "./pages/ImageInventory";
 import Vulnerabilities from "./pages/Vulnerabilities";
 import Siem from "./pages/Siem";
 import Surface from "./pages/Surface";
@@ -36,6 +37,7 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/assets" element={<Assets />} />
             <Route path="/scans" element={<Scans />} />
+            <Route path="/scan-images" element={<ImageInventory />} />
             <Route path="/vulnerabilities" element={<Vulnerabilities />} />
             <Route path="/siem" element={<Siem />} />
             <Route path="/surface" element={<Surface />} />

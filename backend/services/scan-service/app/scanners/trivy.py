@@ -37,6 +37,13 @@ def _build_trivy_cmd(target: str, options: dict, cache_dir: str = TRIVY_CACHE_DI
         "--format", "json", "--quiet", "--timeout", "8m",
         "--cache-dir", cache_dir,
         "--skip-db-update", "--skip-java-db-update",
+        # Sin esto, el JSON de trivy solo trae Results[].Vulnerabilities
+        # (paquetes CON cve conocido) -- --list-all-pkgs agrega ademas
+        # Results[].Packages con TODOS los paquetes detectados, tengan o no
+        # CVE. Lo necesita el inventario de imagenes/paquetes (ver
+        # _parse_trivy_packages abajo); no cambia en nada el parseo de
+        # vulnerabilidades existente.
+        "--list-all-pkgs",
         target,
     ]
 
@@ -94,10 +101,10 @@ class TrivyDriver(ScannerDriver):
                 raw2 = stdout2.decode(errors="replace")
                 if proc2.returncode not in (0, 1):
                     return ScanResult(raw_output=raw2, error=stderr2.decode(errors="replace")[:2000])
-                return ScanResult(raw_output=raw2, findings=_parse_trivy_json(raw2))
+                return ScanResult(raw_output=raw2, findings=_parse_trivy_json(raw2), packages=_parse_trivy_packages(raw2))
             return ScanResult(raw_output=raw, error=err[:2000])
 
-        return ScanResult(raw_output=raw, findings=_parse_trivy_json(raw))
+        return ScanResult(raw_output=raw, findings=_parse_trivy_json(raw), packages=_parse_trivy_packages(raw))
 
 
 def _parse_trivy_json(raw_json: str) -> list[dict]:
@@ -122,3 +129,35 @@ def _parse_trivy_json(raw_json: str) -> list[dict]:
                 }
             )
     return findings
+
+
+def _parse_trivy_packages(raw_json: str) -> list[dict]:
+    """Inventario COMPLETO de paquetes detectados (requiere --list-all-pkgs
+    en el comando, ver _build_trivy_cmd) -- a diferencia de
+    _parse_trivy_json, incluye tambien los paquetes SIN ningun CVE
+    conocido. Usado por el dashboard de imagenes/paquetes, no por
+    vuln-service (que solo quiere vulnerabilidades)."""
+    packages: list[dict] = []
+    try:
+        data = json.loads(raw_json) if raw_json.strip() else {}
+    except json.JSONDecodeError:
+        return packages
+
+    for result in data.get("Results", []) or []:
+        target_name = result.get("Target", "")
+        pkg_type = result.get("Type", "") or result.get("Class", "")
+        for pkg in result.get("Packages", []) or []:
+            name = pkg.get("Name")
+            if not name:
+                continue
+            packages.append(
+                {
+                    "target": target_name,
+                    "type": pkg_type,
+                    "name": name,
+                    "version": pkg.get("Version", ""),
+                    "arch": pkg.get("Arch", ""),
+                    "layer": (pkg.get("Layer") or {}).get("DiffID"),
+                }
+            )
+    return packages

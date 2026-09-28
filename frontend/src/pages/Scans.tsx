@@ -1,4 +1,5 @@
 import { Fragment, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { scanApi, vulnApi } from "../services/api";
 import type { ScanJobOut, ScanScheduleOut, ScanAgentOut, ScanAgentCreated, AgentScanJobOut, VulnerabilityOut } from "../types";
@@ -506,7 +507,10 @@ export default function Scans() {
           </p>
         )}
         {uploadScan.isSuccess && (
-          <p className="empty-hint">Escaneo completado -- mira el resultado en "Escaneos realizados" mas abajo.</p>
+          <p className="empty-hint">
+            Escaneo completado -- mira el resultado en "Escaneos realizados" mas abajo, o el inventario completo de
+            paquetes en <Link to="/scan-images">Imagenes y Paquetes</Link>.
+          </p>
         )}
       </div>
 

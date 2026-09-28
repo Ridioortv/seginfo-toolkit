@@ -5,6 +5,7 @@ const NAV_ITEMS = [
   { to: "/", label: "Dashboard" },
   { to: "/assets", label: "Activos" },
   { to: "/scans", label: "Escaneos" },
+  { to: "/scan-images", label: "Imagenes y Paquetes" },
   { to: "/surface", label: "Superficie Externa" },
   { to: "/cloud", label: "Integraciones Cloud" },
   { to: "/code-repos", label: "Código y Repositorios" },

@@ -88,6 +88,7 @@ class ScanJobOut(BaseModel):
     status: ScanStatus
     options: dict
     findings: list[dict]
+    packages: list[dict]
     error_message: str
     created_by: str
     created_at: datetime
@@ -96,6 +97,20 @@ class ScanJobOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# --- Inventario de imagenes/paquetes (dashboard de trivy, ver
+# app/services.py::get_image_inventory) ---
+
+class ImageInventoryItem(BaseModel):
+    target: str
+    scan_job_id: str
+    scanned_at: datetime | None
+    mode: str
+    package_count: int
+    vulnerability_count: int
+    vulnerabilities_by_severity: dict[str, int]
+    packages: list[dict]
 
 
 # --- Agentes de escaneo remoto (ver app/models.py: ScanAgent, AgentScanJob) ---

@@ -9,6 +9,10 @@ from dataclasses import dataclass, field
 class ScanResult:
     raw_output: str
     findings: list[dict] = field(default_factory=list)
+    # Solo lo llena TrivyDriver: inventario COMPLETO de paquetes detectados
+    # (no solo los que tienen CVE, a diferencia de `findings`). El resto de
+    # los drivers lo deja vacio.
+    packages: list[dict] = field(default_factory=list)
     error: str | None = None
 
 

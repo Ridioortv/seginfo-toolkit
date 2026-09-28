@@ -60,7 +60,11 @@ class ScanSchedule(Base):
 class ScanJob(Base):
     """Un job de escaneo. `target` es un host/CIDR/imagen segun `scanner_type`.
     `raw_result` guarda la salida cruda (XML/JSON) del scanner; `findings`
-    guarda los hallazgos ya normalizados que se reenvian a vuln-service."""
+    guarda los hallazgos ya normalizados que se reenvian a vuln-service.
+    `packages` es propio de trivy: el inventario COMPLETO de paquetes
+    detectados en la imagen/filesystem (no solo los que tienen CVE, a
+    diferencia de `findings`) -- ver app/scanners/trivy.py::_parse_trivy_packages.
+    Para nmap/nuclei/openvas queda una lista vacia."""
 
     __tablename__ = "scan_jobs"
 
@@ -74,6 +78,7 @@ class ScanJob(Base):
     options: Mapped[dict] = mapped_column(JSON, default=dict)
     raw_result: Mapped[str] = mapped_column(Text, default="")
     findings: Mapped[list] = mapped_column(JSON, default=list)
+    packages: Mapped[list] = mapped_column(JSON, default=list)
     error_message: Mapped[str] = mapped_column(String(2000), default="")
     created_by: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

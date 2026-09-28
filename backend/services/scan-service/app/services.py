@@ -78,7 +78,7 @@ async def scan_uploaded_file_with_trivy(db: AsyncSession, file_path: str, displa
     con `docker save`, o un manifiesto de paquetes/carpeta) y guarda el
     resultado como un ScanJob normal -- aparece en 'Escaneos realizados' y se
     reenvia a vuln-service/siem-service igual que cualquier escaneo."""
-    from app.scanners.trivy import _parse_trivy_json, TRIVY_CACHE_DIR
+    from app.scanners.trivy import _parse_trivy_json, _parse_trivy_packages, TRIVY_CACHE_DIR
     lower = display_name.lower()
     if lower.endswith((".tar", ".tar.gz", ".tgz")):
         cmd = ["trivy", "image", "--input", file_path]
@@ -87,7 +87,7 @@ async def scan_uploaded_file_with_trivy(db: AsyncSession, file_path: str, displa
         cmd = ["trivy", "fs", file_path]
         modo = "paquetes"
     cmd += ["--format", "json", "--quiet", "--timeout", "8m", "--cache-dir", TRIVY_CACHE_DIR,
-            "--skip-db-update", "--skip-java-db-update"]
+            "--skip-db-update", "--skip-java-db-update", "--list-all-pkgs"]
 
     job = ScanJob(
         organization_id=organization_id,
@@ -133,12 +133,73 @@ async def scan_uploaded_file_with_trivy(db: AsyncSession, file_path: str, displa
                              or f"trivy salio con codigo {proc.returncode}")
     else:
         job.findings = _parse_trivy_json(raw)
+        job.packages = _parse_trivy_packages(raw)
         job.status = ScanStatus.completed
     await db.flush()
     if job.status == ScanStatus.completed and job.findings:
         await _forward_findings_to_vuln_service(job)
         await _forward_findings_to_siem_service(job)
     return job
+
+
+def build_image_inventory(jobs: list) -> list[dict]:
+    """Logica pura (sin DB) de get_image_inventory: agrupa una lista de
+    ScanJob de trivy ya COMPLETADOS por `target` y se queda con el
+    inventario de paquetes del mas reciente (asi reescanear una imagen
+    actualiza su inventario en vez de duplicarlo). Se separa de la query
+    de DB para poder testearla con instancias de ScanJob armadas a mano
+    (sin sesion/base real), igual de aislado que is_cancellable_status y
+    el resto de las reglas de negocio de este archivo.
+
+    Asume que `jobs` ya viene ordenado por finished_at DESCENDENTE (mas
+    reciente primero) -- asi el primer job que aparece para cada target
+    es el que gana. Solo entran los jobs con `packages`: un trivy
+    escaneado ANTES de que existiera --list-all-pkgs (ver trivy.py) tiene
+    findings pero packages vacio, y no aporta nada nuevo a este
+    inventario."""
+    by_target: dict[str, object] = {}
+    for job in jobs:
+        if not job.packages:
+            continue
+        if job.target not in by_target:
+            by_target[job.target] = job
+
+    images = []
+    for target, job in by_target.items():
+        vuln_count_by_severity: dict[str, int] = {}
+        for finding in job.findings or []:
+            sev = finding.get("severity", "info")
+            vuln_count_by_severity[sev] = vuln_count_by_severity.get(sev, 0) + 1
+        images.append(
+            {
+                "target": target,
+                "scan_job_id": job.id,
+                "scanned_at": job.finished_at,
+                "mode": (job.options or {}).get("mode", "image"),
+                "package_count": len(job.packages),
+                "vulnerability_count": len(job.findings or []),
+                "vulnerabilities_by_severity": vuln_count_by_severity,
+                "packages": job.packages,
+            }
+        )
+    images.sort(key=lambda i: i["scanned_at"] or _now(), reverse=True)
+    return images
+
+
+async def get_image_inventory(db: AsyncSession, organization_id: str, limit_scans: int = 500) -> list[dict]:
+    """Dashboard de imagenes/paquetes -- ver build_image_inventory para la
+    logica de agrupacion en si."""
+    result = await db.execute(
+        select(ScanJob)
+        .where(
+            ScanJob.organization_id == organization_id,
+            ScanJob.scanner_type == ScannerType.trivy,
+            ScanJob.status == ScanStatus.completed,
+        )
+        .order_by(ScanJob.finished_at.desc())
+        .limit(limit_scans)
+    )
+    return build_image_inventory(result.scalars().all())
 
 
 async def create_scan_job(db: AsyncSession, payload, actor: str, organization_id: str) -> ScanJob:
@@ -435,6 +496,7 @@ async def execute_scan_job(session_factory, job_id: str) -> None:
             else:
                 job.status = ScanStatus.completed
                 job.findings = result.findings
+                job.packages = result.packages
                 logger.info("scan completado", extra={"job_id": job_id, "hallazgos": len(result.findings)})
             await db.commit()
 

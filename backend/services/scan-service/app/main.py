@@ -34,6 +34,7 @@ from app.schemas import (
     AgentPollResponse,
     AgentPollJob,
     AgentResultSubmit,
+    ImageInventoryItem,
 )
 from app.dependencies import get_current_claims, require_role, get_agent_from_key
 from app import services
@@ -97,6 +98,12 @@ async def lifespan(app: FastAPI):
             await conn.execute(text(
                 f"UPDATE {table} SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
             ))
+        # Inventario de paquetes de trivy (ver ScanJob.packages en models.py):
+        # columna nueva, instalaciones existentes la necesitan via ALTER TABLE
+        # (create_all solo crea TABLAS que faltan, no columnas nuevas en una
+        # tabla que ya existe).
+        await conn.execute(text("ALTER TABLE scan_jobs ADD COLUMN IF NOT EXISTS packages JSON DEFAULT '[]'"))
+        await conn.execute(text("UPDATE scan_jobs SET packages = '[]' WHERE packages IS NULL"))
     async with SessionLocal() as db:
         for schedule in await services.list_schedules(db):
             if schedule.enabled:
@@ -276,6 +283,18 @@ async def cancel_scan(
     await db.commit()
     logger.info("scan job cancelado", extra={"job_id": job_id, "actor": claims.get("sub")})
     return job
+
+
+@app.get("/scan-images", response_model=list[ImageInventoryItem])
+async def list_image_inventory(
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Dashboard: una fila por imagen/archivo escaneado con trivy (el mas
+    reciente si se reescaneo mas de una vez), con su inventario COMPLETO de
+    paquetes -- no solo los que tienen CVE (eso ya esta en 'Escaneos
+    realizados' via `findings`). Ver services.get_image_inventory."""
+    return await services.get_image_inventory(db, org_id_from_claims(claims))
 
 
 @app.post("/scan-schedules", response_model=ScanScheduleOut, status_code=status.HTTP_201_CREATED)

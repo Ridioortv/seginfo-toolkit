@@ -25,10 +25,31 @@ export interface ScanJobOut {
   status: string;
   options: Record<string, unknown>;
   findings: Record<string, unknown>[];
+  packages: Record<string, unknown>[];
   error_message: string;
   created_by: string;
   created_at: string;
   started_at: string | null;
+}
+
+export interface TrivyPackage {
+  target: string;
+  type: string;
+  name: string;
+  version: string;
+  arch: string;
+  layer: string | null;
+}
+
+export interface ImageInventoryItem {
+  target: string;
+  scan_job_id: string;
+  scanned_at: string | null;
+  mode: string;
+  package_count: number;
+  vulnerability_count: number;
+  vulnerabilities_by_severity: Record<string, number>;
+  packages: TrivyPackage[];
 }
 
 export interface ScanScheduleOut {
