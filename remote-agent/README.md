@@ -48,15 +48,36 @@ service no puede alcanzar el mismo.
 - Python 3.9 o mas nuevo. El script **no usa ninguna libreria externa**
   -- solo la libreria estandar de Python -- asi que no hace falta
   `pip install` nada.
-- `nmap` instalado y disponible en el `PATH` de la maquina donde va a
-  correr el agente:
-  - **Windows**: instalar [Nmap para Windows](https://nmap.org/download.html#windows)
-    y dejar tildada la opcion de instalar **Npcap** durante la
-    instalacion (nmap lo necesita para varias de sus tecnicas de
-    deteccion en Windows).
-  - **Linux**: `sudo apt install nmap` (Debian/Ubuntu) o el equivalente
-    de tu distro.
-  - **macOS**: `brew install nmap`.
+- El agente corre 4 scanners posibles (se elige por job, campo
+  `scanner_type`). Solo hace falta instalar el/los binarios de los que
+  vayas a usar en la maquina del agente -- si falta uno, ese job vuelve
+  con un mensaje de error claro en vez de colgarse; el resto sigue
+  funcionando igual:
+  - **nmap** (puertos/servicios): si no esta instalado, el agente usa
+    automaticamente un escaner TCP interno en Python puro (por `connect()`,
+    sin dependencias) -- por eso nmap es el unico scanner que SIEMPRE
+    funciona, con o sin el binario.
+    - **Windows**: [Nmap para Windows](https://nmap.org/download.html#windows),
+      con **Npcap** tildado durante la instalacion.
+    - **Linux**: `sudo apt install nmap` (Debian/Ubuntu) o el equivalente.
+    - **macOS**: `brew install nmap`.
+  - **trivy** (CVEs en imagenes/paquetes): instalar el binario `trivy`
+    (ver [aquasecurity/trivy](https://github.com/aquasecurity/trivy)) y
+    dejarlo en el `PATH`. Baja su propia base de CVEs la primera vez que
+    corre (puede tardar unos minutos ese primer escaneo).
+  - **nuclei** (deteccion por plantillas): instalar el binario `nuclei`
+    (ver [projectdiscovery/nuclei](https://github.com/projectdiscovery/nuclei))
+    y dejarlo en el `PATH`. El agente refresca las templates solo al
+    arrancar y despues cada 12hs en segundo plano -- no hace falta correr
+    `nuclei -update-templates` a mano.
+  - **openvas** (escaneo real via GMP): requiere ademas `gvm-cli`
+    (paquete `gvm-tools`, `pip install gvm-tools`) Y un stack GVM
+    completo (gvmd + ospd-openvas + feed de NVTs) corriendo en esa misma
+    maquina, con las credenciales en `GVM_USER`/`GVM_PASSWORD`/
+    `GVM_SOCKET_PATH`. Es el requisito mas pesado de los 4 -- si la PC
+    del agente no tiene GVM propio, usa openvas solo desde "Escaneos"
+    normal (dentro de Docker, ver `openvas/LEEME.md` en la raiz del
+    repo) en vez del agente remoto.
 
 ## Paso 1: registrar el agente en SentinelOps
 

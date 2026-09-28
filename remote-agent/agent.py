@@ -375,10 +375,47 @@ def _parse_trivy_json(raw_json: str) -> list[dict]:
 _NUCLEI_EXCLUDED_TAGS = "dos,fuzz,intrusive"
 _NUCLEI_SEVERITY_MAP = {"critical": "critical", "high": "high", "medium": "medium", "low": "low", "info": "info", "unknown": "info"}
 _NUCLEI_TIMEOUT_SECONDS = 600
+# Igual que el driver in-container (app/scanners/nuclei.py): -duc evita que
+# CADA escaneo chequee/baje templates nuevos (eso era lo que hacia que un
+# job de nuclei quedara "assigned" muchisimo tiempo sin completar -- el
+# chequeo de templates puede tardar minutos, o mas si la conexion de la PC
+# del agente es mala). En cambio refrescamos las templates una vez al
+# arrancar y despues cada 12hs en segundo plano (ver
+# _maybe_refresh_nuclei_templates), igual que refresh_nuclei_templates en
+# scan-service.
+_NUCLEI_TEMPLATE_REFRESH_INTERVAL_SECONDS = 12 * 3600
+_nuclei_last_template_refresh = 0.0
+
+
+def _maybe_refresh_nuclei_templates() -> None:
+    """Refresca las templates de nuclei si nunca se hizo o si paso mas de
+    _NUCLEI_TEMPLATE_REFRESH_INTERVAL_SECONDS desde el ultimo intento
+    (exitoso o no -- si no hay internet en este momento no tiene sentido
+    reintentar en cada tick del loop de polling). Best-effort: nunca tira,
+    solo loguea. Sin esto, un agente que corre semanas/meses con -duc
+    quedaria escaneando siempre con las templates del dia que se instalo."""
+    global _nuclei_last_template_refresh
+    if shutil.which("nuclei") is None:
+        return
+    now = time.monotonic()
+    if now - _nuclei_last_template_refresh < _NUCLEI_TEMPLATE_REFRESH_INTERVAL_SECONDS:
+        return
+    _nuclei_last_template_refresh = now
+    try:
+        log("refrescando templates de nuclei en segundo plano...")
+        proc = subprocess.run(["nuclei", "-update-templates", "-silent"], capture_output=True, timeout=300)
+        if proc.returncode == 0:
+            log("templates de nuclei actualizadas.")
+        else:
+            log(f"no se pudieron actualizar las templates de nuclei (codigo {proc.returncode}): {proc.stderr.decode(errors='replace')[:300]}")
+    except subprocess.TimeoutExpired:
+        log("timeout (300s) actualizando templates de nuclei -- se reintenta en el proximo ciclo de 12hs.")
+    except Exception as exc:  # noqa: BLE001 -- nunca debe tumbar al agente
+        log(f"error inesperado actualizando templates de nuclei: {exc}")
 
 
 def run_nuclei(target: str, options: dict) -> tuple[str, list[dict], str]:
-    cmd = ["nuclei", "-target", target, "-etags", _NUCLEI_EXCLUDED_TAGS, "-jsonl", "-silent", "-no-interactsh", "-timeout", "10"]
+    cmd = ["nuclei", "-target", target, "-etags", _NUCLEI_EXCLUDED_TAGS, "-jsonl", "-silent", "-no-interactsh", "-timeout", "10", "-duc"]
     tags = options.get("tags") if isinstance(options, dict) else None
     if isinstance(tags, str) and tags:
         safe_tags = ",".join(t.strip() for t in tags.split(",") if t.strip().isalnum())
@@ -675,8 +712,11 @@ def main() -> None:
     log(f"  intervalo de polling: {POLL_INTERVAL_SECONDS}s")
     log("Esperando jobs asignados (Ctrl+C para detener)...")
 
+    _maybe_refresh_nuclei_templates()
+
     while True:
         try:
+            _maybe_refresh_nuclei_templates()
             run_once()
         except urllib.error.HTTPError as exc:
             if exc.code == 401:
