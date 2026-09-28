@@ -182,7 +182,19 @@ function Invoke-ScannerBinary([string]$exe, [string[]]$scannerArgs, [int]$timeou
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $exe
-        foreach ($a in $scannerArgs) { $psi.ArgumentList.Add($a) }
+        # ArgumentList (la coleccion que evita tener que armar un string y
+        # escapar comillas a mano) solo existe en .NET moderno -- en el
+        # .NET Framework que trae Windows PowerShell 5.1 en muchas PCs
+        # (la que corre este agente) la propiedad esta pero arranca en
+        # $null, y .Add() sobre $null revienta con "No se puede llamar a
+        # un metodo en una expresion con valor NULL". Se ve siempre en
+        # nuclei/trivy porque son los primeros scanners que arrancan un
+        # proceso externo con argumentos -- Puertos (nmap-style) no pasa
+        # por aca. Arreglo: armar el string de argumentos a mano, que
+        # funciona igual en .NET Framework y .NET moderno.
+        $psi.Arguments = ($scannerArgs | ForEach-Object {
+            if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
+        }) -join ' '
         $psi.RedirectStandardOutput = $true
         $psi.RedirectStandardError = $true
         $psi.UseShellExecute = $false
