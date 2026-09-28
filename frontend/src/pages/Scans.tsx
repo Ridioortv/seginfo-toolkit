@@ -522,6 +522,8 @@ export default function Scans() {
           infraestructura extra) -- si el contenedor se reinicia, las reglas habilitadas se vuelven a cargar solas
           al arrancar. Solo nmap y nuclei estan disponibles aca: trivy no escanea IPs/hosts (solo imagenes o
           paquetes, usa el panel de arriba) y openvas esta apagado por defecto (activalo en "Escaneos remotos").
+          La hora es la zona horaria configurada en el servidor (variable SCHEDULER_TIMEZONE en .env, default UTC
+          si no esta seteada) -- no necesariamente la hora de tu navegador.
         </p>
 
         <div className="inline-form">
