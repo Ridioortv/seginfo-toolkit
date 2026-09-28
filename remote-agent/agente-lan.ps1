@@ -341,8 +341,19 @@ function Submit-Result([string]$jobId, [string]$status, $findings, [string]$err,
         error_message = $err
     }
     $body = $payload | ConvertTo-Json -Depth 8 -Compress
+    # Windows PowerShell 5.1 manda -Body <string> con la codificacion ANSI de
+    # la maquina, no UTF-8, aunque el Content-Type diga utf-8 -- si el JSON
+    # de nuclei/trivy trae UN SOLO caracter no-ASCII (tildes, comillas
+    # tipograficas, guiones largos -- cosa que un CVE real trae seguro) el
+    # body llega corrupto y el server lo rechaza con 400 Bad Request antes
+    # de mirar el contenido. Nunca habia pasado porque antes el unico
+    # raw_output que se mandaba era el string fijo "agente LAN (PowerShell)",
+    # puro ASCII. Mandamos los bytes UTF-8 ya codificados a mano para
+    # evitar el problema de una vez.
+    $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($body)
     Invoke-RestMethod -Uri "$scanUrl/agents/results/$jobId" -Method Post `
-        -Headers @{ "X-Agent-Key" = $key; "Content-Type" = "application/json" } -Body $body -TimeoutSec 30 | Out-Null
+        -Headers @{ "X-Agent-Key" = $key } -ContentType "application/json; charset=utf-8" `
+        -Body $bodyBytes -TimeoutSec 30 | Out-Null
 }
 
 $startupNucleiPath = Resolve-ScannerBinary "nuclei"
