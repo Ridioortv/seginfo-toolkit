@@ -125,6 +125,15 @@ class ScanAgentOut(BaseModel):
     created_by: str
     created_at: datetime
     last_seen_at: datetime | None
+    # true para los agentes bootstrap (Agente Docker/Agente LAN, ver
+    # services.is_protected_agent) -- la UI no debe ofrecer borrarlos.
+    is_protected: bool = False
+    # Solo se llena para agentes bootstrap (ver services.resolve_bootstrap_api_key):
+    # es la MISMA key que ya esta en el .env del operador, asi que mostrarla
+    # de nuevo aca no es una fuga nueva -- sin esto, no hay forma de lanzar
+    # un escaneo remoto con el Agente Docker/Agente LAN desde la UI, porque
+    # nunca se registraron ahi (se auto-crean al arrancar scan-service).
+    bootstrap_api_key: str | None = None
 
     class Config:
         from_attributes = True

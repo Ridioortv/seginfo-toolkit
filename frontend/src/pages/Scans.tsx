@@ -675,6 +675,7 @@ export default function Scans() {
               <tr>
                 <th>Nombre</th>
                 <th>Registrado por</th>
+                <th>Api key</th>
                 <th>Ultima vez visto</th>
                 <th></th>
               </tr>
@@ -684,9 +685,27 @@ export default function Scans() {
                 <tr key={a.id}>
                   <td>{a.name}</td>
                   <td>{a.created_by || "-"}</td>
+                  <td>
+                    {a.bootstrap_api_key ? (
+                      <span className="mono" style={{ wordBreak: "break-all", userSelect: "all" }}>
+                        {a.bootstrap_api_key}
+                      </span>
+                    ) : (
+                      "-"
+                    )}
+                  </td>
                   <td>{a.last_seen_at ? new Date(a.last_seen_at).toLocaleString() : "nunca (todavia no hizo polling)"}</td>
                   <td>
-                    <button className="btn-link" onClick={() => deleteAgent.mutate(a.id)}>Eliminar</button>
+                    {a.is_protected ? (
+                      <span
+                        style={{ color: "var(--text-muted, #8a93a6)" }}
+                        title="Este agente se crea automaticamente al iniciar el servicio y no se puede eliminar para que los escaneres siempre funcionen."
+                      >
+                        Protegido
+                      </span>
+                    ) : (
+                      <button className="btn-link" onClick={() => deleteAgent.mutate(a.id)}>Eliminar</button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -722,7 +741,22 @@ export default function Scans() {
         )}
 
         <div className="inline-form">
-          <select value={agentJobAgentId} onChange={(e) => setAgentJobAgentId(e.target.value)}>
+          <select
+            value={agentJobAgentId}
+            onChange={(e) => {
+              const id = e.target.value;
+              setAgentJobAgentId(id);
+              // Los agentes bootstrap (Agente Docker/Agente LAN) nunca se
+              // registran a mano, asi que su api key nunca se vio en la UI
+              // hasta ahora -- el backend la resuelve desde BOOTSTRAP_AGENTS
+              // (ver ScanAgentOut.bootstrap_api_key) y se autocompleta aca
+              // para no obligar a ir a buscarla en el .env.
+              const selected = (agents.data ?? []).find((a) => a.id === id);
+              if (selected?.bootstrap_api_key) {
+                setAgentJobApiKey(selected.bootstrap_api_key);
+              }
+            }}
+          >
             <option value="">Elegir agente...</option>
             {(agents.data ?? []).map((a) => (
               <option key={a.id} value={a.id}>{a.name}</option>

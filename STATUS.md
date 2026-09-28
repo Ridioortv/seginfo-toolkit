@@ -731,3 +731,107 @@ sola en la base existente sin perder datos. Los dos agentes remotos
 ("Agente Docker" y "Agente LAN") se auto-registran solos -- el Agente LAN
 necesita ademas correr `remote-agent/agente-lan.ps1` en la PC que va a ver
 la LAN real (ver `remote-agent/README.md`).
+
+## Agente Docker: falla rapido contra LAN + jobs en paralelo (2026-09-28)
+
+Con logs reales que Manu paso (nmap y nuclei quedaban en PENDING/asignados
+sin terminar), se diagnostico que el problema no era el stack sin
+reconstruir sino dos bugs de fondo en `remote-agent/agent.py` (el "Agente
+Docker" que corre dentro de Docker Desktop):
+
+- `run_once` corria los jobs de una misma tanda en un for secuencial: un
+  nuclei lento (o colgado) contra una IP de LAN bloqueaba a un nmap ya
+  asignado que hubiera terminado en segundos. Se paso a
+  `ThreadPoolExecutor` (`AGENT_MAX_CONCURRENT_JOBS=8` por defecto) para que
+  cada job asignado en la misma tanda corra en su propio thread y reporte
+  su resultado apenas termina, sin esperar a los demas. De paso, una
+  excepcion no manejada en un runner ya no deja el job "assigned" para
+  siempre -- ahora se atrapa y se reporta como "failed".
+- trivy/nuclei/openvas no tienen forma de atravesar el NAT de Docker
+  Desktop hacia la LAN real (a diferencia de nmap, que ya usa un escaner
+  TCP interno propio para eso) -- contra una IP privada (192.168.x.x,
+  10.x.x.x, etc.) se quedaban varios minutos intentando conectar antes de
+  fallar por timeout, lo que se veia como "colgado". Con
+  `AGENT_BEHIND_DOCKER_NAT=1` (seteado solo para el servicio `remote-agent`
+  en `docker-compose.yml` -- el Agente LAN, que corre fuera de Docker, no
+  lleva esta variable porque el no tiene el problema) esos 3 scanners
+  ahora fallan al toque contra un target de LAN, con un mensaje que apunta
+  a usar el Agente LAN en su lugar.
+
+Verificacion: `py_compile` limpio y un script ad-hoc (remote-agent no
+tiene suite de pytest, ver su README -- su verificacion establecida es
+`test_pipeline.py` contra el stack real) que stubea `SCANNERS` y
+`submit_result` sin red real: confirma que el guard bloquea
+trivy/nuclei contra IP de LAN solo con `AGENT_BEHIND_DOCKER_NAT=1`, que
+nmap nunca se bloquea, y que 5 jobs de 0.3s corridos via el executor
+tardan ~0.3s en total en vez de ~1.5s (paralelismo real). Suite de
+scan-service sin cambios, sigue 87/87 verde.
+
+**Paso manual pendiente para Manu**: este cambio toca solo
+`remote-agent/agent.py` y la variable `AGENT_BEHIND_DOCKER_NAT` en
+`docker-compose.yml` -- alcanza con reconstruir ese servicio:
+
+```powershell
+docker compose build --no-cache remote-agent
+docker compose up -d
+```
+
+## Api key de los agentes bootstrap visible en la UI + proteccion contra borrado (2026-09-28)
+
+Manu reporto el motivo de fondo por el que no podia lanzar escaneos
+remotos: "Agente Docker" y "Agente LAN" se crean solos al arrancar
+`scan-service` (via `BOOTSTRAP_AGENTS` en `.env`, ver
+`services.ensure_bootstrap_agent`), pero como se crean directo en la base
+-- no via `POST /agents`, el unico endpoint que devuelve la api key en
+claro, y solo una vez -- esa key nunca aparecia en ningun lado de la UI.
+Sin poder verla ahi, la unica forma de usarla era ir a copiarla a mano
+desde el `.env` del servidor. Ademas, al ser agentes como cualquier otro
+en la tabla, se podian borrar por error desde "Eliminar", lo que rompe los
+escaneos remotos hasta el proximo restart de `scan-service` (que los
+vuelve a crear).
+
+Como la key en si nunca se guarda en claro en la base (solo
+`ScanAgent.key_hash`, un hash SHA-256 -- ver `_hash_agent_key`), mostrarla
+en la UI para estos dos agentes puntuales significa re-derivarla: se
+agrego `resolve_bootstrap_api_key()` en `services.py`, que parsea de
+nuevo el JSON de `BOOTSTRAP_AGENTS` (el mismo que ya tiene Manu en su
+`.env`, asi que no es una exposicion nueva) y devuelve la key en claro
+cuya hash coincide con la del agente. `is_protected_agent()` marca a un
+agente como protegido si `created_by == "bootstrap"` (el mismo criterio
+que ya usaba `ensure_bootstrap_agent`).
+
+- `GET /agents` ahora devuelve, ademas de los campos de siempre,
+  `is_protected` y `bootstrap_api_key` (`null` para agentes creados a
+  mano, que siguen sin exponer su key en ningun lado salvo al momento de
+  crearlos, como siempre).
+- `DELETE /agents/{agent_id}` devuelve 409 con un mensaje explicando el
+  porque si el agente es protegido, en vez de borrarlo.
+- En el frontend (`Scans.tsx`): la tabla de "Agentes de escaneo remoto"
+  ahora tiene una columna "Api key" (con la key en claro para los dos
+  bootstrap, copiable) y, en la columna de accion, un agente protegido
+  muestra "Protegido" (con tooltip explicando el porque) en vez del boton
+  "Eliminar". Ademas, al elegir uno de estos dos agentes en el selector de
+  "Escaneos remotos", el campo de api key del formulario se autocompleta
+  solo -- Manu ya no necesita copiar/pegar la key desde ningun lado para
+  lanzar un escaneo remoto.
+
+Verificacion: 7 tests nuevos (`test_bootstrap_agent_protection.py`,
+`is_protected_agent` y `resolve_bootstrap_api_key` con objetos fake, sin
+DB real) sobre la suite existente -- 94/94 en verde. Import-sanity de
+`app.main` (26 rutas, sin errores). `tsc --noEmit` y `npm run build`
+limpios en el frontend completo.
+
+**Paso manual pendiente para Manu**: este cambio toca solo
+`scan-service` y `frontend` -- no `remote-agent` ni `docker-compose.yml`
+ni el schema de la base:
+
+```powershell
+docker compose build --no-cache scan-service frontend
+docker compose up -d
+```
+
+Con el stack arriba, refrescar el navegador (Ctrl+Shift+R) para que
+tome el frontend nuevo. La api key de "Agente Docker" y "Agente LAN" va a
+aparecer directo en la tabla de agentes de `/scans`, y ya no se van a
+poder borrar desde ahi.
+

@@ -75,6 +75,8 @@ export interface ScanAgentOut {
   created_by: string;
   created_at: string;
   last_seen_at: string | null;
+  is_protected: boolean;
+  bootstrap_api_key: string | null;
 }
 
 export interface ScanAgentCreated extends ScanAgentOut {

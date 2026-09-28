@@ -2,6 +2,7 @@
 DEFENSIVOS (solo deteccion) y reenvio de hallazgos normalizados a
 vuln-service para priorizacion (CVSS/EPSS/KEV)."""
 import asyncio
+import json
 import os
 import secrets
 import hashlib
@@ -594,6 +595,43 @@ def agent_key_matches(agent: ScanAgent, api_key: str) -> bool:
     conoce tambien la key del agente que lo va a ejecutar. Comparacion via
     el hash ya guardado -- la key en texto plano nunca se persiste."""
     return bool(api_key) and agent.key_hash == _hash_agent_key(api_key)
+
+
+def is_protected_agent(agent) -> bool:
+    """True si `agent` es uno de los bootstrap (Agente Docker/Agente LAN,
+    ver ensure_bootstrap_agent) -- estos NO se pueden borrar desde la UI:
+    si se borran, los escaneos remotos que dependen de ellos (los que
+    arrancan solos con el stack, sin que nadie los registre a mano)
+    dejan de poder lanzarse hasta el proximo reinicio de scan-service
+    (que los vuelve a crear porque BOOTSTRAP_AGENTS sigue en .env), y
+    mientras tanto cualquier job ya creado con esa api key queda huerfano."""
+    value = agent.created_by if isinstance(agent.created_by, str) else str(agent.created_by)
+    return value == "bootstrap"
+
+
+def resolve_bootstrap_api_key(agent, bootstrap_agents_raw: str) -> str | None:
+    """Si `agent` es uno de los definidos en BOOTSTRAP_AGENTS (el mismo
+    JSON que main.py::lifespan usa para auto-crearlos), devuelve su api
+    key en texto plano -- la UI la necesita para poder lanzar un escaneo
+    remoto con el Agente Docker/Agente LAN (POST /agent-scans exige la
+    key del agente ademas del JWT, ver agent_key_matches). El servidor
+    NUNCA persiste esta key en texto plano (solo su hash, ver
+    ScanAgent.key_hash) -- se recalcula al vuelo comparando hashes contra
+    cada entrada de BOOTSTRAP_AGENTS. No es una fuga nueva: quien
+    despliega el stack ya tiene esas keys en su propio .env."""
+    if not is_protected_agent(agent) or not bootstrap_agents_raw.strip():
+        return None
+    try:
+        entries = json.loads(bootstrap_agents_raw)
+    except json.JSONDecodeError:
+        return None
+    for entry in entries or []:
+        key = (entry or {}).get("key")
+        if not key:
+            continue
+        if _hash_agent_key(key) == agent.key_hash:
+            return key
+    return None
 
 
 async def ensure_bootstrap_agent(db: AsyncSession, name: str, api_key: str, organization_id: str) -> bool:

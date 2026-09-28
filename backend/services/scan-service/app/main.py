@@ -373,7 +373,20 @@ async def create_agent(
 
 @app.get("/agents", response_model=list[ScanAgentOut])
 async def list_agents(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
-    return await services.list_agents(db, org_id_from_claims(claims))
+    agents = await services.list_agents(db, org_id_from_claims(claims))
+    bootstrap_raw = os.getenv("BOOTSTRAP_AGENTS", "")
+    return [
+        ScanAgentOut(
+            id=a.id,
+            name=a.name,
+            created_by=a.created_by,
+            created_at=a.created_at,
+            last_seen_at=a.last_seen_at,
+            is_protected=services.is_protected_agent(a),
+            bootstrap_api_key=services.resolve_bootstrap_api_key(a, bootstrap_raw),
+        )
+        for a in agents
+    ]
 
 
 @app.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -385,6 +398,15 @@ async def delete_agent(
     agent = await services.get_agent(db, agent_id, org_id_from_claims(claims))
     if agent is None:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
+    if services.is_protected_agent(agent):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Este agente se crea solo al arrancar el stack (BOOTSTRAP_AGENTS en .env) y no se puede "
+                "borrar desde aca -- si lo borras, los escaneos remotos que dependen de el dejan de "
+                "funcionar hasta el proximo reinicio de scan-service."
+            ),
+        )
     await services.delete_agent(db, agent)
     await db.commit()
 
