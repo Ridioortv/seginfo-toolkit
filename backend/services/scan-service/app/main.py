@@ -35,8 +35,11 @@ from app.schemas import (
     AgentPollJob,
     AgentResultSubmit,
     ImageInventoryItem,
+    OpenvasActivateRequest,
+    OpenvasStatusOut,
 )
 from app.dependencies import get_current_claims, require_role, get_agent_from_key
+from app.scanners.openvas import probe_connection as _probe_openvas_connection
 from app import services
 
 logger = configure_logging("scan-service")
@@ -185,6 +188,56 @@ async def scanners_status(claims: dict = Depends(get_current_claims)):
     return services.scanners_status()
 
 
+_DEFAULT_GVM_SOCKET_PATH = "/run/gvmd/gvmd.sock"
+
+
+@app.get("/openvas/status", response_model=OpenvasStatusOut)
+async def openvas_status(claims: dict = Depends(get_current_claims)):
+    """A diferencia de /scanners/status (que solo mira si gvm-cli esta
+    instalado), esto prueba la conexion GMP real con las credenciales
+    actuales -- lo que necesita el boton "Activar OpenVAS" del frontend
+    para saber si ya se sumo (o se cayo) como scanner remoto disponible."""
+    user = os.getenv("GVM_USER") or ""
+    password = os.getenv("GVM_PASSWORD") or ""
+    if not user or not password:
+        return OpenvasStatusOut(
+            configured=False,
+            ready=False,
+            detail="Todavia no se configuraron credenciales GVM_USER/GVM_PASSWORD.",
+        )
+    socket_path = os.getenv("GVM_SOCKET_PATH") or _DEFAULT_GVM_SOCKET_PATH
+    ok, detail = await _probe_openvas_connection(socket_path, user, password, timeout=15)
+    return OpenvasStatusOut(configured=True, ready=ok, detail=detail)
+
+
+@app.post("/openvas/activate", response_model=OpenvasStatusOut)
+async def openvas_activate(
+    payload: OpenvasActivateRequest,
+    claims: dict = Depends(require_role("admin", "soc_manager")),
+):
+    """Aplica credenciales GVM en memoria para este proceso, sin reiniciar
+    el contenedor -- este servicio no tiene acceso al socket de Docker, asi
+    que NO puede levantar los contenedores de GVM el mismo (eso lo sigue
+    haciendo openvas/Encender-OpenVAS.ps1 a mano, ver LEEME.md). Lo que si
+    hace es probar la conexion GMP real ANTES de aplicar nada: si gvmd
+    todavia no esta arriba o las credenciales son invalidas, devuelve 422
+    con el detalle en vez de "activar" algo que en realidad no funciona.
+
+    Esta activacion dura hasta el proximo reinicio de scan-service -- para
+    que quede tambien despues de un reinicio hay que correr
+    Configurar-OpenVAS.ps1 (que ademas de esto mismo escribe las
+    credenciales en .env)."""
+    socket_path = payload.gvm_socket_path.strip() or os.getenv("GVM_SOCKET_PATH") or _DEFAULT_GVM_SOCKET_PATH
+    ok, detail = await _probe_openvas_connection(socket_path, payload.gvm_user, payload.gvm_password, timeout=20)
+    if not ok:
+        raise HTTPException(status_code=422, detail=detail)
+    os.environ["GVM_USER"] = payload.gvm_user
+    os.environ["GVM_PASSWORD"] = payload.gvm_password
+    os.environ["GVM_SOCKET_PATH"] = socket_path
+    logger.info("openvas activado desde la UI (credenciales aplicadas en memoria, sin reiniciar el contenedor)")
+    return OpenvasStatusOut(configured=True, ready=True, detail=detail)
+
+
 @app.post("/scans", response_model=ScanJobOut, status_code=status.HTTP_201_CREATED)
 async def create_scan(
     payload: ScanJobCreate,
@@ -205,6 +258,7 @@ _MAX_UPLOAD_BYTES = 600 * 1024 * 1024  # 600 MB
 
 @app.post("/scans/upload", response_model=ScanJobOut, status_code=status.HTTP_201_CREATED)
 async def upload_scan(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     name: str = Form(""),
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
@@ -212,25 +266,29 @@ async def upload_scan(
 ):
     """Sube un archivo (imagen .tar exportada con `docker save`, o un
     manifiesto de paquetes: requirements.txt, package-lock.json, etc.) y lo
-    escanea con trivy. El resultado queda como un escaneo normal."""
+    escanea con trivy. El resultado queda como un escaneo normal.
+
+    Solo GUARDA el archivo y crea el job aca -- la corrida de trivy (que
+    puede tardar varios minutos con una imagen grande) se dispara en
+    background, igual que POST /scans para escaneos por target, en vez de
+    correr dentro de este mismo request/response. Antes, con un archivo
+    grande, el request quedaba abierto hasta que trivy terminara y
+    cualquier corte de conexion de por medio se veia como un confuso
+    'Network Error' sin relacion con la causa real."""
     content = await file.read()
     if len(content) > _MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="El archivo supera el limite de 600 MB")
     safe_name = os.path.basename(file.filename or "archivo")
     display_name = name or safe_name
     tmpdir = tempfile.mkdtemp(prefix="trivy-upload-")
-    try:
-        dest = os.path.join(tmpdir, safe_name)
-        with open(dest, "wb") as fh:
-            fh.write(content)
-        job = await services.scan_uploaded_file_with_trivy(
-            db, dest, display_name, claims.get("sub", ""), org_id_from_claims(claims)
-        )
-        await db.commit()
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+    dest = os.path.join(tmpdir, safe_name)
+    with open(dest, "wb") as fh:
+        fh.write(content)
+    job = await services.create_uploaded_scan_job(db, display_name, claims.get("sub", ""), org_id_from_claims(claims))
+    await db.commit()
     scan_jobs_total.labels(scanner_type="trivy").inc()
     logger.info("scan de archivo subido creado", extra={"job_id": job.id, "archivo": display_name})
+    background_tasks.add_task(services.execute_uploaded_scan_job, SessionLocal, job.id, dest, tmpdir)
     return job
 
 

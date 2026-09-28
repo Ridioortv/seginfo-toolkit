@@ -26,6 +26,7 @@ escaneo):
 """
 import asyncio
 import os
+import shutil
 import time
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as _xml_escape
@@ -184,6 +185,42 @@ def _parse_gmp_results(xml_text: str) -> list[dict]:
             }
         )
     return findings
+
+
+async def probe_connection(socket_path: str, user: str, password: str, timeout: int = 20) -> tuple[bool, str]:
+    """Prueba liviana de conectividad GMP (un solo <get_version/>, sin crear
+    ningun target/task) para el boton "Activar OpenVAS" del frontend y para
+    GET /openvas/status -- confirma que gvmd esta arriba y que las
+    credenciales son validas ANTES de aplicarlas, en vez de que el usuario
+    se entere recien cuando lanza el primer escaneo real."""
+    if not shutil.which("gvm-cli"):
+        return False, "gvm-cli no esta instalado en este contenedor (falta el paquete gvm-tools)"
+
+    cmd = _gvm_cmd(socket_path, user, password, "<get_version/>")
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except FileNotFoundError:
+        return False, "gvm-cli no esta instalado en este contenedor"
+    except asyncio.TimeoutError:
+        if proc is not None:
+            proc.kill()
+            await proc.wait()
+        return False, (
+            f"no hubo respuesta de gvmd en {timeout}s -- revisa que los contenedores del profile "
+            "openvas esten arriba (docker compose --profile openvas ps) y que ya terminaron de "
+            "sincronizar los feeds la primera vez (puede tardar 20-40 min)"
+        )
+
+    out = stdout.decode(errors="replace")
+    err = stderr.decode(errors="replace")
+    if proc.returncode != 0 or not _response_status_ok(out):
+        detail = err.strip() or out.strip() or f"codigo de salida {proc.returncode}"
+        return False, f"gvmd rechazo la conexion: {detail[:500]}"
+    return True, "conectado a gvmd correctamente"
 
 
 class OpenVasDriver(ScannerDriver):

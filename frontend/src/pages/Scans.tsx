@@ -2,7 +2,15 @@ import { Fragment, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { scanApi, vulnApi } from "../services/api";
-import type { ScanJobOut, ScanScheduleOut, ScanAgentOut, ScanAgentCreated, AgentScanJobOut, VulnerabilityOut } from "../types";
+import type {
+  ScanJobOut,
+  ScanScheduleOut,
+  ScanAgentOut,
+  ScanAgentCreated,
+  AgentScanJobOut,
+  VulnerabilityOut,
+  OpenvasStatusOut,
+} from "../types";
 import PageHeader from "../components/PageHeader";
 import { SeverityBadge, StatusBadge } from "../components/Badge";
 import { RunningIndicator } from "../components/RunningIndicator";
@@ -28,11 +36,6 @@ const SCOPE_LABELS: Record<NetworkScope, string> = {
   wan: "WAN (internet / IPs publicas)",
   custom: "Personalizado",
 };
-
-// Rangos privados (RFC1918) mas comunes -- pensados como punto de partida
-// para cubrir una red LAN tipica sin que el usuario tenga que saber de
-// memoria la notacion CIDR. Siempre editable antes de lanzar el escaneo.
-const LAN_PRESETS = ["192.168.0.0/24", "192.168.1.0/24", "10.0.0.0/24", "172.16.0.0/24"];
 
 const CANCELLABLE_STATUSES = new Set(["pending", "running"]);
 
@@ -139,8 +142,6 @@ function ScanResultsPanel({
 export default function Scans() {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
-  const [scannerType, setScannerType] = useState<ScannerType>("nmap");
-  const [scope, setScope] = useState<NetworkScope>("lan");
   const [nmapMode, setNmapMode] = useState<NmapMode>("full");
   const [targetsText, setTargetsText] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
@@ -165,6 +166,14 @@ export default function Scans() {
   // Api key del agente elegido: se pide al lanzar (ademas del login) y el
   // backend la valida contra ese agente antes de crear el job.
   const [agentJobApiKey, setAgentJobApiKey] = useState("");
+
+  // Panel de activacion de OpenVAS (ver GET/POST /openvas/*) -- pide
+  // usuario/contraseña/socket de GVM y prueba la conexion antes de darlo
+  // por activo.
+  const [openvasPanelOpen, setOpenvasPanelOpen] = useState(false);
+  const [ovUser, setOvUser] = useState("admin");
+  const [ovPassword, setOvPassword] = useState("");
+  const [ovSocket, setOvSocket] = useState("");
 
   // Errores de acciones sobre filas ya existentes (togglear/borrar) --
   // separado de formError/createX.isError, que son solo para los
@@ -238,6 +247,37 @@ export default function Scans() {
     queryKey: ["agent-scans"],
     queryFn: async () => (await scanApi.get<AgentScanJobOut[]>("/agent-scans")).data,
     refetchInterval: 10_000, // los jobs de agente avanzan por polling del lado del agente, no en el momento
+  });
+
+  // Estado real de OpenVAS: a diferencia de /scanners/status (que solo
+  // mira si gvm-cli esta instalado), esto prueba la conexion GMP con las
+  // credenciales actuales. Poll cada 15s para que aparezca solo como
+  // opcion en "Escaneos remotos" apenas se activa (o se caiga si el
+  // stack GVM se apaga), sin tener que recargar la pagina.
+  const openvasStatus = useQuery({
+    queryKey: ["openvas-status"],
+    queryFn: async () => (await scanApi.get<OpenvasStatusOut>("/openvas/status")).data,
+    refetchInterval: 15_000,
+    retry: false,
+  });
+  const openvasReady = openvasStatus.data?.ready ?? false;
+
+  const activateOpenvas = useMutation({
+    mutationFn: async () =>
+      (
+        await scanApi.post<OpenvasStatusOut>("/openvas/activate", {
+          gvm_user: ovUser,
+          gvm_password: ovPassword,
+          gvm_socket_path: ovSocket,
+        })
+      ).data,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["openvas-status"], data);
+      if (data.ready) {
+        setOpenvasPanelOpen(false);
+        setOvPassword("");
+      }
+    },
   });
 
   const createAgent = useMutation({
@@ -358,10 +398,10 @@ export default function Scans() {
       const results = await Promise.allSettled(
         targets.map((target) =>
           scanApi.post("/scans", {
-            name: name || `Escaneo ${SCOPE_LABELS[scope]}`,
-            scanner_type: scannerType,
+            name: name || "Escaneo WAN (nmap)",
+            scanner_type: "nmap",
             target,
-            options: scannerType === "nmap" ? { network_scope: scope, mode: nmapMode } : { network_scope: scope },
+            options: { network_scope: "wan", mode: nmapMode },
           })
         )
       );
@@ -392,74 +432,32 @@ export default function Scans() {
       <div className="panel">
         <h2>Nuevo escaneo</h2>
         <p className="empty-hint">
-          Un escaneo por linea de destino. Acepta una IP suelta, un rango CIDR (ej. 192.168.1.0/24) o un hostname --
-          usa el ambito para documentar si es red local, entre sedes o internet.
+          Nmap contra internet (WAN) -- la unica combinacion de este panel que corre de forma confiable desde
+          dentro de Docker, sin que la NAT del contenedor la bloquee. Un escaneo por linea de destino: IP suelta,
+          rango CIDR (ej. 203.0.113.0/24) o hostname/dominio publico. Para tu red local (LAN) usa{" "}
+          <strong>"Escaneos remotos"</strong> mas abajo, con un agente.
         </p>
 
         <div className="inline-form">
           <input placeholder="Nombre (opcional)" value={name} onChange={(e) => setName(e.target.value)} />
-          <select value={scannerType} onChange={(e) => setScannerType(e.target.value as ScannerType)}>
-            <option value="nmap">nmap (descubrimiento de puertos/servicios)</option>
-            <option value="trivy">trivy (imagenes/paquetes)</option>
-            <option value="nuclei">nuclei (plantillas de deteccion)</option>
-            <option value="openvas">openvas</option>
+          <select
+            value={nmapMode}
+            onChange={(e) => setNmapMode(e.target.value as NmapMode)}
+            title="Rapido: sin scripts NSE, top-100 puertos, mas veloz. Completo: deteccion de version + scripts NSE seguros, mas lento y mas exhaustivo."
+          >
+            <option value="fast">nmap rapido (top-100 puertos, sin scripts, mas veloz)</option>
+            <option value="full">nmap completo (deteccion + scripts seguros, mas lento)</option>
           </select>
-          <select value={scope} onChange={(e) => setScope(e.target.value as NetworkScope)}>
-            {Object.entries(SCOPE_LABELS).map(([value, label]) => (
-              <option key={value} value={value}>{label}</option>
-            ))}
-          </select>
-          {scannerType === "nmap" && (
-            <select
-              value={nmapMode}
-              onChange={(e) => setNmapMode(e.target.value as NmapMode)}
-              title="Rapido: sin scripts NSE, top-100 puertos, mas veloz. Completo: deteccion de version + scripts NSE seguros, mas lento y mas exhaustivo."
-            >
-              <option value="fast">nmap rapido (top-100 puertos, sin scripts, mas veloz)</option>
-              <option value="full">nmap completo (deteccion + scripts seguros, mas lento)</option>
-            </select>
-          )}
         </div>
-
-        {(scope === "lan" || scope === "man") && (
-          <div className="panel" style={{ marginTop: 8, marginBottom: 8, border: "1px solid #d9a900" }}>
-            <p style={{ margin: 0 }}>
-              <strong>Este escaneo corre DENTRO del contenedor Docker, no en la red real de esta PC.</strong> Docker
-              Desktop aisla al contenedor detras de NAT, asi que salvo que Docker tenga acceso directo a esa red, no
-              va a llegar a los dispositivos de tu {scope === "lan" ? "LAN" : "MAN"} y el escaneo va a terminar en
-              timeout despues de un par de minutos. Para escanear la red real de la oficina/sede, usa{" "}
-              <strong>"Escaneos remotos"</strong> mas abajo: un agente liviano corre fuera de Docker (en esta PC o en
-              cualquier otra con visibilidad a esa red) y hace polling hacia scan-service, sin que haga falta abrir
-              ningun puerto.
-            </p>
-          </div>
-        )}
 
         <textarea
           className="targets-textarea"
-          placeholder={"192.168.1.0/24\n10.0.0.15\nvpn.tuempresa.com"}
+          placeholder={"203.0.113.10\nvpn.tuempresa.com\nmiweb.com"}
           value={targetsText}
           onChange={(e) => setTargetsText(e.target.value)}
           rows={4}
           style={{ width: "100%", marginTop: 8, fontFamily: "monospace" }}
         />
-
-        {scope === "lan" && (
-          <button
-            type="button"
-            className="btn-secondary"
-            style={{ marginTop: 8 }}
-            onClick={() =>
-              setTargetsText((prev) => {
-                const existing = new Set(prev.split(/[\n,]/).map((t) => t.trim()).filter(Boolean));
-                LAN_PRESETS.forEach((p) => existing.add(p));
-                return Array.from(existing).join("\n");
-              })
-            }
-          >
-            + Agregar rangos privados comunes (para cubrir toda la LAN)
-          </button>
-        )}
 
         <div style={{ marginTop: 10 }}>
           <button
@@ -485,7 +483,8 @@ export default function Scans() {
           Subi una <strong>imagen de contenedor</strong> exportada con{" "}
           <code className="mono">docker save nombre:tag -o imagen.tar</code> (archivo .tar), o un{" "}
           <strong>manifiesto de dependencias</strong> (requirements.txt, package-lock.json, pom.xml, go.sum...).
-          Trivy busca CVEs conocidos y el resultado aparece abajo en "Escaneos realizados". Limite 600 MB.
+          El escaneo corre en background (puede tardar varios minutos con archivos grandes) y el resultado
+          aparece abajo en "Escaneos realizados", con su propia barra de progreso mientras corre. Limite 600 MB.
         </p>
         <div className="inline-form">
           <input type="file" onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)} />
@@ -509,8 +508,9 @@ export default function Scans() {
         )}
         {uploadScan.isSuccess && (
           <p className="empty-hint">
-            Escaneo completado -- mira el resultado en "Escaneos realizados" mas abajo, o el inventario completo de
-            paquetes en <Link to="/scan-images">Imagenes y Paquetes</Link>.
+            Archivo subido -- trivy lo esta escaneando en background. Segui el progreso en "Escaneos realizados"
+            mas abajo, o revisa el inventario completo de paquetes en{" "}
+            <Link to="/scan-images">Imagenes y Paquetes</Link> cuando termine.
           </p>
         )}
       </div>
@@ -520,16 +520,15 @@ export default function Scans() {
         <p className="empty-hint">
           Una regla corre solo mientras scan-service este arriba (usa su propio scheduler en proceso, sin
           infraestructura extra) -- si el contenedor se reinicia, las reglas habilitadas se vuelven a cargar solas
-          al arrancar.
+          al arrancar. Solo nmap y nuclei estan disponibles aca: trivy no escanea IPs/hosts (solo imagenes o
+          paquetes, usa el panel de arriba) y openvas esta apagado por defecto (activalo en "Escaneos remotos").
         </p>
 
         <div className="inline-form">
           <input placeholder="Nombre" value={schedName} onChange={(e) => setSchedName(e.target.value)} />
           <select value={schedScannerType} onChange={(e) => setSchedScannerType(e.target.value as ScannerType)}>
             <option value="nmap">nmap</option>
-            <option value="trivy">trivy</option>
             <option value="nuclei">nuclei</option>
-            <option value="openvas">openvas</option>
           </select>
           <input
             className="mono"
@@ -752,12 +751,85 @@ export default function Scans() {
       <div className="panel">
         <h2>Escaneos remotos</h2>
         <p className="empty-hint">
-          Elegi el scanner (nmap / trivy / nuclei / openvas), el agente y el target. El agente elegido se lleva el
-          job en su siguiente polling y manda el resultado solo -- puede tardar unos segundos segun su intervalo de
-          polling. Cada scanner necesita su binario instalado en la maquina del agente (openvas necesita ademas el
-          stack GVM ahi mismo); si falta, el job vuelve con un error claro. Para lanzar tenes que pegar la api key
-          del agente (la que te mostro al registrarlo): se valida contra ese agente antes de crear el escaneo.
+          Elegi el scanner ({openvasReady ? "nmap / nuclei / openvas" : "nmap / nuclei"}), el agente y el target.
+          El agente elegido se lleva el job en su siguiente polling y manda el resultado solo -- puede tardar unos
+          segundos segun su intervalo de polling. Cada scanner necesita su binario instalado en la maquina del
+          agente; si falta, el job vuelve con un error claro. Para lanzar tenes que pegar la api key del agente (la
+          que te mostro al registrarlo): se valida contra ese agente antes de crear el escaneo.
         </p>
+
+        <div className="inline-form" style={{ marginBottom: 10 }}>
+          {openvasReady ? (
+            <span className="empty-hint" style={{ color: "var(--success, #2f9e44)" }}>
+              OpenVAS esta activo y disponible como scanner remoto.
+            </span>
+          ) : (
+            <button type="button" className="btn-secondary" onClick={() => setOpenvasPanelOpen((v) => !v)}>
+              {openvasPanelOpen ? "Cerrar" : "Activar OpenVAS"}
+            </button>
+          )}
+        </div>
+
+        {openvasPanelOpen && !openvasReady && (
+          <div className="panel" style={{ marginBottom: 10, border: "1px solid #d9a900" }}>
+            <h3 style={{ marginTop: 0 }}>Activar OpenVAS</h3>
+            <p className="empty-hint">
+              OpenVAS es el escaner mas pesado (~16 contenedores extra, varios GB de feeds) y por eso arranca
+              apagado. Este backend no tiene acceso a Docker, asi que el primer paso hay que hacerlo desde
+              PowerShell en la PC donde corre el stack:
+            </p>
+            <ol className="empty-hint" style={{ paddingLeft: 20 }}>
+              <li>
+                Abri PowerShell en la carpeta del proyecto y corre:{" "}
+                <code className="mono" style={{ userSelect: "all" }}>
+                  powershell -ExecutionPolicy Bypass -File openvas\Encender-OpenVAS.ps1
+                </code>
+              </li>
+              <li>
+                Espera 20-40 minutos (la primera vez) a que los feeds terminen de sincronizar. Se puede chequear el
+                progreso con <code className="mono">docker compose --profile openvas ps</code>.
+              </li>
+              <li>
+                Corre <code className="mono">openvas\Configurar-OpenVAS.ps1</code> (crea el usuario GVM y muestra la
+                contraseña generada) -- o si ya tenes usuario/contraseña de GVM, pegalos aca abajo directamente.
+              </li>
+            </ol>
+            <div className="inline-form" style={{ marginTop: 8 }}>
+              <input placeholder="Usuario GVM" value={ovUser} onChange={(e) => setOvUser(e.target.value)} />
+              <input
+                type="password"
+                className="mono"
+                placeholder="Contraseña GVM"
+                value={ovPassword}
+                onChange={(e) => setOvPassword(e.target.value)}
+              />
+              <input
+                className="mono"
+                placeholder="Socket (opcional, default /run/gvmd/gvmd.sock)"
+                value={ovSocket}
+                onChange={(e) => setOvSocket(e.target.value)}
+              />
+              <button
+                className="btn-primary"
+                onClick={() => activateOpenvas.mutate()}
+                disabled={activateOpenvas.isPending || !ovUser.trim() || !ovPassword.trim()}
+              >
+                {activateOpenvas.isPending ? "Probando conexion..." : "Probar y activar"}
+              </button>
+            </div>
+            {activateOpenvas.isError && (
+              <p className="error-text">
+                No se pudo activar OpenVAS.{" "}
+                <span className="error-detail">{connectionErrorDetail(activateOpenvas.error)}</span>
+              </p>
+            )}
+            <p className="empty-hint" style={{ marginTop: 8 }}>
+              Esto activa OpenVAS en memoria, sin reiniciar el contenedor. Para que quede guardado tambien despues
+              de un reinicio, corre Configurar-OpenVAS.ps1 (escribe las credenciales en .env). Para apagarlo:{" "}
+              <code className="mono">openvas\Apagar-OpenVAS.ps1</code>.
+            </p>
+          </div>
+        )}
 
         {agents.data && agents.data.length === 0 && (
           <p className="empty-hint">No hay ningun agente registrado todavia (ver panel de arriba).</p>
@@ -788,12 +860,11 @@ export default function Scans() {
           <select
             value={agentJobScannerType}
             onChange={(e) => setAgentJobScannerType(e.target.value as ScannerType)}
-            title="El binario del scanner elegido tiene que estar instalado en la maquina del agente. openvas necesita ademas el stack GVM ahi mismo."
+            title="El binario del scanner elegido tiene que estar instalado en la maquina del agente."
           >
             <option value="nmap">nmap (puertos/servicios)</option>
-            <option value="trivy">trivy (imagenes/paquetes)</option>
             <option value="nuclei">nuclei (plantillas de deteccion)</option>
-            <option value="openvas">openvas (requiere GVM en el agente)</option>
+            {openvasReady && <option value="openvas">openvas (activo)</option>}
           </select>
           <input placeholder="Nombre (opcional)" value={agentJobName} onChange={(e) => setAgentJobName(e.target.value)} />
           <input

@@ -213,3 +213,24 @@ class AgentResultSubmit(BaseModel):
     findings: list[dict] = Field(default_factory=list)
     raw_output: str = ""
     error_message: str = ""
+
+
+# --- Activacion de OpenVAS desde la UI (ver GET/POST /openvas/*, app/
+# scanners/openvas.py::probe_connection) ---
+# OpenVAS esta apagado por defecto (ver docker-compose.yml, profile
+# "openvas") y este proceso NO tiene acceso al socket de Docker: no puede
+# levantar los contenedores de GVM el mismo. Lo que si puede hacer es
+# probar la conexion GMP con credenciales ya en pie (contenedores ya
+# levantados por openvas/Encender-OpenVAS.ps1) y, si funciona, aplicarlas
+# en memoria para no exigir un reinicio del contenedor.
+
+class OpenvasActivateRequest(BaseModel):
+    gvm_user: str = Field(..., min_length=1)
+    gvm_password: str = Field(..., min_length=1)
+    gvm_socket_path: str = Field(default="", description="Vacio usa el default /run/gvmd/gvmd.sock")
+
+
+class OpenvasStatusOut(BaseModel):
+    configured: bool
+    ready: bool
+    detail: str

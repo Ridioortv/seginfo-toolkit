@@ -83,6 +83,12 @@ export interface ScanAgentCreated extends ScanAgentOut {
   api_key: string;
 }
 
+export interface OpenvasStatusOut {
+  configured: boolean;
+  ready: boolean;
+  detail: string;
+}
+
 export interface AgentScanJobOut {
   id: string;
   agent_id: string;

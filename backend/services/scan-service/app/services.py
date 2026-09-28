@@ -2,6 +2,7 @@
 DEFENSIVOS (solo deteccion) y reenvio de hallazgos normalizados a
 vuln-service para priorizacion (CVSS/EPSS/KEV)."""
 import asyncio
+import shutil
 import json
 import os
 import secrets
@@ -74,22 +75,22 @@ async def refresh_nuclei_templates() -> None:
     )
 
 
-async def scan_uploaded_file_with_trivy(db: AsyncSession, file_path: str, display_name: str, actor: str, organization_id: str) -> ScanJob:
-    """Escanea con trivy un archivo SUBIDO por el usuario (imagen .tar exportada
-    con `docker save`, o un manifiesto de paquetes/carpeta) y guarda el
-    resultado como un ScanJob normal -- aparece en 'Escaneos realizados' y se
-    reenvia a vuln-service/siem-service igual que cualquier escaneo."""
-    from app.scanners.trivy import _parse_trivy_json, _parse_trivy_packages, TRIVY_CACHE_DIR
-    lower = display_name.lower()
-    if lower.endswith((".tar", ".tar.gz", ".tgz")):
-        cmd = ["trivy", "image", "--input", file_path]
-        modo = "imagen"
-    else:
-        cmd = ["trivy", "fs", file_path]
-        modo = "paquetes"
-    cmd += ["--format", "json", "--quiet", "--timeout", "8m", "--cache-dir", TRIVY_CACHE_DIR,
-            "--skip-db-update", "--skip-java-db-update", "--list-all-pkgs"]
+async def create_uploaded_scan_job(db: AsyncSession, display_name: str, actor: str, organization_id: str) -> ScanJob:
+    """Crea el ScanJob de un archivo subido y lo devuelve AL TOQUE -- la
+    corrida real de trivy (execute_uploaded_scan_job, mas abajo) se dispara
+    aparte via BackgroundTasks, igual que create_scan_job/execute_scan_job
+    para escaneos normales por target.
 
+    Antes esta funcion hacia todo de una: corria trivy DENTRO del mismo
+    request/response del upload (podia tardar hasta 9 min, ver el timeout
+    de mas abajo). Con un archivo grande o una imagen con muchas capas, el
+    request quedaba abierto minutos enteros -- el navegador (u otra cosa
+    de por medio) lo podia cortar antes de que trivy terminara, y eso se
+    veia en el frontend como "Sin respuesta (Network Error) -- el
+    contenedor probablemente no esta corriendo", que no tenia nada que ver
+    con la causa real (trivy seguia corriendo tranquilo del otro lado)."""
+    lower = display_name.lower()
+    modo = "imagen" if lower.endswith((".tar", ".tar.gz", ".tgz")) else "paquetes"
     job = ScanJob(
         organization_id=organization_id,
         name=f"trivy ({modo}): {display_name}"[:255],
@@ -97,50 +98,94 @@ async def scan_uploaded_file_with_trivy(db: AsyncSession, file_path: str, displa
         target=display_name[:500],
         options={"mode": "upload"},
         created_by=actor,
-        status=ScanStatus.running,
-        started_at=_now(),
+        status=ScanStatus.pending,
     )
     db.add(job)
     await db.flush()
-
-    proc = None
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=540)
-    except FileNotFoundError:
-        job.status = ScanStatus.scanner_unavailable
-        job.error_message = "trivy no esta disponible en este contenedor"
-        job.finished_at = _now()
-        await db.flush()
-        return job
-    except asyncio.TimeoutError:
-        if proc is not None:
-            proc.kill()
-            await proc.wait()
-        job.status = ScanStatus.failed
-        job.error_message = "timeout de escaneo (540s)"
-        job.finished_at = _now()
-        await db.flush()
-        return job
-
-    raw = stdout.decode(errors="replace")
-    job.raw_result = raw[:200_000]
-    job.finished_at = _now()
-    if proc.returncode not in (0, 1):
-        job.status = ScanStatus.failed
-        job.error_message = (stderr.decode(errors="replace")[:2000]
-                             or f"trivy salio con codigo {proc.returncode}")
-    else:
-        job.findings = _parse_trivy_json(raw)
-        job.packages = _parse_trivy_packages(raw)
-        job.status = ScanStatus.completed
-    await db.flush()
-    if job.status == ScanStatus.completed and job.findings:
-        await _forward_findings_to_vuln_service(job)
-        await _forward_findings_to_siem_service(job)
+    await db.refresh(job)
     return job
+
+
+async def execute_uploaded_scan_job(session_factory, job_id: str, file_path: str, tmpdir: str) -> None:
+    """Corre trivy sobre el archivo subido (ver create_uploaded_scan_job) en
+    background -- mismo patron de auto-registro/cancelacion que
+    execute_scan_job, pero sin pasar por un driver de app/scanners/ porque
+    el comando cambia segun si es una imagen .tar o un manifiesto de
+    paquetes. Borra tmpdir al final pase lo que pase (completado, fallado,
+    cancelado) para no dejar el archivo subido tirado en disco."""
+    from app.scanners.trivy import _parse_trivy_json, _parse_trivy_packages, TRIVY_CACHE_DIR
+    task = asyncio.current_task()
+    if task is not None:
+        register_running_scan(job_id, task)
+    try:
+        async with session_factory() as db:
+            job = await db.get(ScanJob, job_id)
+            if job is None:
+                return
+            job.status = ScanStatus.running
+            job.started_at = _now()
+            await db.commit()
+
+            lower = job.target.lower()
+            if lower.endswith((".tar", ".tar.gz", ".tgz")):
+                cmd = ["trivy", "image", "--input", file_path]
+            else:
+                cmd = ["trivy", "fs", file_path]
+            cmd += ["--format", "json", "--quiet", "--timeout", "8m", "--cache-dir", TRIVY_CACHE_DIR,
+                    "--skip-db-update", "--skip-java-db-update", "--list-all-pkgs"]
+
+            proc = None
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=540)
+            except FileNotFoundError:
+                job = await db.get(ScanJob, job_id)
+                job.status = ScanStatus.scanner_unavailable
+                job.error_message = "trivy no esta disponible en este contenedor"
+                job.finished_at = _now()
+                await db.commit()
+                return
+            except asyncio.TimeoutError:
+                if proc is not None:
+                    proc.kill()
+                    await proc.wait()
+                job = await db.get(ScanJob, job_id)
+                job.status = ScanStatus.failed
+                job.error_message = "timeout de escaneo (540s)"
+                job.finished_at = _now()
+                await db.commit()
+                return
+
+            raw = stdout.decode(errors="replace")
+            job = await db.get(ScanJob, job_id)
+            job.raw_result = raw[:200_000]
+            job.finished_at = _now()
+            if proc.returncode not in (0, 1):
+                job.status = ScanStatus.failed
+                job.error_message = (stderr.decode(errors="replace")[:2000]
+                                     or f"trivy salio con codigo {proc.returncode}")
+            else:
+                job.findings = _parse_trivy_json(raw)
+                job.packages = _parse_trivy_packages(raw)
+                job.status = ScanStatus.completed
+            await db.commit()
+            if job.status == ScanStatus.completed and job.findings:
+                await _forward_findings_to_vuln_service(job)
+                await _forward_findings_to_siem_service(job)
+    except asyncio.CancelledError:
+        async with session_factory() as db:
+            job = await db.get(ScanJob, job_id)
+            if job is not None and is_cancellable_status(job.status):
+                job.status = ScanStatus.cancelled
+                job.error_message = "Cancelado por el usuario"
+                job.finished_at = _now()
+                await db.commit()
+        logger.info("scan de archivo subido cancelado", extra={"job_id": job_id})
+    finally:
+        unregister_running_scan(job_id)
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def build_image_inventory(jobs: list) -> list[dict]:
