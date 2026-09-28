@@ -176,7 +176,7 @@ para priorizacion (CVSS/EPSS/KEV), igual que un escaneo normal.
   claro en vez de quedarse varios minutos intentando conectar.
   **El Agente LAN (`agente-lan.ps1`) SI puede correr nuclei y trivy
   contra la LAN**, pero no de cero: si encuentra `nuclei.exe`/`trivy.exe`
-  instalados (en el PATH) en la PC donde corre, los usa de verdad, con
+  instalados (en el PATH, o en remote-agent\bin\) en la PC donde corre, los usa de verdad, con
   los mismos flags/restricciones que el driver in-container (solo
   deteccion, nunca explotacion activa). Si no los encuentra, ese job
   vuelve con un mensaje claro que dice que instalar -- y el PROXIMO job
@@ -209,12 +209,17 @@ defecto se crean dos:
   red real (`192.168.x.x`). Es un script PowerShell nativo
   (`remote-agent/agente-lan.ps1`) que **no requiere instalar nada** para
   el descubrimiento de puertos (equivalente a nmap) -- lo hace con
-  PowerShell + .NET puro. Si ademas instalas `nuclei`/`trivy` en esa
-  misma PC (basta con que queden en el PATH), el agente los detecta
-  solo y los usa tambien contra targets de LAN -- sin instalar nada mas
-  de este lado, sin tocar `docker-compose.yml`, sin reiniciar el agente.
-  openvas sigue sin soporte aca (ver nota en "Si algo no funciona"
-  arriba).
+  PowerShell + .NET puro. Para nuclei/trivy busca el binario en dos
+  lugares, en este orden: el PATH del sistema, y despues
+  `remote-agent/bin/nuclei.exe` / `remote-agent/bin/trivy.exe` -- una
+  carpeta al lado del script (creala si no existe) donde alcanza con
+  poner el .exe descargado oficialmente, sin instalar nada de verdad ni
+  tocar el PATH de Windows. Cualquiera de los dos lugares funciona, y
+  el agente los detecta en el siguiente job sin reiniciarse. Esa
+  carpeta (`remote-agent/bin/`) esta en `.gitignore` (via `*.exe`) --
+  esos binarios NUNCA se commitean (GitHub bloquea archivos de mas de
+  100MB, y nuclei.exe/trivy.exe pesan bastante mas). openvas sigue sin
+  soporte aca (ver nota en "Si algo no funciona" arriba).
 
 Las api keys de ambos estan en `.env` (`REMOTE_AGENT_DOCKER_KEY` y
 `REMOTE_AGENT_LAN_KEY`) -- son las que se pegan en la UI al lanzar un

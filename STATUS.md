@@ -1048,3 +1048,56 @@ tarea instalada: el agente los detecta solos en el proximo job. No hay
 que reconstruir nada de Docker para esto (no se toco `scan-service` ni
 `docker-compose.yml`).
 
+## nuclei/trivy instalados directamente en la carpeta del Agente LAN (2026-09-28)
+
+Manu: "quiero que vos instales nuclei y trivy directamente en mi
+carpeta de programa asi arrancan automaticamente" -- despues de que la
+seccion anterior dejara la deteccion de binarios lista pero todavia
+dependiente de que el sistema los tuviera instalados el mismo.
+
+No hay forma de instalar un .exe de Windows "de verdad" (con su entrada
+en el PATH, etc.) desde este entorno -- pero si se puede descargar el
+binario oficial y dejarlo en una carpeta que el script ya sabe buscar,
+sin que haga falta ninguna instalacion real ni tocar variables de
+entorno de Windows. Eso es lo que se hizo:
+
+- Se descargaron los binarios oficiales de la ultima release de cada
+  proyecto (`nuclei_3.11.1_windows_amd64.zip` de
+  github.com/projectdiscovery/nuclei, `trivy_0.74.0_windows-64bit.zip`
+  de github.com/aquasecurity/trivy), **se verifico el sha256 de cada
+  zip contra el checksums.txt que publica cada proyecto en su propia
+  release** (coincidieron los dos) antes de extraer nada, y se copiaron
+  `nuclei.exe`/`trivy.exe` a `remote-agent/bin/` (nueva carpeta, al lado
+  del script).
+- `agente-lan.ps1` gano `Resolve-ScannerBinary($name)`: busca primero en
+  el PATH del sistema (por si el operador lo instalo "normal") y, si no
+  esta ahi, en `remote-agent/bin/$name.exe`. Reemplazo los 6 lugares que
+  antes hacian `Get-Command nuclei/trivy` a mano. Ya no hace falta que
+  nuclei/trivy esten en el PATH de Windows para que el Agente LAN los
+  use -- alcanza con que el .exe este en esa carpeta.
+- `remote-agent/bin/` **no se commitea** -- `*.exe` ya estaba en
+  `.gitignore` desde antes, y por buena razon: nuclei.exe (145MB) y
+  trivy.exe (172MB) superan largamente el limite de 100MB por archivo
+  de GitHub, y aunque no lo superaran, no tiene sentido versionar
+  binarios de terceros de ese tamano en el historial de git para
+  siempre. Quedan en el disco de la maquina (que es lo que hace que el
+  agente los encuentre), simplemente no viajan con el repo -- en otra
+  maquina (o la de un cliente) hay que repetir la descarga ahi.
+
+README actualizado para reflejar que el Agente LAN busca en dos
+lugares (PATH y `remote-agent/bin/`), no solo el PATH.
+
+Verificacion: sha256 de los dos zips contra los checksums oficiales
+(coincidieron exacto), revision manual del PowerShell (sin interprete
+disponible en este entorno), balance de llaves/parentesis/corchetes por
+script, confirmacion de que `git status` no muestra los .exe nuevos
+(gitignore funcionando). Suite de scan-service sin cambios de backend,
+sigue 106/106 verde.
+
+**Nada pendiente para Manu de este lado** -- los binarios ya estan en
+`remote-agent/bin/` en su maquina. Si corre `Iniciar-Agente-LAN.bat` (o
+ya tiene el Agente LAN instalado como tarea, ver seccion anterior) el
+banner de arranque va a loguear "nuclei: disponible (...)" / "trivy:
+disponible (...)", y los proximos jobs de esos scanners contra targets
+de LAN deberian completar en vez de fallar.
+

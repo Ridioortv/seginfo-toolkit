@@ -156,6 +156,23 @@ $svcNames = @{ 21="ftp";22="ssh";23="telnet";25="smtp";53="domain";80="http";110
 # --------------------------------------------------------------------------
 $NucleiSeverityMap = @{ critical="critical"; high="high"; medium="medium"; low="low"; info="info"; unknown="info" }
 $TrivySeverityMap  = @{ CRITICAL="critical"; HIGH="high"; MEDIUM="medium"; LOW="low"; UNKNOWN="info" }
+# Carpeta al lado del script para binarios instalados a mano (sin depender
+# del PATH del sistema) -- pensada para dejar nuclei.exe/trivy.exe
+# descargados oficialmente ahi mismo, en la "carpeta de programa", sin
+# tocar variables de entorno de Windows. remote-agent/bin/ esta en
+# .gitignore (via *.exe) -- estos binarios NUNCA se commitean al repo
+# (son grandes y GitHub bloquea archivos de mas de 100MB).
+$BundledBinDir = Join-Path $scriptDir "bin"
+
+function Resolve-ScannerBinary([string]$name) {
+    # PATH del sistema primero (si el operador ya lo instalo "normal"),
+    # y si no esta ahi, la carpeta bin/ al lado de este script.
+    $cmd = Get-Command $name -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $bundled = Join-Path $BundledBinDir "$name.exe"
+    if (Test-Path $bundled) { return $bundled }
+    return $null
+}
 
 function Invoke-ScannerBinary([string]$exe, [string[]]$scannerArgs, [int]$timeoutSeconds) {
     # Corre un binario externo (nuclei/trivy) con limite de tiempo real --
@@ -221,8 +238,7 @@ function Invoke-NucleiScan([string]$target, $options) {
         }
         if ($safeTags.Count -gt 0) { $scannerArgs += @("-tags", ($safeTags -join ",")) }
     }
-    $nucleiCmd = Get-Command nuclei -ErrorAction SilentlyContinue
-    $result = Invoke-ScannerBinary -exe $nucleiCmd.Source -scannerArgs $scannerArgs -timeoutSeconds 600
+    $result = Invoke-ScannerBinary -exe (Resolve-ScannerBinary "nuclei") -scannerArgs $scannerArgs -timeoutSeconds 600
     if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (600s) contra $target" } }
     if (($result.ExitCode -ne 0) -and ($result.ExitCode -ne 1) -and (-not $result.Stdout.Trim())) {
         $errMsg = $result.Stderr; $errMsg = $errMsg.Substring(0, [Math]::Min(2000, $errMsg.Length))
@@ -263,8 +279,7 @@ function Get-TrivyFindings([string]$rawJson) {
 function Invoke-TrivyScan([string]$target, [string]$mode) {
     $subcommand = if ($mode -eq "fs") { "fs" } else { "image" }
     $scannerArgs = @($subcommand, "--format", "json", "--quiet", "--timeout", "8m", $target)
-    $trivyCmd = Get-Command trivy -ErrorAction SilentlyContinue
-    $result = Invoke-ScannerBinary -exe $trivyCmd.Source -scannerArgs $scannerArgs -timeoutSeconds 600
+    $result = Invoke-ScannerBinary -exe (Resolve-ScannerBinary "trivy") -scannerArgs $scannerArgs -timeoutSeconds 600
     if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (600s) contra $target" } }
     if (($result.ExitCode -ne 0) -and ($result.ExitCode -ne 1)) {
         $errMsg = $result.Stderr; $errMsg = $errMsg.Substring(0, [Math]::Min(2000, $errMsg.Length))
@@ -330,13 +345,13 @@ function Submit-Result([string]$jobId, [string]$status, $findings, [string]$err,
         -Headers @{ "X-Agent-Key" = $key; "Content-Type" = "application/json" } -Body $body -TimeoutSec 30 | Out-Null
 }
 
-$startupNucleiCmd = Get-Command nuclei -ErrorAction SilentlyContinue
-$startupTrivyCmd = Get-Command trivy -ErrorAction SilentlyContinue
+$startupNucleiPath = Resolve-ScannerBinary "nuclei"
+$startupTrivyPath = Resolve-ScannerBinary "trivy"
 Write-Log "============================================================"
 Write-Log "SentinelOps - Agente LAN (PowerShell nativo) iniciado."
 Write-Log "Puertos (estilo nmap): siempre disponible, sin instalar nada."
-Write-Log "nuclei: $(if ($startupNucleiCmd) { "disponible ($($startupNucleiCmd.Source))" } else { "no instalado -- esos jobs van a fallar con un mensaje claro" })"
-Write-Log "trivy:  $(if ($startupTrivyCmd) { "disponible ($($startupTrivyCmd.Source))" } else { "no instalado -- esos jobs van a fallar con un mensaje claro" })"
+Write-Log "nuclei: $(if ($startupNucleiPath) { "disponible ($startupNucleiPath)" } else { "no instalado (ni en el PATH ni en $BundledBinDir) -- esos jobs van a fallar con un mensaje claro" })"
+Write-Log "trivy:  $(if ($startupTrivyPath) { "disponible ($startupTrivyPath)" } else { "no instalado (ni en el PATH ni en $BundledBinDir) -- esos jobs van a fallar con un mensaje claro" })"
 Write-Log "scan-service: $scanUrl   polling cada ${pollInterval}s   (Ctrl+C para detener)"
 Write-Log "============================================================"
 
@@ -362,9 +377,8 @@ while ($true) {
             }
 
             if ($scanner -eq "nuclei") {
-                $nucleiCmd = Get-Command nuclei -ErrorAction SilentlyContinue
-                if (-not $nucleiCmd) {
-                    Submit-Result $jobId "failed" @() "nuclei.exe no esta instalado en esta PC (o no esta en el PATH). Instalalo (https://github.com/projectdiscovery/nuclei#install-nuclei) y el proximo job de nuclei va a andar solo, sin reiniciar el agente."
+                if (-not (Resolve-ScannerBinary "nuclei")) {
+                    Submit-Result $jobId "failed" @() "nuclei no esta instalado (ni en el PATH ni en $BundledBinDir). Instalalo (https://github.com/projectdiscovery/nuclei#install-nuclei) -- poniendo nuclei.exe en esa carpeta alcanza, no hace falta el PATH -- y el proximo job de nuclei va a andar solo, sin reiniciar el agente."
                     Write-Log "job $($jobId.Substring(0,8)): rechazado -- nuclei no esta instalado"
                     continue
                 }
@@ -380,9 +394,8 @@ while ($true) {
             }
 
             if ($scanner -eq "trivy") {
-                $trivyCmd = Get-Command trivy -ErrorAction SilentlyContinue
-                if (-not $trivyCmd) {
-                    Submit-Result $jobId "failed" @() "trivy.exe no esta instalado en esta PC (o no esta en el PATH). Instalalo (https://aquasecurity.github.io/trivy) y el proximo job de trivy va a andar solo, sin reiniciar el agente."
+                if (-not (Resolve-ScannerBinary "trivy")) {
+                    Submit-Result $jobId "failed" @() "trivy no esta instalado (ni en el PATH ni en $BundledBinDir). Instalalo (https://aquasecurity.github.io/trivy) -- poniendo trivy.exe en esa carpeta alcanza, no hace falta el PATH -- y el proximo job de trivy va a andar solo, sin reiniciar el agente."
                     Write-Log "job $($jobId.Substring(0,8)): rechazado -- trivy no esta instalado"
                     continue
                 }
