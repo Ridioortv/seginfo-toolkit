@@ -357,19 +357,37 @@ function Scan-HostPorts([string]$h, [int[]]$portList, [int]$timeoutMs = 800) {
     return $open
 }
 
+function ConvertTo-JsonFindingsArray($items) {
+    # ConvertTo-Json de PowerShell tiene un bug clasico y muy documentado:
+    # un array de EXACTAMENTE un elemento se serializa como el objeto
+    # suelto, sin corchetes ("findings": {...} en vez de "findings":
+    # [{...}]) -- eso rompe la validacion del backend (findings: list[dict],
+    # Pydantic espera una lista) justo cuando nuclei/trivy encuentran UN
+    # solo hallazgo. Con 0 (siempre serializa "[]" bien) o con 2+ (siempre
+    # serializa como lista bien) nunca se vio -- por eso nmap (3
+    # hallazgos) y los rechazos por binario faltante (0 hallazgos) andaban
+    # perfecto y nuclei/trivy tiraban 422 justo cuando encontraban algo.
+    # Serializamos cada elemento por separado y lo juntamos a mano entre
+    # corchetes, evitando el bug de raiz en vez de esquivarlo.
+    $arr = @($items)
+    if ($arr.Count -eq 0) { return "[]" }
+    $parts = foreach ($item in $arr) { $item | ConvertTo-Json -Depth 6 -Compress }
+    return "[" + ($parts -join ",") + "]"
+}
+
 function Submit-Result([string]$jobId, [string]$status, $findings, [string]$err, [string]$rawOutput = "agente LAN (PowerShell)") {
-    # Construye el body entero como objeto y lo serializa UNA vez con
-    # ConvertTo-Json -- antes se armaba a mano con string concatenation
-    # ("...""raw_output"":""$rawOutput""..."), lo que se rompia apenas
-    # $rawOutput o $err trajeran una comilla (justo lo que trae SIEMPRE
-    # un JSON real de nuclei/trivy).
-    $payload = @{
-        status = $status
-        findings = @($findings)
-        raw_output = $rawOutput
-        error_message = $err
-    }
-    $body = $payload | ConvertTo-Json -Depth 8 -Compress
+    # Los campos escalares los serializa ConvertTo-Json normal (ahi no hay
+    # bug); "findings" se arma aparte con ConvertTo-JsonFindingsArray (ver
+    # arriba) y se inserta a mano en el mismo objeto -- reemplazando el
+    # "}" de cierre por ',"findings":<array>}'. Antes se armaba a mano con
+    # string concatenation entera ("...""raw_output"":""$rawOutput""..."),
+    # lo que se rompia apenas $rawOutput o $err trajeran una comilla (justo
+    # lo que trae SIEMPRE un JSON real de nuclei/trivy) -- por eso ahora
+    # solo el array de findings se toca a mano, todo lo demas via
+    # ConvertTo-Json real.
+    $scalarPayload = (@{ status = $status; raw_output = $rawOutput; error_message = $err } | ConvertTo-Json -Depth 4 -Compress).TrimEnd()
+    $findingsJson = ConvertTo-JsonFindingsArray $findings
+    $body = $scalarPayload.Substring(0, $scalarPayload.Length - 1) + ',"findings":' + $findingsJson + '}'
     # Windows PowerShell 5.1 manda -Body <string> con la codificacion ANSI de
     # la maquina, no UTF-8, aunque el Content-Type diga utf-8 -- si el JSON
     # de nuclei/trivy trae UN SOLO caracter no-ASCII (tildes, comillas
