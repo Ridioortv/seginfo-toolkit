@@ -427,6 +427,12 @@ services:
       # atraviesa el NAT de Docker Desktop, asi el Agente Docker puede escanear
       # la LAN real (nmap normal falla por su descubrimiento ICMP/ARP).
       AGENT_FORCE_INTERNAL_NMAP: "1"
+      # A diferencia de nmap (ver arriba), trivy/nuclei/openvas NO tienen forma
+      # de atravesar el NAT de Docker Desktop -- con esto en "1", un job de
+      # alguno de esos 3 contra una IP de LAN (192.168.x.x, 10.x.x.x, etc.)
+      # falla al toque con un mensaje claro en vez de quedarse varios minutos
+      # intentando conectar. Ver remote-agent/agent.py::_process_job.
+      AGENT_BEHIND_DOCKER_NAT: "1"
     # No es un servidor web (corre agent.py, no uvicorn), asi que el
     # healthcheck de la imagen no aplica -> lo desactivamos para que no
     # figure "unhealthy".

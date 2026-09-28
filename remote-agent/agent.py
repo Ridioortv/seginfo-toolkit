@@ -96,6 +96,24 @@ from xml.sax.saxutils import escape as _xml_escape
 SCAN_SERVICE_URL = os.environ.get("SCAN_SERVICE_URL", "http://localhost:8003").rstrip("/")
 AGENT_API_KEY = os.environ.get("AGENT_API_KEY", "")
 POLL_INTERVAL_SECONDS = int(os.environ.get("POLL_INTERVAL_SECONDS", "10"))
+# Cuantos jobs puede correr este agente EN PARALELO (ver _process_job/
+# run_once mas abajo) -- sin esto, un solo job lento (nuclei/openvas
+# contra un target que no responde) bloqueaba a todos los demas jobs ya
+# asignados en la misma corrida, aunque fueran rapidos (ej. nmap). No
+# hace falta que sea muy alto: max_jobs de poll_agent_jobs en el backend
+# ya limita a 5 jobs por poll.
+_MAX_CONCURRENT_JOBS = int(os.environ.get("AGENT_MAX_CONCURRENT_JOBS", "8"))
+# Este agente corre DENTRO de un contenedor Docker (ver el servicio
+# remote-agent en docker-compose.yml) y por lo tanto detras del NAT de
+# Docker Desktop: nmap tiene un fallback propio para atravesarlo (ver
+# AGENT_FORCE_INTERNAL_NMAP/_run_python_portscan mas abajo), pero
+# trivy/nuclei/openvas NO -- corren tal cual el binario real, que para un
+# target de LAN (192.168.x.x, 10.x.x.x, etc.) puede quedarse
+# intentando conectar varios minutos antes de fallar, en vez de fallar al
+# toque con un mensaje claro. El Agente LAN (agente-lan.ps1, que corre
+# FUERA de Docker en el host) no tiene este problema -- ve la LAN real
+# directo -- asi que se deja sin marcar (variable ausente/"0").
+AGENT_BEHIND_DOCKER_NAT = os.environ.get("AGENT_BEHIND_DOCKER_NAT", "0") == "1"
 
 # Mismos flags permitidos que el driver de nmap dentro de scan-service
 # (ver app/scanners/nmap.py) -- se mantiene la misma restriccion aca por
@@ -668,27 +686,80 @@ SCANNERS = {
 }
 
 
+def _is_private_ip_target(target: str) -> bool:
+    """True si `target` es una IP o CIDR de rango privado (LAN/RFC1918 o
+    link-local) -- lo unico que nos importa distinguir aca es "esto es una
+    direccion de LAN", no clasificar hostnames (un dominio como
+    'intranet.miempresa.local' no se puede resolver sin red real, asi que
+    se deja pasar sin bloquear: si de verdad es LAN, va a fallar como
+    siempre, pero no perdemos targets legitimos por un falso positivo)."""
+    t = target.strip().split("/")[0] if "/" in target.strip() else target.strip()
+    try:
+        return ipaddress.ip_address(t).is_private
+    except ValueError:
+        return False
+
+
+def _process_job(job: dict) -> None:
+    """Corre UN job asignado y reporta su resultado. Vive en su propio
+    thread (ver run_once) para que un job lento no bloquee a los demas
+    jobs que este mismo agente ya se llevo en el mismo poll."""
+    job_id = job["id"]
+    target = job["target"]
+    scanner_type = job.get("scanner_type", "nmap")
+    options = job.get("options") or {}
+    log(f"job {job_id}: escaneando {target} (scanner={scanner_type})...")
+
+    runner = SCANNERS.get(scanner_type)
+    if runner is None:
+        submit_result(job_id, "failed", [], error_message=f"este agente no sabe correr el scanner '{scanner_type}'")
+        return
+
+    if scanner_type != "nmap" and AGENT_BEHIND_DOCKER_NAT and _is_private_ip_target(target):
+        # Sin este chequeo, trivy/nuclei/openvas se quedaban varios
+        # minutos intentando conectar a una IP de LAN inalcanzable desde
+        # adentro de Docker Desktop antes de fallar por timeout -- mejor
+        # fallar al toque con un mensaje que diga que hacer.
+        error_msg = (
+            f"'{target}' parece una IP de LAN, y este agente (Agente Docker) corre DENTRO de Docker "
+            f"Desktop: el scanner '{scanner_type}' no tiene forma de atravesar su NAT hacia la red real "
+            "(a diferencia de nmap, que sí la tiene). Usa el Agente LAN (remote-agent/agente-lan.ps1, "
+            "corriendo en una PC con visibilidad real a esa red) para este target."
+        )
+        log(f"job {job_id}: rechazado -- {error_msg}")
+        submit_result(job_id, "failed", [], error_message=error_msg)
+        return
+
+    try:
+        raw, findings, error = runner(target, options)
+    except Exception as exc:  # noqa: BLE001 -- un job roto no debe tumbar el thread ni dejar el job "assigned" para siempre
+        log(f"job {job_id}: excepcion no manejada -- {exc}")
+        submit_result(job_id, "failed", [], error_message=f"error inesperado en el agente: {exc}")
+        return
+
+    if error:
+        log(f"job {job_id}: fallo -- {error}")
+        submit_result(job_id, "failed", [], raw_output=raw, error_message=error)
+    else:
+        log(f"job {job_id}: completado, {len(findings)} hallazgo(s)")
+        submit_result(job_id, "completed", findings, raw_output=raw)
+
+
+_job_executor = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_JOBS)
+
+
 def run_once() -> None:
     jobs = poll_jobs()
     if not jobs:
         return
+    # Se despachan todos a threads y se sigue -- no se espera (as_completed)
+    # a que terminen: el loop principal (ver main()) tiene que seguir
+    # polleando cada POLL_INTERVAL_SECONDS por jobs NUEVOS aunque los de
+    # esta tanda sigan corriendo (algunos pueden tardar varios minutos,
+    # ej. openvas). Cada uno reporta su resultado solo, de forma
+    # independiente, apenas termina.
     for job in jobs:
-        job_id = job["id"]
-        target = job["target"]
-        scanner_type = job.get("scanner_type", "nmap")
-        options = job.get("options") or {}
-        log(f"job {job_id}: escaneando {target} (scanner={scanner_type})...")
-        runner = SCANNERS.get(scanner_type)
-        if runner is None:
-            submit_result(job_id, "failed", [], error_message=f"este agente no sabe correr el scanner '{scanner_type}'")
-            continue
-        raw, findings, error = runner(target, options)
-        if error:
-            log(f"job {job_id}: fallo -- {error}")
-            submit_result(job_id, "failed", [], raw_output=raw, error_message=error)
-        else:
-            log(f"job {job_id}: completado, {len(findings)} hallazgo(s)")
-            submit_result(job_id, "completed", findings, raw_output=raw)
+        _job_executor.submit(_process_job, job)
 
 
 def main() -> None:

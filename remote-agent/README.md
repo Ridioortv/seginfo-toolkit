@@ -166,6 +166,22 @@ para priorizacion (CVSS/EPSS/KEV), igual que un escaneo normal.
   mismos timeouts que scan-service (180s por escaneo, 30s por host que
   no responde) -- si necesitas escanear rangos grandes, es mejor dividir
   en varios jobs mas chicos que un solo `/24` entero.
+- **Los jobs quedan "pending"/"assigned" mucho tiempo usando el Agente
+  Docker contra una IP de LAN (192.168.x.x, 10.x.x.x)**: el Agente
+  Docker corre DENTRO de Docker Desktop, detras de su NAT. Solo nmap
+  tiene forma de atravesarlo (usa un escaner TCP interno en vez del
+  binario real -- ver `AGENT_FORCE_INTERNAL_NMAP`); trivy/nuclei/openvas
+  no, y con `AGENT_BEHIND_DOCKER_NAT=1` (ya seteado para el Agente
+  Docker en `docker-compose.yml`) esos 3 fallan al toque con un mensaje
+  claro en vez de quedarse varios minutos intentando conectar. La
+  solucion real es usar el **Agente LAN** (`agente-lan.ps1`, corre
+  FUERA de Docker en una PC con visibilidad real a esa red) para esos 3
+  scanners contra targets de LAN.
+- **Varios jobs asignados a la vez, uno lento no debería trabar a los
+  demas**: el agente los corre en threads separados (hasta
+  `AGENT_MAX_CONCURRENT_JOBS`, default 8) -- un openvas/nuclei que tarda
+  varios minutos no bloquea que un nmap rapido, asignado en el mismo
+  poll, se resuelva enseguida.
 
 ---
 
