@@ -835,3 +835,71 @@ tome el frontend nuevo. La api key de "Agente Docker" y "Agente LAN" va a
 aparecer directo en la tabla de agentes de `/scans`, y ya no se van a
 poder borrar desde ahi.
 
+## Agente LAN no se llevaba sus propios jobs: carrera contra Agente Docker (2026-09-28)
+
+Manu reporto, con capturas: un job de nuclei mandado explicitamente a
+"Agente LAN" contra `192.168.0.1` terminaba FAILED, pero con el mensaje de
+error que tira el guard de LAN-detras-de-NAT (ver seccion anterior) -- un
+mensaje que dice "este agente (Agente Docker)... usa el Agente LAN para
+este target". O sea: el job estaba dirigido a Agente LAN, pero lo proceso
+Agente Docker.
+
+La causa: `poll_agent_jobs` en `services.py` le da a los agentes bootstrap
+("Agente Docker" y "Agente LAN", los dos siempre-encendidos) trato de
+"worker universal" -- pueden tomar cualquier job pendiente, sin importar a
+que agente lo mandaron, para cubrirse entre si si uno esta caido. El
+problema es que esto corria SIN ningun margen: un job recien creado para
+Agente LAN era candidato para Agente Docker desde el instante cero, asi
+que quedaba una carrera pura entre los dos poll loops (gana el que
+pollee primero). Si Agente LAN nunca llego a arrancar (`agente-lan.ps1`
+no estaba corriendo -- la tabla de agentes lo mostraba como "nunca hizo
+polling", que es justo lo que se vio en las capturas) o si Agente Docker
+sencillamente pollea primero, Agente Docker se lleva el job -- y como
+tiene el guard de LAN activado (`AGENT_BEHIND_DOCKER_NAT=1`), lo rechaza
+al toque en vez de dejarselo a un Agente LAN que si podria haberlo
+resuelto.
+
+Se agrego `agent_can_claim_job()`, una funcion pura que decide si un
+agente puede llevarse un job candidato: el agente al que se lo mandaron
+siempre puede tomarlo apenas esta "pending" (sin cambios ahi); un agente
+bootstrap distinto solo puede tomarlo como red de contencion despues de
+`UNIVERSAL_WORKER_GRACE_SECONDS` (60s, mayor al intervalo de polling por
+defecto del agente) sin que el agente elegido lo haya tomado el mismo; y
+la recuperacion de jobs "assigned" huerfanos hace mas de 10 min sigue
+igual que antes. `poll_agent_jobs` ahora trae los candidatos de la base
+(mismo query de siempre) y filtra con esta funcion en vez de decidir todo
+en el WHERE, justamente para poder testear la regla sin DB real, como el
+resto de las reglas de negocio de este servicio.
+
+Con esto, si Agente LAN esta prendido y polleando (su intervalo por
+defecto es de 10s), se lleva sus propios jobs muchisimo antes de que se
+cumplan los 60s de margen, y Agente Docker nunca llega a competir por
+ellos. Si Agente LAN nunca aparece, Agente Docker lo sigue tomando igual
+tras el margen -- sigue habiendo una red de contencion, pero ya no le
+gana la carrera a un Agente LAN que si esta activo.
+
+Verificacion: 12 tests nuevos (`test_agent_job_claiming.py`) cubriendo
+las 4 combinaciones (propio/ajeno x bootstrap/no-bootstrap) en pending,
+el limite exacto del margen de 60s, la recuperacion de assigned huerfanos
+y sus bordes (sin created_at/assigned_at, otros estados) -- suite
+completa de scan-service en 106/106 verde. Import-sanity de `app.main`
+(26 rutas, sin errores).
+
+**Paso manual pendiente para Manu**: este cambio toca solo
+`scan-service` (nada de `remote-agent` ni `docker-compose.yml` ni el
+schema de la base):
+
+```powershell
+docker compose build --no-cache scan-service
+docker compose up -d
+```
+
+Esto no reemplaza tener que arrancar `remote-agent/agente-lan.ps1` en una
+PC con visibilidad real a la LAN -- si ese script no esta corriendo, un
+job mandado a "Agente LAN" sigue sin tener quien lo resuelva de verdad
+(Agente Docker lo va a tomar igual a los 60s como red de contencion, pero
+va a fallar con el mismo mensaje de siempre, porque el no puede atravesar
+el NAT). Vale la pena confirmar que la tabla de agentes en `/scans`
+muestre a "Agente LAN" con una fecha reciente en "Ultima vez visto" antes
+de lanzar un escaneo de LAN.
+

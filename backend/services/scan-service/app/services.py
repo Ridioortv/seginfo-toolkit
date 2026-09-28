@@ -754,19 +754,78 @@ async def get_agent_scan_job(db: AsyncSession, job_id: str, organization_id: str
     return job
 
 
+# Cuanto espera un job "pending" mandado a un agente bootstrap especifico
+# antes de volverse elegible para que el OTRO agente bootstrap se lo lleve
+# (ver agent_can_claim_job). Mayor al POLL_INTERVAL_SECONDS por defecto del
+# agente (10s, ver remote-agent/agent.py) para darle varias chances de
+# pollear su propio job antes de que el otro compita por el.
+UNIVERSAL_WORKER_GRACE_SECONDS = 60
+
+
+def agent_can_claim_job(
+    *,
+    agent_id: str,
+    is_bootstrap: bool,
+    job_agent_id: str,
+    job_status: str,
+    job_created_at: datetime | None,
+    job_assigned_at: datetime | None,
+    now: datetime,
+) -> bool:
+    """Regla pura de si `agent_id` puede llevarse este job en su proximo
+    poll (usada por poll_agent_jobs para filtrar los candidatos que ya trajo
+    de la base). Antes, un agente bootstrap tomaba CUALQUIER job 'pending'
+    apenas se creaba, sin importar a que agente lo habian mandado -- eso
+    hacia que "Agente Docker" y "Agente LAN" compitieran por el mismo job
+    recien creado (gana el que pollee primero, una moneda al aire): si
+    Agente Docker ganaba un job pensado para un target de LAN, lo rechazaba
+    al toque (ver AGENT_BEHIND_DOCKER_NAT en agent.py) ANTES de que Agente
+    LAN -- online y capaz de resolverlo -- tuviera la chance de tomarlo el
+    mismo, aunque el usuario lo hubiera elegido a proposito en el selector.
+
+    Reglas:
+    - El agente al que se lo mandaron explicitamente (job_agent_id) siempre
+      puede tomarlo apenas esta 'pending', sin esperar nada.
+    - Un agente bootstrap puede tomar un job 'pending' mandado a OTRO
+      agente recien despues de UNIVERSAL_WORKER_GRACE_SECONDS -- le da
+      tiempo al agente elegido de pollear su propio job primero si esta
+      prendido; si no aparece en ese margen (ej. no corrio
+      remote-agent/agente-lan.ps1), el otro bootstrap lo toma igual como
+      red de contencion en vez de dejarlo pending para siempre.
+    - Un agente bootstrap tambien recupera jobs 'assigned' huerfanos hace
+      mas de 10 min (de un reinicio del agente antes de reportar el
+      resultado) -- esto no cambio.
+    - Un agente normal (no bootstrap) nunca entra por esta funcion: solo ve
+      sus propios jobs pending via el query de poll_agent_jobs."""
+    if job_status == "pending":
+        if job_agent_id == agent_id:
+            return True
+        if not is_bootstrap:
+            return False
+        if job_created_at is None:
+            return False
+        return (now - job_created_at) >= timedelta(seconds=UNIVERSAL_WORKER_GRACE_SECONDS)
+    if job_status == "assigned" and is_bootstrap:
+        if job_assigned_at is None:
+            return False
+        return (now - job_assigned_at) >= timedelta(minutes=10)
+    return False
+
+
 async def poll_agent_jobs(db: AsyncSession, agent: ScanAgent, max_jobs: int = 5) -> list[AgentScanJob]:
     """Le entrega al agente sus jobs 'pending' y los pasa a 'assigned' en el
     mismo paso, para que un segundo poll (del mismo agente reiniciado, o de
     una instancia duplicada por error) no se lleve el mismo job dos veces."""
     agent.last_seen_at = _now()
-    if agent.created_by == "bootstrap":
-        # Worker universal (el agente siempre-encendido): toma cualquier job
-        # pendiente sin importar a que agente lo mandaron ni de que org sea, y
-        # ademas RECUPERA jobs que quedaron "assigned" hace mas de 10 min sin
-        # terminar (huerfanos de un reinicio del agente antes de reportar) --
-        # sin esto, un job tomado justo antes de un restart quedaria "assigned"
-        # para siempre.
-        stale_before = _now() - timedelta(minutes=10)
+    now = _now()
+    is_bootstrap = agent.created_by == "bootstrap"
+    if is_bootstrap:
+        # Trae candidatos "pending" (de cualquier agente/org) y "assigned"
+        # potencialmente huerfanos -- el filtro fino de cual puede tomar
+        # cada uno (propio al toque, ajeno recien tras el margen de
+        # gracia, huerfano tras 10 min) lo hace agent_can_claim_job abajo,
+        # no el query, para poder testear esa regla sin DB real.
+        stale_before = now - timedelta(minutes=10)
         query = select(AgentScanJob).where(
             or_(
                 AgentScanJob.status == "pending",
@@ -782,8 +841,23 @@ async def poll_agent_jobs(db: AsyncSession, agent: ScanAgent, max_jobs: int = 5)
         query = select(AgentScanJob).where(
             AgentScanJob.agent_id == agent.id, AgentScanJob.status == "pending"
         )
-    result = await db.execute(query.order_by(AgentScanJob.created_at.asc()).limit(max_jobs))
-    jobs = list(result.scalars().all())
+    result = await db.execute(query.order_by(AgentScanJob.created_at.asc()))
+    candidates = list(result.scalars().all())
+    if is_bootstrap:
+        candidates = [
+            job
+            for job in candidates
+            if agent_can_claim_job(
+                agent_id=agent.id,
+                is_bootstrap=True,
+                job_agent_id=job.agent_id,
+                job_status=job.status,
+                job_created_at=job.created_at,
+                job_assigned_at=job.assigned_at,
+                now=now,
+            )
+        ]
+    jobs = candidates[:max_jobs]
     for job in jobs:
         job.status = "assigned"
         job.assigned_at = _now()
