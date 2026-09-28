@@ -3,7 +3,6 @@
 app/scanners/base.py y docs/architecture.md para el alcance."""
 import os
 from contextlib import asynccontextmanager
-import shutil
 import tempfile
 from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware

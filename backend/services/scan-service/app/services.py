@@ -12,7 +12,7 @@ import httpx
 from sqlalchemy import select, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
-from app.models import ScanJob, ScanStatus, ScanSchedule, ScanAgent, AgentScanJob
+from app.models import ScanJob, ScanStatus, ScanSchedule, ScanAgent, AgentScanJob, ScannerType
 from app.scanners import get_driver, DRIVERS
 
 logger = configure_logging("scan-service")
