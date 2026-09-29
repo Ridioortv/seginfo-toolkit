@@ -530,14 +530,82 @@ export default function Scans() {
         <p className="empty-hint">
           Una regla corre solo mientras scan-service este arriba (usa su propio scheduler en proceso, sin
           infraestructura extra) -- si el contenedor se reinicia, las reglas habilitadas se vuelven a cargar solas
-          al arrancar. Sin agente (default), el escaneo corre DENTRO del contenedor: solo nmap y nuclei estan
-          disponibles (trivy no escanea IPs/hosts, usa el panel de arriba; openvas esta apagado por defecto) y, por
-          el aislamiento de red de Docker Desktop, solo alcanza targets de WAN/internet -- nunca tu LAN real.
-          Elegi un agente (ver "Agentes de escaneo remoto" mas abajo) para que la regla la ejecute EL en su lugar,
-          con la misma visibilidad de red que tenga esa maquina -- por ejemplo "Agente LAN" para poder programar
-          escaneos a IPs de tu red (192.168.x.x). La hora es la zona horaria configurada en el servidor (variable
-          SCHEDULER_TIMEZONE en .env, default UTC si no esta seteada) -- no necesariamente la hora de tu navegador.
+          al arrancar. La hora es la zona horaria configurada en el servidor (variable SCHEDULER_TIMEZONE en .env,
+          default UTC si no esta seteada) -- no necesariamente la hora de tu navegador.
         </p>
+
+        {(() => {
+          // Etiqueta + nota aparte para "Agente Docker": corre DENTRO de
+          // Docker (mismo host que scan-service) asi que ve internet y el
+          // host, pero no la LAN real -- a diferencia de "Agente LAN", que
+          // corre fuera de Docker con visibilidad de red completa. Se arma
+          // por nombre (mismo criterio que el aviso de "Agente LAN" caido
+          // mas abajo, en "Agentes de escaneo remoto") en vez de un campo
+          // nuevo en el modelo: no hace falta mas que distinguir estos dos
+          // casos conocidos para mostrar la aclaracion correcta.
+          const agentLabel = (a: ScanAgentOut) =>
+            a.name.toLowerCase().includes("docker") ? `${a.name} (internet/host)` : a.name;
+          const selectedAgent = (agents.data ?? []).find((a) => a.id === schedAgentId);
+          return (
+            <div className="panel" style={{ marginTop: 8, marginBottom: 8 }}>
+              <h3 style={{ marginTop: 0 }}>Quien ejecuta el escaneo</h3>
+              <p className="empty-hint">
+                Sin agente, la regla corre DENTRO del contenedor de scan-service: solo nmap y nuclei (trivy no
+                escanea IPs/hosts, usa el panel de arriba; openvas esta apagado por defecto) y, por el aislamiento
+                de red de Docker Desktop, solo alcanza WAN/internet -- nunca tu LAN real. Elegi{" "}
+                <strong>Agente LAN</strong> para poder programar escaneos a tu red real (192.168.x.x, etc.) o{" "}
+                <strong>Agente Docker</strong> para que lo ejecute el propio host Docker (internet/host, misma
+                visibilidad que corriendo sin agente). La api key de estos dos se carga sola -- no hace falta
+                pegarla. Para un agente registrado a mano hay que pegar su api key aca.
+              </p>
+              <div className="inline-form">
+                <select
+                  value={schedAgentId}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    setSchedAgentId(id);
+                    if (!id) {
+                      // Sin agente, openvas no es una opcion (ver el
+                      // <select> de scanner mas abajo) -- si estaba
+                      // elegido, lo bajamos a nmap para no dejar el
+                      // formulario en un estado invalido.
+                      if (schedScannerType === "openvas") setSchedScannerType("nmap");
+                      setSchedAgentApiKey("");
+                      return;
+                    }
+                    // Autocompletado: la key de los agentes bootstrap
+                    // (Agente LAN/Agente Docker) se resuelve sola desde
+                    // BOOTSTRAP_AGENTS (ver ScanAgentOut.bootstrap_api_key)
+                    // -- para un agente registrado a mano, bootstrap_api_key
+                    // viene null y el campo de abajo pide la key.
+                    const selected = (agents.data ?? []).find((a) => a.id === id);
+                    setSchedAgentApiKey(selected?.bootstrap_api_key ?? "");
+                  }}
+                >
+                  <option value="">Servidor (sin agente, WAN/internet)</option>
+                  {(agents.data ?? []).map((a) => (
+                    <option key={a.id} value={a.id}>{agentLabel(a)}</option>
+                  ))}
+                </select>
+                {schedAgentId && !selectedAgent?.bootstrap_api_key && (
+                  <input
+                    type="password"
+                    className="mono"
+                    placeholder="Api key del agente"
+                    value={schedAgentApiKey}
+                    onChange={(e) => setSchedAgentApiKey(e.target.value)}
+                    title="La api key que te mostro la UI al registrar el agente. Se valida contra el agente elegido antes de crear la regla; nunca se guarda."
+                  />
+                )}
+              </div>
+              {agents.data && agents.data.length === 0 && (
+                <p className="empty-hint" style={{ marginTop: 8 }}>
+                  No hay ningun agente registrado todavia (ver "Agentes de escaneo remoto" mas abajo).
+                </p>
+              )}
+            </div>
+          );
+        })()}
 
         <div className="inline-form">
           <input placeholder="Nombre" value={schedName} onChange={(e) => setSchedName(e.target.value)} />
@@ -552,43 +620,6 @@ export default function Scans() {
             value={schedTarget}
             onChange={(e) => setSchedTarget(e.target.value)}
           />
-        </div>
-        <div className="inline-form" style={{ marginTop: 8 }}>
-          <select
-            value={schedAgentId}
-            onChange={(e) => {
-              const id = e.target.value;
-              setSchedAgentId(id);
-              if (!id) {
-                // Sin agente, openvas no es una opcion (ver el <select> de
-                // scanner arriba) -- si estaba elegido, lo bajamos a nmap
-                // para no dejar el formulario en un estado invalido.
-                if (schedScannerType === "openvas") setSchedScannerType("nmap");
-                setSchedAgentApiKey("");
-                return;
-              }
-              // Mismo autocompletado que en "Escaneos remotos": la key de
-              // los agentes bootstrap (Agente LAN/Agente Docker) se resuelve
-              // sola desde BOOTSTRAP_AGENTS (ver ScanAgentOut.bootstrap_api_key).
-              const selected = (agents.data ?? []).find((a) => a.id === id);
-              setSchedAgentApiKey(selected?.bootstrap_api_key ?? "");
-            }}
-          >
-            <option value="">Correr en el servidor (sin agente, WAN/internet)</option>
-            {(agents.data ?? []).map((a) => (
-              <option key={a.id} value={a.id}>{a.name}</option>
-            ))}
-          </select>
-          {schedAgentId && (
-            <input
-              type="password"
-              className="mono"
-              placeholder="Api key del agente"
-              value={schedAgentApiKey}
-              onChange={(e) => setSchedAgentApiKey(e.target.value)}
-              title="La api key que te mostro la UI al registrar el agente. Se valida contra el agente elegido antes de crear la regla; nunca se guarda."
-            />
-          )}
         </div>
         <div className="inline-form" style={{ marginTop: 8 }}>
           <select value={schedFrequency} onChange={(e) => setSchedFrequency(e.target.value as "daily" | "weekly")}>
