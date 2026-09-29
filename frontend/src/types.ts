@@ -90,6 +90,28 @@ export interface OpenvasStatusOut {
   detail: string;
 }
 
+// Activacion AUTOMATICA de OpenVAS (boton "Probar y activar" con barra de
+// progreso) -- ver POST /openvas/auto-activate y GET
+// /openvas/auto-activate/progress en el backend, y app/schemas.py::
+// OpenvasAutoActivateRequest / OpenvasProgressOut.
+export interface OpenvasAutoActivateRequest {
+  gvm_user?: string;
+  gvm_password?: string;
+  gvm_socket_path?: string;
+}
+
+export interface OpenvasProgressOut {
+  running: boolean;
+  provisioned: boolean;
+  ready: boolean;
+  phase: string;
+  percent: number;
+  detail: string;
+  error: string | null;
+  gvm_user: string | null;
+  gvm_password: string | null;
+}
+
 export interface AgentScanJobOut {
   id: string;
   agent_id: string;

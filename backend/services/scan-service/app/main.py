@@ -4,6 +4,7 @@ app/scanners/base.py y docs/architecture.md para el alcance."""
 import os
 from contextlib import asynccontextmanager
 import tempfile
+import httpx
 from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, make_asgi_app
@@ -36,6 +37,8 @@ from app.schemas import (
     ImageInventoryItem,
     OpenvasActivateRequest,
     OpenvasStatusOut,
+    OpenvasAutoActivateRequest,
+    OpenvasProgressOut,
 )
 from app.dependencies import get_current_claims, require_role, get_agent_from_key
 from app.scanners.openvas import probe_connection as _probe_openvas_connection
@@ -194,6 +197,11 @@ async def scanners_status(claims: dict = Depends(get_current_claims)):
 
 
 _DEFAULT_GVM_SOCKET_PATH = "/run/gvmd/gvmd.sock"
+# openvas-orchestrator: el UNICO servicio con acceso al socket de Docker
+# (ver openvas-orchestrator/main.py y docker-compose.yml) -- lo que hace
+# posible /openvas/auto-activate* mas abajo. Mismo patron que
+# VULN_SERVICE_URL/SIEM_SERVICE_URL en services.py.
+OPENVAS_ORCHESTRATOR_URL = os.getenv("OPENVAS_ORCHESTRATOR_URL", "http://openvas-orchestrator:8000")
 
 
 @app.get("/openvas/status", response_model=OpenvasStatusOut)
@@ -241,6 +249,79 @@ async def openvas_activate(
     os.environ["GVM_SOCKET_PATH"] = socket_path
     logger.info("openvas activado desde la UI (credenciales aplicadas en memoria, sin reiniciar el contenedor)")
     return OpenvasStatusOut(configured=True, ready=True, detail=detail)
+
+
+@app.post("/openvas/auto-activate", response_model=OpenvasProgressOut)
+async def openvas_auto_activate(
+    payload: OpenvasAutoActivateRequest,
+    claims: dict = Depends(require_role("admin", "soc_manager")),
+):
+    """A diferencia de /openvas/activate (que solo prueba credenciales
+    contra un gvmd que YA esta arriba, levantado a mano con
+    openvas/Encender-OpenVAS.ps1), esto le pide a openvas-orchestrator --
+    el unico servicio con acceso al socket de Docker, ver
+    openvas-orchestrator/main.py -- que levante el profile "openvas" el
+    mismo (~16 contenedores), cree/actualice el usuario GVM, y guarde las
+    credenciales en .env. Puede tardar 20-40 minutos la primera vez
+    (sincronizacion de feeds) asi que esto solo DISPARA el proceso y
+    devuelve al toque -- el frontend consulta el progreso con
+    GET /openvas/auto-activate/progress."""
+    socket_path = payload.gvm_socket_path.strip() or os.getenv("GVM_SOCKET_PATH") or _DEFAULT_GVM_SOCKET_PATH
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                f"{OPENVAS_ORCHESTRATOR_URL}/start",
+                json={"gvm_user": payload.gvm_user, "gvm_password": payload.gvm_password, "gvm_socket_path": socket_path},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"No se pudo contactar al orquestador de OpenVAS: {exc}")
+    logger.info("activacion automatica de openvas disparada", extra={"actor": claims.get("sub")})
+    return OpenvasProgressOut(**data, ready=False)
+
+
+@app.get("/openvas/auto-activate/progress", response_model=OpenvasProgressOut)
+async def openvas_auto_activate_progress(claims: dict = Depends(require_role("admin", "soc_manager"))):
+    """Progreso de la activacion automatica disparada por
+    POST /openvas/auto-activate. Cuando el orquestador ya termino de
+    levantar los contenedores y crear el usuario GVM (`provisioned`), esto
+    ADEMAS prueba la conexion GMP de verdad -- misma funcion que usa
+    /openvas/activate -- antes de aplicar las credenciales en memoria y
+    recien ahi devolver `ready=True`; nunca se confia ciegamente en lo que
+    reporta el orquestador."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{OPENVAS_ORCHESTRATOR_URL}/status")
+            resp.raise_for_status()
+            data = resp.json()
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"No se pudo contactar al orquestador de OpenVAS: {exc}")
+
+    ready = False
+    probe_error = None
+    if data.get("provisioned") and data.get("gvm_user") and data.get("gvm_password"):
+        socket_path = data.get("gvm_socket_path") or os.getenv("GVM_SOCKET_PATH") or _DEFAULT_GVM_SOCKET_PATH
+        ok, detail = await _probe_openvas_connection(socket_path, data["gvm_user"], data["gvm_password"], timeout=15)
+        if ok:
+            os.environ["GVM_USER"] = data["gvm_user"]
+            os.environ["GVM_PASSWORD"] = data["gvm_password"]
+            os.environ["GVM_SOCKET_PATH"] = socket_path
+            ready = True
+        else:
+            probe_error = detail
+
+    return OpenvasProgressOut(
+        running=data.get("running", False),
+        provisioned=data.get("provisioned", False),
+        ready=ready,
+        phase=data.get("phase", ""),
+        percent=data.get("percent", 0),
+        detail=data.get("detail", ""),
+        error=data.get("error") or probe_error,
+        gvm_user=data.get("gvm_user"),
+        gvm_password=data.get("gvm_password"),
+    )
 
 
 @app.post("/scans", response_model=ScanJobOut, status_code=status.HTTP_201_CREATED)

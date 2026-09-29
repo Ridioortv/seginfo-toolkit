@@ -387,6 +387,12 @@ services:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
       GVM_SOCKET_PATH: /run/gvmd/gvmd.sock
+      # Sidecar con acceso al socket de Docker que levanta el profile
+      # "openvas" a pedido (ver openvas-orchestrator/main.py y el boton
+      # "Probar y activar" -> POST /openvas/auto-activate). scan-service
+      # NUNCA toca el socket de Docker el mismo -- solo le pega a este
+      # servicio interno via la red default de compose (sin puerto publicado).
+      OPENVAS_ORCHESTRATOR_URL: http://openvas-orchestrator:8000
     volumes:
       # Cache de la DB de CVEs de trivy y de las plantillas de nuclei --
       # persistentes entre reinicios/rebuilds para que solo se paguen
@@ -404,6 +410,38 @@ services:
         condition: service_healthy
     ports:
       - "8003:8000"
+
+  # Sidecar de activacion automatica de OpenVAS ("Probar y activar" con
+  # barra de progreso, ver frontend/src/pages/Scans.tsx y main.py::
+  # openvas_auto_activate). Es el UNICO servicio de todo SentinelOps con
+  # acceso al socket de Docker -- necesario para poder levantar el profile
+  # "openvas" (16 contenedores) el mismo en vez de que el operador corra
+  # openvas/Encender-OpenVAS.ps1 a mano. Para acotar el riesgo que eso
+  # agrega:
+  #   - No tiene puerto publicado: solo se alcanza en
+  #     http://openvas-orchestrator:8000 desde dentro de la red default
+  #     de compose (scan-service es el unico que le habla).
+  #   - Expone nada mas 2 endpoints (POST /start, GET /status, ver
+  #     openvas-orchestrator/main.py) -- no hay forma de pedirle acciones
+  #     arbitrarias de Docker via su API.
+  #   - Solo monta el socket de Docker + este mismo docker-compose.yml y
+  #     .env (de solo lectura via docker compose, necesita escribir .env
+  #     para guardar las credenciales GVM) -- no monta el resto del repo.
+  #   - NO esta en gvm_internal: no tiene ningun camino de red hacia
+  #     gvmd/ospd-openvas, solo orquesta sus contenedores via el CLI de
+  #     Docker.
+  openvas-orchestrator:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: openvas-orchestrator/Dockerfile
+    environment:
+      COMPOSE_PROJECT_NAME: seginfo-toolkit
+      COMPOSE_PROJECT_DIR: /workspace
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./docker-compose.yml:/workspace/docker-compose.yml
+      - ./.env:/workspace/.env
 
   # Agente de escaneo remoto que corre DENTRO del stack. Reusa la imagen de
   # scan-service (ya trae nmap/trivy/nuclei + gvm-cli) y hace polling a

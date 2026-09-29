@@ -250,3 +250,35 @@ class OpenvasStatusOut(BaseModel):
     configured: bool
     ready: bool
     detail: str
+
+
+# --- Activacion AUTOMATICA de OpenVAS (ver POST/GET /openvas/auto-activate*
+# en main.py) -- a diferencia de OpenvasActivateRequest de arriba (que solo
+# prueba credenciales contra un gvmd YA levantado a mano), esta llama al
+# servicio openvas-orchestrator (unico con acceso al socket de Docker, ver
+# openvas-orchestrator/main.py) para que levante el profile "openvas" el
+# mismo, cree/actualice el usuario GVM, y guarde las credenciales en .env
+# -- sin que el operador corra ningun script de PowerShell.
+
+class OpenvasAutoActivateRequest(BaseModel):
+    gvm_user: str = Field(default="admin", min_length=1)
+    gvm_password: str = Field(default="", description="Vacio = el orquestador genera una password aleatoria")
+    gvm_socket_path: str = Field(default="", description="Vacio usa el default /run/gvmd/gvmd.sock")
+
+
+class OpenvasProgressOut(BaseModel):
+    running: bool
+    # Contenedores arriba + usuario GVM creado/actualizado + .env escrito
+    # -- por el orquestador. NO implica todavia que scan-service haya
+    # confirmado la conexion GMP (eso es `ready`, ver abajo).
+    provisioned: bool
+    # True solo cuando, ADEMAS de `provisioned`, main.py::openvas_auto_activate_progress
+    # ya probo la conexion GMP con exito (misma funcion que usa el
+    # /openvas/activate manual) y aplico las credenciales en memoria.
+    ready: bool
+    phase: str
+    percent: int
+    detail: str
+    error: str | None = None
+    gvm_user: str | None = None
+    gvm_password: str | None = None

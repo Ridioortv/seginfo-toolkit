@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { scanApi, vulnApi } from "../services/api";
@@ -10,6 +10,7 @@ import type {
   AgentScanJobOut,
   VulnerabilityOut,
   OpenvasStatusOut,
+  OpenvasProgressOut,
 } from "../types";
 import PageHeader from "../components/PageHeader";
 import { SeverityBadge, StatusBadge } from "../components/Badge";
@@ -179,6 +180,14 @@ export default function Scans() {
   const [ovUser, setOvUser] = useState("admin");
   const [ovPassword, setOvPassword] = useState("");
   const [ovSocket, setOvSocket] = useState("");
+  // Activacion automatica de OpenVAS (boton "Probar y activar" -> POST
+  // /openvas/auto-activate, ver mas abajo). autoActivating controla el
+  // polling de progreso; autoActivateResult guarda las credenciales a
+  // mostrar una vez listo (se limpia solo al cerrar el panel).
+  const [autoActivating, setAutoActivating] = useState(false);
+  const [autoActivateResult, setAutoActivateResult] = useState<{ gvm_user: string; gvm_password: string } | null>(
+    null,
+  );
 
   // Errores de acciones sobre filas ya existentes (togglear/borrar) --
   // separado de formError/createX.isError, que son solo para los
@@ -289,6 +298,52 @@ export default function Scans() {
       }
     },
   });
+
+  // Levanta OpenVAS de punta a punta (contenedores + feeds + usuario GVM)
+  // via el sidecar openvas-orchestrator, sin que el operador toque
+  // PowerShell -- ver POST /openvas/auto-activate en main.py.
+  const autoActivateOpenvas = useMutation({
+    mutationFn: async () =>
+      (
+        await scanApi.post<OpenvasProgressOut>("/openvas/auto-activate", {
+          gvm_user: ovUser.trim() || "admin",
+          gvm_password: ovPassword,
+          gvm_socket_path: ovSocket,
+        })
+      ).data,
+    onSuccess: (data) => {
+      setAutoActivateResult(null);
+      setAutoActivating(true);
+      queryClient.setQueryData(["openvas-progress"], data);
+    },
+  });
+
+  // Polling del progreso mientras la activacion automatica esta en curso
+  // -- ver GET /openvas/auto-activate/progress.
+  const openvasProgress = useQuery({
+    queryKey: ["openvas-progress"],
+    queryFn: async () => (await scanApi.get<OpenvasProgressOut>("/openvas/auto-activate/progress")).data,
+    enabled: autoActivating,
+    refetchInterval: 3000,
+    retry: false,
+  });
+
+  useEffect(() => {
+    const data = openvasProgress.data;
+    if (!data) return;
+    if (data.ready) {
+      setAutoActivating(false);
+      setAutoActivateResult({ gvm_user: data.gvm_user ?? ovUser, gvm_password: data.gvm_password ?? "" });
+      queryClient.setQueryData(["openvas-status"], { configured: true, ready: true, detail: data.detail });
+    } else if (data.error) {
+      setAutoActivating(false);
+    } else if (!data.running) {
+      // Estado idle inesperado (nunca se disparo /start) -- no sigas
+      // consultando por las dudas.
+      setAutoActivating(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openvasProgress.data]);
 
   const createAgent = useMutation({
     mutationFn: async () => (await scanApi.post<ScanAgentCreated>("/agents", { name: agentName })).data,
@@ -863,61 +918,167 @@ export default function Scans() {
         {openvasPanelOpen && !openvasReady && (
           <div className="panel" style={{ marginBottom: 10, border: "1px solid #d9a900" }}>
             <h3 style={{ marginTop: 0 }}>Activar OpenVAS</h3>
-            <p className="empty-hint">
-              OpenVAS es el escaner mas pesado (~16 contenedores extra, varios GB de feeds) y por eso arranca
-              apagado. Este backend no tiene acceso a Docker, asi que el primer paso hay que hacerlo desde
-              PowerShell en la PC donde corre el stack:
-            </p>
-            <ol className="empty-hint" style={{ paddingLeft: 20 }}>
-              <li>
-                Abri PowerShell en la carpeta del proyecto y corre:{" "}
-                <code className="mono" style={{ userSelect: "all" }}>
-                  powershell -ExecutionPolicy Bypass -File openvas\Encender-OpenVAS.ps1
-                </code>
-              </li>
-              <li>
-                Espera 20-40 minutos (la primera vez) a que los feeds terminen de sincronizar. Se puede chequear el
-                progreso con <code className="mono">docker compose --profile openvas ps</code>.
-              </li>
-              <li>
-                Corre <code className="mono">openvas\Configurar-OpenVAS.ps1</code> (crea el usuario GVM y muestra la
-                contraseña generada) -- o si ya tenes usuario/contraseña de GVM, pegalos aca abajo directamente.
-              </li>
-            </ol>
-            <div className="inline-form" style={{ marginTop: 8 }}>
-              <input placeholder="Usuario GVM" value={ovUser} onChange={(e) => setOvUser(e.target.value)} />
-              <input
-                type="password"
-                className="mono"
-                placeholder="Contraseña GVM"
-                value={ovPassword}
-                onChange={(e) => setOvPassword(e.target.value)}
-              />
-              <input
-                className="mono"
-                placeholder="Socket (opcional, default /run/gvmd/gvmd.sock)"
-                value={ovSocket}
-                onChange={(e) => setOvSocket(e.target.value)}
-              />
-              <button
-                className="btn-primary"
-                onClick={() => activateOpenvas.mutate()}
-                disabled={activateOpenvas.isPending || !ovUser.trim() || !ovPassword.trim()}
-              >
-                {activateOpenvas.isPending ? "Probando conexion..." : "Probar y activar"}
-              </button>
-            </div>
-            {activateOpenvas.isError && (
-              <p className="error-text">
-                No se pudo activar OpenVAS.{" "}
-                <span className="error-detail">{connectionErrorDetail(activateOpenvas.error)}</span>
-              </p>
+
+            {autoActivateResult ? (
+              <>
+                <p className="empty-hint" style={{ color: "var(--success, #2f9e44)" }}>
+                  OpenVAS quedo activo y listo para usarse.
+                </p>
+                <p className="empty-hint">
+                  Usuario GVM:{" "}
+                  <code className="mono" style={{ userSelect: "all" }}>
+                    {autoActivateResult.gvm_user}
+                  </code>
+                  {autoActivateResult.gvm_password && (
+                    <>
+                      {" "}
+                      -- Contraseña:{" "}
+                      <code className="mono" style={{ userSelect: "all" }}>
+                        {autoActivateResult.gvm_password}
+                      </code>
+                    </>
+                  )}
+                </p>
+                <p className="empty-hint">
+                  Guardala si la necesitas despues -- ya quedo escrita en .env, asi que sobrevive un reinicio del
+                  stack.
+                </p>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => {
+                    setAutoActivateResult(null);
+                    setOpenvasPanelOpen(false);
+                    setOvPassword("");
+                  }}
+                >
+                  Cerrar
+                </button>
+              </>
+            ) : autoActivating ? (
+              <>
+                <p className="empty-hint">
+                  Levantando OpenVAS (contenedores, sincronizacion de feeds y usuario GVM) -- la primera vez puede
+                  tardar 20-40 minutos por la sincronizacion de feeds. Podes navegar a otra pantalla, sigue
+                  corriendo solo en el servidor.
+                </p>
+                <div
+                  style={{
+                    background: "var(--bg-2, #eee)",
+                    borderRadius: 6,
+                    overflow: "hidden",
+                    height: 18,
+                    marginTop: 8,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${Math.min(100, Math.max(3, openvasProgress.data?.percent ?? 3))}%`,
+                      background: "var(--accent, #2f7dd9)",
+                      height: "100%",
+                      transition: "width 0.4s ease",
+                    }}
+                  />
+                </div>
+                <p className="empty-hint" style={{ marginTop: 6 }}>
+                  {openvasProgress.data?.percent ?? 1}% -- {openvasProgress.data?.detail || "Iniciando..."}
+                </p>
+                {openvasProgress.isError && (
+                  <p className="error-text">
+                    No se pudo consultar el progreso.{" "}
+                    <span className="error-detail">{connectionErrorDetail(openvasProgress.error)}</span>
+                  </p>
+                )}
+              </>
+            ) : (
+              <>
+                <p className="empty-hint">
+                  OpenVAS es el escaner mas pesado (~16 contenedores extra, varios GB de feeds) y por eso arranca
+                  apagado. Con este boton se levanta solo -- contenedores, sincronizacion de feeds y usuario GVM --
+                  sin tocar nada mas. La primera vez puede tardar 20-40 minutos por la sincronizacion de feeds.
+                </p>
+                <div className="inline-form" style={{ marginTop: 8 }}>
+                  <input
+                    placeholder="Usuario GVM (default admin)"
+                    value={ovUser}
+                    onChange={(e) => setOvUser(e.target.value)}
+                  />
+                  <input
+                    type="password"
+                    className="mono"
+                    placeholder="Contraseña GVM (opcional, vacio = generada sola)"
+                    value={ovPassword}
+                    onChange={(e) => setOvPassword(e.target.value)}
+                  />
+                  <input
+                    className="mono"
+                    placeholder="Socket (opcional, default /run/gvmd/gvmd.sock)"
+                    value={ovSocket}
+                    onChange={(e) => setOvSocket(e.target.value)}
+                  />
+                  <button
+                    className="btn-primary"
+                    onClick={() => autoActivateOpenvas.mutate()}
+                    disabled={autoActivateOpenvas.isPending}
+                  >
+                    {autoActivateOpenvas.isPending ? "Iniciando..." : "Probar y activar"}
+                  </button>
+                </div>
+                {autoActivateOpenvas.isError && (
+                  <p className="error-text">
+                    No se pudo iniciar la activacion de OpenVAS.{" "}
+                    <span className="error-detail">{connectionErrorDetail(autoActivateOpenvas.error)}</span>
+                  </p>
+                )}
+
+                <details style={{ marginTop: 12 }}>
+                  <summary className="empty-hint" style={{ cursor: "pointer" }}>
+                    Metodo manual (avanzado -- correr los scripts de PowerShell vos mismo)
+                  </summary>
+                  <div style={{ marginTop: 8 }}>
+                    <ol className="empty-hint" style={{ paddingLeft: 20 }}>
+                      <li>
+                        Abri PowerShell en la carpeta del proyecto y corre:{" "}
+                        <code className="mono" style={{ userSelect: "all" }}>
+                          powershell -ExecutionPolicy Bypass -File openvas\Encender-OpenVAS.ps1
+                        </code>
+                      </li>
+                      <li>
+                        Espera 20-40 minutos (la primera vez) a que los feeds terminen de sincronizar. Se puede
+                        chequear el progreso con <code className="mono">docker compose --profile openvas ps</code>.
+                      </li>
+                      <li>
+                        Corre <code className="mono">openvas\Configurar-OpenVAS.ps1</code> (crea el usuario GVM y
+                        muestra la contraseña generada) -- o si ya tenes usuario/contraseña de GVM, pegalos arriba y
+                        usa el boton de abajo.
+                      </li>
+                    </ol>
+                    <div className="inline-form">
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => activateOpenvas.mutate()}
+                        disabled={activateOpenvas.isPending || !ovUser.trim() || !ovPassword.trim()}
+                      >
+                        {activateOpenvas.isPending ? "Probando conexion..." : "Probar conexion (sin orquestador)"}
+                      </button>
+                    </div>
+                    {activateOpenvas.isError && (
+                      <p className="error-text">
+                        No se pudo activar OpenVAS.{" "}
+                        <span className="error-detail">{connectionErrorDetail(activateOpenvas.error)}</span>
+                      </p>
+                    )}
+                    <p className="empty-hint" style={{ marginTop: 8 }}>
+                      Esto prueba la conexion GMP con las credenciales de arriba y las activa en memoria, sin pasar
+                      por el orquestador ni tocar Docker. Para que quede guardado tambien despues de un reinicio,
+                      corre Configurar-OpenVAS.ps1 (escribe las credenciales en .env). Para apagar todo:{" "}
+                      <code className="mono">openvas\Apagar-OpenVAS.ps1</code>.
+                    </p>
+                  </div>
+                </details>
+              </>
             )}
-            <p className="empty-hint" style={{ marginTop: 8 }}>
-              Esto activa OpenVAS en memoria, sin reiniciar el contenedor. Para que quede guardado tambien despues
-              de un reinicio, corre Configurar-OpenVAS.ps1 (escribe las credenciales en .env). Para apagarlo:{" "}
-              <code className="mono">openvas\Apagar-OpenVAS.ps1</code>.
-            </p>
           </div>
         )}
 
