@@ -9,7 +9,7 @@ import secrets
 import hashlib
 from datetime import datetime, timezone, timedelta
 import httpx
-from sqlalchemy import select, or_, and_
+from sqlalchemy import select, or_, and_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
 from app.models import ScanJob, ScanStatus, ScanSchedule, ScanAgent, AgentScanJob, ScannerType
@@ -723,8 +723,27 @@ async def detect_primary_organization(db: AsyncSession, fallback: str) -> str:
     """Devuelve el organization_id 'real' de este deployment: el de los
     agentes o jobs que ya creo un usuario. Sirve para que los agentes
     bootstrap queden en el MISMO org que usa la cuenta (que puede NO ser
-    DEFAULT segun como se registro) y asi aparezcan en su UI. Si todavia no
-    hay datos de usuario, usa el fallback."""
+    DEFAULT segun como se registro) y asi aparezcan en su UI.
+
+    BUG REAL que encontramos en produccion (Manu, 2026-09-29): las dos
+    primeras anclas (un ScanAgent manual, o un AgentScanJob) son datos
+    TRANSITORIOS que el usuario puede borrar por completo (ej. el boton
+    "Limpiar todos los escaneos remotos" de la UI, o simplemente nunca
+    haber registrado un agente manual) -- en cuanto no queda ninguna,
+    esta funcion caia derecho al `fallback` (DEFAULT_ORGANIZATION_ID, un
+    UUID FIJO interno de scan-service, ver backend/shared/tenancy.py),
+    que casi nunca es el id REAL de la organizacion que auth-service le
+    genero al usuario (ese es un UUID random). Resultado: en el
+    siguiente reinicio, ensure_bootstrap_agent "movia" a Agente Docker/
+    Agente LAN al organization_id equivocado y desaparecian de la UI del
+    usuario sin ningun error visible.
+
+    Por eso se agrega una tercera ancla, mucho mas estable: la tabla
+    `organizations` (de auth-service, pero en la MISMA base fisica) --
+    si hay una sola organizacion dada de alta, que es el caso tipico
+    on-prem de un solo cliente, es sin duda la real. Con creds/schema
+    invalidos (deployment sin esa tabla) esto no debe romper el arranque,
+    de ahi el try/except."""
     q = await db.execute(
         select(ScanAgent.organization_id)
         .where(ScanAgent.created_by != "bootstrap", ScanAgent.organization_id.isnot(None))
@@ -738,7 +757,17 @@ async def detect_primary_organization(db: AsyncSession, fallback: str) -> str:
         .where(AgentScanJob.organization_id.isnot(None))
         .order_by(AgentScanJob.created_at.desc()).limit(1)
     )
-    return q.scalar_one_or_none() or fallback
+    org = q.scalar_one_or_none()
+    if org:
+        return org
+    try:
+        result = await db.execute(text("SELECT id FROM organizations LIMIT 2"))
+        rows = result.fetchall()
+        if len(rows) == 1:
+            return str(rows[0][0])
+    except Exception:  # noqa: BLE001 -- deployment sin tabla organizations, no debe tumbar el arranque
+        pass
+    return fallback
 
 
 async def create_agent(db: AsyncSession, payload, actor: str, organization_id: str) -> tuple[ScanAgent, str]:
