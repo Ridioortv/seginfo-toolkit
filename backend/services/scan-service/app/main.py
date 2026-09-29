@@ -2,6 +2,7 @@
 (nmap/trivy/nuclei/openvas) en modo SOLO DETECCION. Ver
 app/scanners/base.py y docs/architecture.md para el alcance."""
 import os
+import asyncio
 from contextlib import asynccontextmanager
 import tempfile
 import httpx
@@ -204,6 +205,29 @@ _DEFAULT_GVM_SOCKET_PATH = "/run/gvmd/gvmd.sock"
 OPENVAS_ORCHESTRATOR_URL = os.getenv("OPENVAS_ORCHESTRATOR_URL", "http://openvas-orchestrator:8000")
 
 
+async def _call_orchestrator(method: str, path: str, *, json_body: dict | None = None, timeout: float = 15) -> dict:
+    """POST/GET al orquestador con un puñado de reintentos cortos antes de
+    darse por vencido. Docker (sobre todo Docker Desktop en Windows/WSL2)
+    puede tardar un instante en resolver por DNS interno el nombre de un
+    contenedor recien creado o reiniciado ("Name or service not known")
+    aunque el contenedor este sano -- un solo intento fallido no significa
+    que el orquestador este caido de verdad. Los reintentos son todos
+    contra el MISMO host (OPENVAS_ORCHESTRATOR_URL); recien si los 3
+    fallan se levanta el 502 real."""
+    last_exc: httpx.HTTPError | None = None
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.request(method, f"{OPENVAS_ORCHESTRATOR_URL}{path}", json=json_body)
+                resp.raise_for_status()
+                return resp.json()
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if attempt < 2:
+                await asyncio.sleep(1.5)
+    raise HTTPException(status_code=502, detail=f"No se pudo contactar al orquestador de OpenVAS: {last_exc}")
+
+
 @app.get("/openvas/status", response_model=OpenvasStatusOut)
 async def openvas_status(claims: dict = Depends(get_current_claims)):
     """A diferencia de /scanners/status (que solo mira si gvm-cli esta
@@ -267,16 +291,10 @@ async def openvas_auto_activate(
     devuelve al toque -- el frontend consulta el progreso con
     GET /openvas/auto-activate/progress."""
     socket_path = payload.gvm_socket_path.strip() or os.getenv("GVM_SOCKET_PATH") or _DEFAULT_GVM_SOCKET_PATH
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                f"{OPENVAS_ORCHESTRATOR_URL}/start",
-                json={"gvm_user": payload.gvm_user, "gvm_password": payload.gvm_password, "gvm_socket_path": socket_path},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"No se pudo contactar al orquestador de OpenVAS: {exc}")
+    data = await _call_orchestrator(
+        "POST", "/start",
+        json_body={"gvm_user": payload.gvm_user, "gvm_password": payload.gvm_password, "gvm_socket_path": socket_path},
+    )
     logger.info("activacion automatica de openvas disparada", extra={"actor": claims.get("sub")})
     return OpenvasProgressOut(**data, ready=False)
 
@@ -290,13 +308,7 @@ async def openvas_auto_activate_progress(claims: dict = Depends(require_role("ad
     /openvas/activate -- antes de aplicar las credenciales en memoria y
     recien ahi devolver `ready=True`; nunca se confia ciegamente en lo que
     reporta el orquestador."""
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(f"{OPENVAS_ORCHESTRATOR_URL}/status")
-            resp.raise_for_status()
-            data = resp.json()
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"No se pudo contactar al orquestador de OpenVAS: {exc}")
+    data = await _call_orchestrator("GET", "/status", timeout=10)
 
     ready = False
     probe_error = None
