@@ -78,6 +78,43 @@ def _run_compose(*args: str, timeout: int = 60) -> subprocess.CompletedProcess:
     )
 
 
+async def _spawn_compose_up() -> "asyncio.subprocess.Process":
+    """Lanza `up -d` en SEGUNDO PLANO (no bloqueante), a diferencia de
+    _run_compose (que espera a que termine). La primera vez este comando
+    puede tardar varios minutos bajando las ~10 imagenes de
+    registry.community.greenbone.net -- si lo esperaramos entero antes de
+    arrancar a consultar `ps`, la barra de progreso queda congelada en el
+    valor inicial todo ese tiempo, indistinguible de un cuelgue real
+    (exactamente lo que reporto Manu: "se queda en 1% y no avanza"). Con
+    esto corriendo de fondo, el loop de mas abajo puede consultar `ps` en
+    paralelo y mostrar avance real apenas el primer contenedor (los que no
+    dependen de una imagen pesada) queda arriba, sin esperar a que
+    terminen de bajar TODAS las imagenes."""
+    return await asyncio.create_subprocess_exec(
+        "docker", "compose", "-p", COMPOSE_PROJECT_NAME, "--profile", "openvas", "up", "-d", *OPENVAS_SERVICES,
+        cwd=COMPOSE_PROJECT_DIR,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+
+
+async def _drain_stream(stream, limit: int = 4000) -> str:
+    """Lee el stdout/stderr combinado de `up -d` hasta que el proceso lo
+    cierra. Hay que consumirlo si o si -- con suficiente salida (barras de
+    progreso de `docker pull`, por ejemplo) un pipe sin leer se llena y el
+    proceso queda trabado esperando que alguien lo vacie, lo que
+    reintroduciria el mismo cuelgue que este cambio busca evitar. De paso,
+    da contexto util para el mensaje de error si termina fallando.
+    Devuelve como mucho los ultimos `limit` caracteres."""
+    chunks: list[bytes] = []
+    while True:
+        chunk = await stream.read(4096)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks).decode("utf-8", errors="replace")[-limit:]
+
+
 def _parse_compose_ps_json(stdout: str) -> list[dict]:
     """`docker compose ps --format json` devuelve un unico array JSON en
     algunas versiones de Compose v2 y un objeto JSON por linea (JSONL) en
@@ -224,54 +261,68 @@ async def _run_activation(gvm_user: str, gvm_password: str, gvm_socket_path: str
     try:
         _state.update(
             running=True, provisioned=False, error=None,
-            phase="iniciando", percent=1, detail="Levantando contenedores de OpenVAS...",
+            phase="iniciando", percent=1,
+            detail="Descargando imagenes y levantando contenedores de OpenVAS...",
             gvm_user=None, gvm_password=None, gvm_socket_path=gvm_socket_path,
         )
-        # IMPORTANTE: se listan los 16 servicios por nombre en vez de
-        # confiar solo en --profile openvas. Sin nombres explicitos, `up
-        # -d` toma como objetivo TODO el proyecto (los servicios sin
-        # profiles + los del profile pedido) -- lo que en la practica
-        # hizo que Compose recreara/reiniciara scan-service, frontend,
-        # remote-agent y este mismo orquestador en medio de la activacion
-        # (visto en logs: este proceso se reiniciaba solo apenas despues
-        # de un POST /start). Con la lista explicita, `up -d` solo puede
+        # `up -d` se lanza en segundo plano (ver _spawn_compose_up) para
+        # poder consultar `ps` EN PARALELO mientras corre, en vez de
+        # esperarlo entero antes de arrancar a mirar progreso. Se listan
+        # los 16 servicios por nombre en vez de confiar solo en --profile
+        # openvas: sin nombres explicitos, `up -d` toma como objetivo TODO
+        # el proyecto (los servicios sin profiles + los del profile
+        # pedido) -- lo que en la practica hizo que Compose
+        # recreara/reiniciara scan-service, frontend, remote-agent y este
+        # mismo orquestador en medio de una activacion anterior (visto en
+        # logs reales: este proceso se reiniciaba solo apenas despues de
+        # un POST /start). Con la lista explicita, `up -d` solo puede
         # tocar estos 16 -- nunca al resto del stack.
-        up = await asyncio.to_thread(
-            _run_compose, "--profile", "openvas", "up", "-d", *OPENVAS_SERVICES, timeout=180,
-        )
-        if up.returncode != 0:
-            _fail(f"no se pudieron levantar los contenedores: {up.stderr.strip()[-1500:]}")
-            return
+        up_proc = await _spawn_compose_up()
+        wait_task = asyncio.create_task(up_proc.wait())
+        drain_task = asyncio.create_task(_drain_stream(up_proc.stdout))
+        up_running = True
 
-        _state.update(phase="sincronizando", percent=5, detail=(
-            "Contenedores iniciados, sincronizando feeds "
-            "(la primera vez tarda 20-40 minutos)..."
-        ))
         deadline = time.monotonic() + _SYNC_TIMEOUT_SECONDS
         while True:
+            if up_running and wait_task.done():
+                up_running = False
+                if wait_task.result() != 0:
+                    tail = await drain_task
+                    _fail(
+                        "no se pudieron levantar los contenedores: "
+                        f"{tail.strip() or 'sin salida capturada, revisa a mano con docker compose logs'}"
+                    )
+                    return
+
             ps = await asyncio.to_thread(
                 _run_compose, "--profile", "openvas", "ps", "-a", "--format", "json", *OPENVAS_SERVICES, timeout=30,
             )
-            if ps.returncode != 0:
-                _fail(f"no se pudo consultar el estado de los contenedores: {ps.stderr.strip()[-1500:]}")
-                return
-            done, total, failed = _progress_from_ps(ps.stdout)
-            if failed:
-                _fail(
-                    f"estos contenedores fallaron: {', '.join(failed)} -- revisa a mano con "
-                    f"'docker compose --profile openvas logs {failed[0]}'"
+            if ps.returncode == 0:
+                done, total, failed = _progress_from_ps(ps.stdout)
+                if failed:
+                    _fail(
+                        f"estos contenedores fallaron: {', '.join(failed)} -- revisa a mano con "
+                        f"'docker compose --profile openvas logs {failed[0]}'"
+                    )
+                    return
+                detail = (
+                    "Descargando imagenes de OpenVAS (puede tardar varios minutos la primera vez)..."
+                    if done == 0 and up_running
+                    else f"Contenedores listos: {done}/{total} (la primera vez puede tardar 20-40 min)"
                 )
-                return
-            _state.update(
-                percent=_sync_percent(done, total),
-                detail=f"Contenedores listos: {done}/{total} (la primera vez puede tardar 20-40 min)",
-            )
-            if done >= total:
-                break
+                _state.update(percent=_sync_percent(done, total), phase="sincronizando", detail=detail)
+                if done >= total and not up_running:
+                    break
+            # Si `ps` fallo esta vuelta (poco probable) no actualizamos
+            # percent -- se reintenta solo en la proxima vuelta del loop,
+            # en vez de tirar el error al toque por un blip pasajero.
+
             if time.monotonic() >= deadline:
+                if up_running:
+                    up_proc.kill()
                 _fail(
-                    f"paso mas de {_SYNC_TIMEOUT_SECONDS // 60} min y todavia no terminaron de "
-                    "sincronizar los feeds -- revisa a mano con 'docker compose --profile openvas ps'"
+                    f"paso mas de {_SYNC_TIMEOUT_SECONDS // 60} min y todavia no termino de levantar/"
+                    "sincronizar -- revisa a mano con 'docker compose --profile openvas ps'"
                 )
                 return
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)

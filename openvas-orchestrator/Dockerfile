@@ -23,6 +23,15 @@ COPY openvas-orchestrator/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY openvas-orchestrator/main.py .
+COPY openvas-orchestrator/conftest.py .
+COPY openvas-orchestrator/tests ./tests
+
+# Para que `docker compose exec openvas-orchestrator pytest -q` (ver
+# Makefile) encuentre `main.py` sin necesitar `python -m pytest`: WORKDIR
+# ya es /app, pero el ejecutable `pytest` no agrega el directorio actual a
+# sys.path por si solo -- mismo motivo por el que scan-service fija esta
+# misma variable.
+ENV PYTHONPATH=/app
 
 HEALTHCHECK --interval=15s --timeout=5s --retries=5 \
     CMD curl -f http://localhost:8000/status || exit 1
