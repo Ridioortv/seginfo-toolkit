@@ -26,6 +26,23 @@ _FAST_PROC_TIMEOUT = 60
 _FULL_HOST_TIMEOUT = "30s"
 _FULL_PROC_TIMEOUT = 180
 
+# Mensaje comun cuando nmap concluye que NINGUN host del target respondio
+# (ver _parse_hosts_up mas abajo) -- no es un "0 hallazgos" limpio, es que
+# nmap nunca pudo confirmar que el target este arriba, tipicamente porque
+# el target es una IP de LAN y este proceso corre DENTRO del contenedor
+# Docker (sin agente): Docker Desktop lo aisla detras de NAT de la red
+# real, asi que nunca llega ni al ping de descubrimiento.
+_UNREACHABLE_ERROR = (
+    "nmap no pudo confirmar que el target este activo (0 hosts arriba de "
+    "{total} totales) -- esto NO es un resultado limpio de '0 hallazgos', "
+    "es que el target nunca respondio al descubrimiento de nmap. Si es una "
+    "IP de tu LAN/oficina (ej. 192.168.x.x), es el mismo aislamiento de red "
+    "ya conocido: este escaneo corrio DENTRO del contenedor Docker sin "
+    "agente, y Docker Desktop lo aisla detras de NAT -- usa 'Escaneos "
+    "remotos' con un agente (o revisa el target si esperabas un host de "
+    "internet)."
+)
+
 
 def _build_nmap_cmd(target: str, options: dict) -> tuple[list[str], int, str]:
     """Construye el comando de nmap y el timeout de proceso segun el modo.
@@ -112,7 +129,27 @@ class NmapDriver(ScannerDriver):
         if proc.returncode != 0:
             return ScanResult(raw_output=raw, error=stderr.decode(errors="replace")[:2000])
 
-        return ScanResult(raw_output=raw, findings=_parse_nmap_xml(raw))
+        findings = _parse_nmap_xml(raw)
+
+        # Un escaneo "exitoso" (returncode 0) con 0 findings es ambiguo: o
+        # el target esta realmente arriba y no tiene puertos abiertos (un
+        # resultado limpio de verdad), o nmap nunca pudo confirmar que el
+        # target respondiera y por eso no genero ningun <host> en el XML
+        # (ver _parse_nmap_xml: solo extrae hosts que SI aparecen en la
+        # salida). <runstats><hosts up=.../></runstats> es la unica forma
+        # de distinguir ambos casos -- si nmap reporto 0 hosts arriba de un
+        # total > 0, esto NO fue un escaneo limpio, y decirlo como "0
+        # hallazgos" (identico a un escaneo realmente exitoso) es
+        # enganoso. Ver tambien nuclei.py, que tiene el mismo problema y
+        # reusa este mismo chequeo de nmap como preflight.
+        if not findings:
+            hosts_up = _parse_hosts_up(raw)
+            if hosts_up is not None:
+                up, total = hosts_up
+                if total > 0 and up == 0:
+                    return ScanResult(raw_output=raw, error=_UNREACHABLE_ERROR.format(total=total))
+
+        return ScanResult(raw_output=raw, findings=findings)
 
 
 def _parse_nmap_xml(xml_text: str) -> list[dict]:
@@ -146,3 +183,26 @@ def _parse_nmap_xml(xml_text: str) -> list[dict]:
                 }
             )
     return findings
+
+
+def _parse_hosts_up(xml_text: str) -> tuple[int, int] | None:
+    """Lee <runstats><hosts up="X" ... total="Z"/></runstats> de la salida
+    XML de nmap. Devuelve (hosts_up, hosts_total) o None si no se pudo
+    parsear (XML invalido o sin ese nodo -- en ese caso no bloqueamos nada,
+    simplemente no tenemos la senal extra y se sigue el comportamiento
+    previo). Funcion pura, reusada tambien por nuclei.py como preflight de
+    disponibilidad."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+    runstats = root.find("runstats")
+    if runstats is None:
+        return None
+    hosts_el = runstats.find("hosts")
+    if hosts_el is None:
+        return None
+    try:
+        return int(hosts_el.get("up", "0")), int(hosts_el.get("total", "0"))
+    except (TypeError, ValueError):
+        return None
