@@ -156,6 +156,11 @@ export default function Scans() {
   const [schedDayOfWeek, setSchedDayOfWeek] = useState(0);
   const [schedHour, setSchedHour] = useState(3);
   const [schedMinute, setSchedMinute] = useState(0);
+  // "" = corre en el servidor, sin agente (comportamiento historico, solo
+  // WAN/internet). Si se elige un agente, la regla la ejecuta EL (misma
+  // visibilidad de red que tenga esa maquina) -- ver ScanSchedule.agent_id.
+  const [schedAgentId, setSchedAgentId] = useState("");
+  const [schedAgentApiKey, setSchedAgentApiKey] = useState("");
 
   const [agentName, setAgentName] = useState("");
   const [justCreatedKey, setJustCreatedKey] = useState<{ agentName: string; apiKey: string } | null>(null);
@@ -212,11 +217,14 @@ export default function Scans() {
           hour: schedHour,
           minute: schedMinute,
           day_of_week: schedFrequency === "weekly" ? schedDayOfWeek : null,
+          agent_id: schedAgentId || null,
+          agent_api_key: schedAgentId ? schedAgentApiKey : null,
         })
       ).data,
     onSuccess: () => {
       setSchedName("");
       setSchedTarget("");
+      setSchedAgentApiKey("");
       queryClient.invalidateQueries({ queryKey: ["scan-schedules"] });
     },
   });
@@ -522,10 +530,13 @@ export default function Scans() {
         <p className="empty-hint">
           Una regla corre solo mientras scan-service este arriba (usa su propio scheduler en proceso, sin
           infraestructura extra) -- si el contenedor se reinicia, las reglas habilitadas se vuelven a cargar solas
-          al arrancar. Solo nmap y nuclei estan disponibles aca: trivy no escanea IPs/hosts (solo imagenes o
-          paquetes, usa el panel de arriba) y openvas esta apagado por defecto (activalo en "Escaneos remotos").
-          La hora es la zona horaria configurada en el servidor (variable SCHEDULER_TIMEZONE en .env, default UTC
-          si no esta seteada) -- no necesariamente la hora de tu navegador.
+          al arrancar. Sin agente (default), el escaneo corre DENTRO del contenedor: solo nmap y nuclei estan
+          disponibles (trivy no escanea IPs/hosts, usa el panel de arriba; openvas esta apagado por defecto) y, por
+          el aislamiento de red de Docker Desktop, solo alcanza targets de WAN/internet -- nunca tu LAN real.
+          Elegi un agente (ver "Agentes de escaneo remoto" mas abajo) para que la regla la ejecute EL en su lugar,
+          con la misma visibilidad de red que tenga esa maquina -- por ejemplo "Agente LAN" para poder programar
+          escaneos a IPs de tu red (192.168.x.x). La hora es la zona horaria configurada en el servidor (variable
+          SCHEDULER_TIMEZONE en .env, default UTC si no esta seteada) -- no necesariamente la hora de tu navegador.
         </p>
 
         <div className="inline-form">
@@ -533,6 +544,7 @@ export default function Scans() {
           <select value={schedScannerType} onChange={(e) => setSchedScannerType(e.target.value as ScannerType)}>
             <option value="nmap">nmap</option>
             <option value="nuclei">nuclei</option>
+            {schedAgentId && openvasReady && <option value="openvas">openvas (activo)</option>}
           </select>
           <input
             className="mono"
@@ -540,6 +552,43 @@ export default function Scans() {
             value={schedTarget}
             onChange={(e) => setSchedTarget(e.target.value)}
           />
+        </div>
+        <div className="inline-form" style={{ marginTop: 8 }}>
+          <select
+            value={schedAgentId}
+            onChange={(e) => {
+              const id = e.target.value;
+              setSchedAgentId(id);
+              if (!id) {
+                // Sin agente, openvas no es una opcion (ver el <select> de
+                // scanner arriba) -- si estaba elegido, lo bajamos a nmap
+                // para no dejar el formulario en un estado invalido.
+                if (schedScannerType === "openvas") setSchedScannerType("nmap");
+                setSchedAgentApiKey("");
+                return;
+              }
+              // Mismo autocompletado que en "Escaneos remotos": la key de
+              // los agentes bootstrap (Agente LAN/Agente Docker) se resuelve
+              // sola desde BOOTSTRAP_AGENTS (ver ScanAgentOut.bootstrap_api_key).
+              const selected = (agents.data ?? []).find((a) => a.id === id);
+              setSchedAgentApiKey(selected?.bootstrap_api_key ?? "");
+            }}
+          >
+            <option value="">Correr en el servidor (sin agente, WAN/internet)</option>
+            {(agents.data ?? []).map((a) => (
+              <option key={a.id} value={a.id}>{a.name}</option>
+            ))}
+          </select>
+          {schedAgentId && (
+            <input
+              type="password"
+              className="mono"
+              placeholder="Api key del agente"
+              value={schedAgentApiKey}
+              onChange={(e) => setSchedAgentApiKey(e.target.value)}
+              title="La api key que te mostro la UI al registrar el agente. Se valida contra el agente elegido antes de crear la regla; nunca se guarda."
+            />
+          )}
         </div>
         <div className="inline-form" style={{ marginTop: 8 }}>
           <select value={schedFrequency} onChange={(e) => setSchedFrequency(e.target.value as "daily" | "weekly")}>
@@ -565,7 +614,7 @@ export default function Scans() {
           <button
             className="btn-primary"
             onClick={() => createSchedule.mutate()}
-            disabled={createSchedule.isPending || !schedTarget.trim()}
+            disabled={createSchedule.isPending || !schedTarget.trim() || (!!schedAgentId && !schedAgentApiKey.trim())}
           >
             {createSchedule.isPending ? "Creando..." : "Crear regla"}
           </button>
@@ -584,6 +633,7 @@ export default function Scans() {
                 <th>Nombre</th>
                 <th>Tipo</th>
                 <th>Target</th>
+                <th>Agente</th>
                 <th>Cuando</th>
                 <th>Ultima corrida</th>
                 <th>Habilitada</th>
@@ -596,6 +646,11 @@ export default function Scans() {
                   <td>{s.name || "-"}</td>
                   <td>{s.scanner_type}</td>
                   <td className="mono">{s.target}</td>
+                  <td>
+                    {s.agent_id
+                      ? (agents.data ?? []).find((a) => a.id === s.agent_id)?.name ?? "agente eliminado"
+                      : "servidor (sin agente)"}
+                  </td>
                   <td>{scheduleWhen(s)}</td>
                   <td>
                     {s.last_run_at ? new Date(s.last_run_at).toLocaleString() : "nunca"}

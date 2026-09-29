@@ -382,6 +382,9 @@ def scanners_status() -> dict:
 
 
 async def create_schedule(db: AsyncSession, payload, actor: str, organization_id: str) -> ScanSchedule:
+    # payload.agent_id ya se valido en main.py::create_schedule (agente
+    # existe + api key correcta) antes de llegar aca -- esta funcion solo
+    # persiste la decision, nunca la key (ver ScanScheduleCreate.agent_api_key).
     schedule = ScanSchedule(
         organization_id=organization_id,
         name=payload.name,
@@ -392,6 +395,7 @@ async def create_schedule(db: AsyncSession, payload, actor: str, organization_id
         hour=payload.hour,
         minute=payload.minute,
         day_of_week=payload.day_of_week,
+        agent_id=payload.agent_id,
         created_by=actor,
     )
     db.add(schedule)
@@ -431,13 +435,55 @@ async def delete_schedule(db: AsyncSession, schedule: ScanSchedule) -> None:
 
 async def run_scheduled_scan(session_factory, schedule_id: str) -> None:
     """Llamado por el scheduler en proceso (APScheduler, ver app/main.py)
-    cuando le toca disparar a una regla. Crea un ScanJob nuevo -- igual que
-    si un usuario lo hubiera lanzado a mano -- y lo ejecuta con el mismo
-    codigo (execute_scan_job) que usa la creacion manual."""
+    cuando le toca disparar a una regla.
+
+    Sin schedule.agent_id (comportamiento historico): crea un ScanJob nuevo
+    -- igual que si un usuario lo hubiera lanzado a mano -- y lo ejecuta
+    con el mismo codigo (execute_scan_job) que usa la creacion manual,
+    esperando a que termine antes de anotar el resultado en last_status.
+
+    Con schedule.agent_id: la corrida real la hace un agente remoto por
+    polling (puede tardar, o el agente puede estar apagado), asi que aca
+    NO se espera nada -- solo se crea el AgentScanJob (mismo mecanismo que
+    create_agent_scan_job, ver "Escaneos remotos") y se anota que SE
+    ENVIO. El resultado final queda en esa fila, visible en el panel de
+    escaneos remotos, no en last_status de la regla."""
     async with session_factory() as db:
         schedule = await db.get(ScanSchedule, schedule_id)
         if schedule is None or not schedule.enabled:
             return
+
+        if schedule.agent_id:
+            agent = await db.get(ScanAgent, schedule.agent_id)
+            if agent is None or agent.organization_id != schedule.organization_id:
+                schedule.last_run_at = _now()
+                schedule.last_status = "error: el agente configurado ya no existe o no pertenece a esta organizacion"[:500]
+                await db.commit()
+                logger.error(
+                    "escaneo programado con agente invalido",
+                    extra={"schedule_id": schedule_id, "agent_id": schedule.agent_id},
+                )
+                return
+            agent_job = AgentScanJob(
+                organization_id=schedule.organization_id,
+                agent_id=agent.id,
+                name=f"{schedule.name or schedule.scanner_type.value} (programado)",
+                scanner_type=schedule.scanner_type.value,
+                target=schedule.target,
+                options=schedule.options,
+                created_by=f"scheduler:{schedule.name or schedule.id}",
+            )
+            db.add(agent_job)
+            schedule.last_run_at = _now()
+            schedule.last_status = f"enviado al agente {agent.name} -- resultado en Escaneos remotos"[:500]
+            await db.flush()
+            await db.commit()
+            logger.info(
+                "escaneo programado enviado a agente remoto",
+                extra={"schedule_id": schedule_id, "agent_id": agent.id, "job_id": agent_job.id},
+            )
+            return
+
         job = ScanJob(
             organization_id=schedule.organization_id,
             name=f"{schedule.name or schedule.scanner_type.value} (programado)",

@@ -42,6 +42,15 @@ class ScanScheduleCreate(BaseModel):
     hour: int = Field(default=3, ge=0, le=23)
     minute: int = Field(default=0, ge=0, le=59)
     day_of_week: int | None = Field(default=None, ge=0, le=6, description="0=lunes .. 6=domingo, requerido si frequency='weekly'")
+    # Si se especifica, la regla la ejecuta ESTE agente remoto en vez de
+    # correr dentro del contenedor (ver ScanSchedule.agent_id en models.py
+    # y run_scheduled_scan en services.py). agent_api_key se exige SOLO en
+    # este request -- igual que al lanzar un escaneo remoto manual, ver
+    # AgentScanJobCreate.api_key -- para probar que quien crea la regla
+    # conoce la key del agente elegido; se valida en main.py::create_schedule
+    # y NUNCA se persiste (la regla solo guarda agent_id).
+    agent_id: str | None = Field(default=None, min_length=1)
+    agent_api_key: str | None = Field(default=None, min_length=1)
 
     @field_validator("target")
     @classmethod
@@ -52,6 +61,12 @@ class ScanScheduleCreate(BaseModel):
     def _weekly_needs_day(self) -> "ScanScheduleCreate":
         if self.frequency == "weekly" and self.day_of_week is None:
             raise ValueError("day_of_week es requerido cuando frequency='weekly'")
+        return self
+
+    @model_validator(mode="after")
+    def _agent_needs_key(self) -> "ScanScheduleCreate":
+        if self.agent_id and not self.agent_api_key:
+            raise ValueError("agent_api_key es requerido cuando se especifica agent_id")
         return self
 
 
@@ -70,6 +85,7 @@ class ScanScheduleOut(BaseModel):
     minute: int
     day_of_week: int | None
     enabled: bool
+    agent_id: str | None
     created_by: str
     created_at: datetime
     last_run_at: datetime | None

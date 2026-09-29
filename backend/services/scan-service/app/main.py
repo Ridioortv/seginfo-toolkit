@@ -106,6 +106,12 @@ async def lifespan(app: FastAPI):
         # tabla que ya existe).
         await conn.execute(text("ALTER TABLE scan_jobs ADD COLUMN IF NOT EXISTS packages JSON DEFAULT '[]'"))
         await conn.execute(text("UPDATE scan_jobs SET packages = '[]' WHERE packages IS NULL"))
+        # ScanSchedule.agent_id (ver models.py): columna nueva, mismo motivo
+        # que las de arriba. NULL es un valor valido (regla sin agente, el
+        # comportamiento historico) asi que no hace falta ningun UPDATE de
+        # backfill -- a diferencia de organization_id/packages, que no
+        # podian quedar NULL.
+        await conn.execute(text("ALTER TABLE scan_schedules ADD COLUMN IF NOT EXISTS agent_id VARCHAR(36)"))
     async with SessionLocal() as db:
         for schedule in await services.list_schedules(db):
             if schedule.enabled:
@@ -360,10 +366,24 @@ async def create_schedule(
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
-    schedule = await services.create_schedule(db, payload, claims.get("sub", ""), org_id_from_claims(claims))
+    organization_id = org_id_from_claims(claims)
+    # Mismo chequeo que create_agent_scan (ver mas abajo): si la regla va a
+    # correr via un agente remoto, se exige la api key de ESE agente ademas
+    # del JWT del usuario, para confirmar que quien crea la regla lo conoce
+    # -- nunca se persiste (ver ScanScheduleCreate.agent_api_key).
+    if payload.agent_id:
+        agent = await services.get_agent(db, payload.agent_id, organization_id)
+        if agent is None:
+            raise HTTPException(status_code=404, detail="Agente no encontrado")
+        if not services.agent_key_matches(agent, payload.agent_api_key or ""):
+            raise HTTPException(status_code=401, detail="La api key no corresponde al agente elegido")
+    schedule = await services.create_schedule(db, payload, claims.get("sub", ""), organization_id)
     await db.commit()
     _register_job(schedule)
-    logger.info("regla de escaneo programado creada", extra={"schedule_id": schedule.id})
+    logger.info(
+        "regla de escaneo programado creada",
+        extra={"schedule_id": schedule.id, "agent_id": schedule.agent_id},
+    )
     return schedule
 
 

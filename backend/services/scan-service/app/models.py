@@ -35,8 +35,20 @@ class ScanStatus(str, enum.Enum):
 class ScanSchedule(Base):
     """Una regla de escaneo recurrente (ej. "todos los lunes a las 3am").
     scan-service la corre con su propio scheduler en proceso (APScheduler,
-    ver app/main.py) -- cada disparo crea un ScanJob nuevo, igual que si un
-    usuario lo hubiera lanzado a mano."""
+    ver app/main.py).
+
+    Sin agent_id (default, comportamiento historico): cada disparo crea un
+    ScanJob nuevo que corre DENTRO del contenedor de scan-service -- por el
+    aislamiento de red de Docker Desktop, esto nunca alcanza una LAN real
+    (ver app/scanners/nmap.py), solo targets de WAN/internet.
+
+    Con agent_id: cada disparo crea un AgentScanJob para que lo ejecute ESE
+    agente remoto (ver ScanAgent/AgentScanJob mas abajo) -- el mismo
+    mecanismo de poll/submit que ya usa un escaneo remoto lanzado a mano
+    desde "Escaneos remotos" (ver app/services.py::create_agent_scan_job),
+    asi que si el agente tiene visibilidad a una LAN real (ej. "Agente
+    LAN"), la regla programada tambien la tiene. run_scheduled_scan (ver
+    app/services.py) es quien bifurca entre ambos casos."""
 
     __tablename__ = "scan_schedules"
 
@@ -46,6 +58,13 @@ class ScanSchedule(Base):
     scanner_type: Mapped[ScannerType] = mapped_column(SAEnum(ScannerType, native_enum=False))
     target: Mapped[str] = mapped_column(String(500), nullable=False)
     options: Mapped[dict] = mapped_column(JSON, default=dict)
+    # None (default) = corre en el servidor, sin agente (ver docstring de
+    # arriba). Si se especifica, DEBE ser el id de un ScanAgent de la MISMA
+    # organizacion -- no hay foreign key real a proposito (mismo criterio
+    # que AgentScanJob.agent_id): asi un agente borrado no rompe la regla,
+    # solo hace que run_scheduled_scan lo detecte y registre un error claro
+    # en last_status en vez de fallar la corrida entera.
+    agent_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     frequency: Mapped[str] = mapped_column(String(20), nullable=False)  # daily | weekly
     hour: Mapped[int] = mapped_column(Integer, default=3)
     minute: Mapped[int] = mapped_column(Integer, default=0)

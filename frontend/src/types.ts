@@ -63,6 +63,7 @@ export interface ScanScheduleOut {
   minute: number;
   day_of_week: number | null;
   enabled: boolean;
+  agent_id: string | null;
   created_by: string;
   created_at: string;
   last_run_at: string | null;
