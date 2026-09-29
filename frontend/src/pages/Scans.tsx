@@ -199,6 +199,11 @@ export default function Scans() {
   // polling de progreso; autoActivateResult guarda las credenciales a
   // mostrar una vez listo (se limpia solo al cerrar el panel).
   const [autoActivating, setAutoActivating] = useState(false);
+  // Que boton disparo la activacion en curso ("direct" = "Arrancar
+  // OpenVAS", "custom" = "Probar y activar" con contraseña elegida) --
+  // asi la barra de progreso aparece dentro de ESE mismo cuadro, no en uno
+  // generico separado.
+  const [activationSource, setActivationSource] = useState<"direct" | "custom" | null>(null);
   const [autoActivateResult, setAutoActivateResult] = useState<{ gvm_user: string; gvm_password: string } | null>(
     null,
   );
@@ -386,6 +391,52 @@ export default function Scans() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openvasPanelOpen]);
+
+  // Barra de progreso con porcentaje, reutilizada dentro del cuadro de
+  // CUALQUIERA de las dos opciones de activacion (ver mas abajo) -- asi el
+  // usuario ve de entrada que algo esta pasando, incluso en el instante
+  // entre el click y que responda el orquestador (fase "Conectando...").
+  const openvasProgressBar = () => {
+    const pending = autoActivateOpenvas.isPending && !autoActivating;
+    const percent = openvasProgress.data?.percent ?? (pending ? 1 : 3);
+    const detail = openvasProgress.data?.detail || (pending ? "Conectando con el orquestador de OpenVAS..." : "Iniciando...");
+    return (
+      <>
+        <div
+          style={{
+            background: "var(--bg-2, #eee)",
+            borderRadius: 6,
+            overflow: "hidden",
+            height: 18,
+            marginTop: 8,
+          }}
+        >
+          <div
+            style={{
+              width: `${Math.min(100, Math.max(3, percent))}%`,
+              background: "var(--accent, #2f7dd9)",
+              height: "100%",
+              transition: "width 0.4s ease",
+            }}
+          />
+        </div>
+        <p className="empty-hint" style={{ marginTop: 6 }}>
+          {percent}% -- {detail}
+        </p>
+        {autoActivating && (
+          <p className="empty-hint">
+            Podes navegar a otra pantalla, sigue corriendo solo en el servidor.
+          </p>
+        )}
+        {openvasProgress.isError && (
+          <p className="error-text">
+            No se pudo consultar el progreso.{" "}
+            <span className="error-detail">{connectionErrorDetail(openvasProgress.error)}</span>
+          </p>
+        )}
+      </>
+    );
+  };
 
   const createAgent = useMutation({
     mutationFn: async () => (await scanApi.post<ScanAgentCreated>("/agents", { name: agentName })).data,
@@ -1008,47 +1059,13 @@ export default function Scans() {
                   className="btn-secondary"
                   onClick={() => {
                     setAutoActivateResult(null);
+                    setActivationSource(null);
                     setOpenvasPanelOpen(false);
                     setOvPassword("");
                   }}
                 >
                   Cerrar
                 </button>
-              </>
-            ) : autoActivating ? (
-              <>
-                <p className="empty-hint">
-                  Levantando OpenVAS (contenedores, sincronizacion de feeds y usuario GVM) -- la primera vez puede
-                  tardar 20-40 minutos por la sincronizacion de feeds. Podes navegar a otra pantalla, sigue
-                  corriendo solo en el servidor.
-                </p>
-                <div
-                  style={{
-                    background: "var(--bg-2, #eee)",
-                    borderRadius: 6,
-                    overflow: "hidden",
-                    height: 18,
-                    marginTop: 8,
-                  }}
-                >
-                  <div
-                    style={{
-                      width: `${Math.min(100, Math.max(3, openvasProgress.data?.percent ?? 3))}%`,
-                      background: "var(--accent, #2f7dd9)",
-                      height: "100%",
-                      transition: "width 0.4s ease",
-                    }}
-                  />
-                </div>
-                <p className="empty-hint" style={{ marginTop: 6 }}>
-                  {openvasProgress.data?.percent ?? 1}% -- {openvasProgress.data?.detail || "Iniciando..."}
-                </p>
-                {openvasProgress.isError && (
-                  <p className="error-text">
-                    No se pudo consultar el progreso.{" "}
-                    <span className="error-detail">{connectionErrorDetail(openvasProgress.error)}</span>
-                  </p>
-                )}
               </>
             ) : (
               <>
@@ -1059,65 +1076,93 @@ export default function Scans() {
                   sincronizacion de feeds.
                 </p>
 
-                <div className="panel" style={{ marginTop: 10, marginBottom: 10 }}>
-                  <h4 style={{ marginTop: 0 }}>Opcion 1: arrancar directo</h4>
-                  <p className="empty-hint">
-                    Un solo click, no pide nada. La contraseña la genera el sistema sola y la mostramos aca (para
-                    copiar) apenas termine.
-                  </p>
-                  <button
-                    className="btn-primary"
-                    onClick={() =>
-                      autoActivateOpenvas.mutate({ gvm_user: "admin", gvm_password: "", gvm_socket_path: "" })
-                    }
-                    disabled={autoActivateOpenvas.isPending}
-                  >
-                    {autoActivateOpenvas.isPending ? "Iniciando..." : "Arrancar OpenVAS"}
-                  </button>
-                </div>
+                {((!autoActivating && !autoActivateOpenvas.isPending) || activationSource === "direct") && (
+                  <div className="panel" style={{ marginTop: 10, marginBottom: 10 }}>
+                    <h4 style={{ marginTop: 0 }}>Opcion 1: arrancar directo</h4>
+                    {activationSource === "direct" && (autoActivateOpenvas.isPending || autoActivating) ? (
+                      openvasProgressBar()
+                    ) : (
+                      <>
+                        <p className="empty-hint">
+                          Un solo click, no pide nada. La contraseña la genera el sistema sola y la mostramos aca
+                          (para copiar) apenas termine.
+                        </p>
+                        <button
+                          className="btn-primary"
+                          onClick={() => {
+                            setActivationSource("direct");
+                            autoActivateOpenvas.mutate({ gvm_user: "admin", gvm_password: "", gvm_socket_path: "" });
+                          }}
+                          disabled={autoActivateOpenvas.isPending}
+                        >
+                          Arrancar OpenVAS
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
 
-                <div className="panel" style={{ marginBottom: 10 }}>
-                  <h4 style={{ marginTop: 0 }}>Opcion 2: con contraseña elegida</h4>
-                  <p className="empty-hint">
-                    Usuario y contraseña ya vienen cargados solos (los podes copiar o cambiar si querés algo
-                    especifico) -- con un click arranca OpenVAS usando estos mismos.
-                  </p>
-                  <div className="inline-form" style={{ marginTop: 8, alignItems: "center" }}>
-                    <input
-                      placeholder="Usuario GVM"
-                      value={ovUser}
-                      onChange={(e) => setOvUser(e.target.value)}
-                    />
-                    <input
-                      className="mono"
-                      placeholder="Contraseña GVM"
-                      value={ovPassword}
-                      onChange={(e) => setOvPassword(e.target.value)}
-                      style={{ minWidth: 220 }}
-                    />
-                    <button type="button" className="btn-secondary" onClick={() => copyToClipboard(ovPassword, "ov-password")}>
-                      {copiedField === "ov-password" ? "Copiado!" : "Copiar"}
-                    </button>
-                    <button type="button" className="btn-secondary" onClick={() => setOvPassword(generateGvmPassword())}>
-                      Generar otra
-                    </button>
+                {((!autoActivating && !autoActivateOpenvas.isPending) || activationSource === "custom") && (
+                  <div className="panel" style={{ marginBottom: 10 }}>
+                    <h4 style={{ marginTop: 0 }}>Opcion 2: con contraseña elegida</h4>
+                    {activationSource === "custom" && (autoActivateOpenvas.isPending || autoActivating) ? (
+                      openvasProgressBar()
+                    ) : (
+                      <>
+                        <p className="empty-hint">
+                          Usuario y contraseña ya vienen cargados solos (los podes copiar o cambiar si querés algo
+                          especifico) -- con un click arranca OpenVAS usando estos mismos.
+                        </p>
+                        <div className="inline-form" style={{ marginTop: 8, alignItems: "center" }}>
+                          <input
+                            placeholder="Usuario GVM"
+                            value={ovUser}
+                            onChange={(e) => setOvUser(e.target.value)}
+                          />
+                          <input
+                            className="mono"
+                            placeholder="Contraseña GVM"
+                            value={ovPassword}
+                            onChange={(e) => setOvPassword(e.target.value)}
+                            style={{ minWidth: 220 }}
+                          />
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            onClick={() => copyToClipboard(ovPassword, "ov-password")}
+                          >
+                            {copiedField === "ov-password" ? "Copiado!" : "Copiar"}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            onClick={() => setOvPassword(generateGvmPassword())}
+                          >
+                            Generar otra
+                          </button>
+                        </div>
+                        <div className="inline-form" style={{ marginTop: 8 }}>
+                          <input
+                            className="mono"
+                            placeholder="Socket (opcional, default /run/gvmd/gvmd.sock)"
+                            value={ovSocket}
+                            onChange={(e) => setOvSocket(e.target.value)}
+                          />
+                          <button
+                            className="btn-primary"
+                            onClick={() => {
+                              setActivationSource("custom");
+                              autoActivateOpenvas.mutate();
+                            }}
+                            disabled={autoActivateOpenvas.isPending || !ovUser.trim() || !ovPassword.trim()}
+                          >
+                            Probar y activar
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
-                  <div className="inline-form" style={{ marginTop: 8 }}>
-                    <input
-                      className="mono"
-                      placeholder="Socket (opcional, default /run/gvmd/gvmd.sock)"
-                      value={ovSocket}
-                      onChange={(e) => setOvSocket(e.target.value)}
-                    />
-                    <button
-                      className="btn-primary"
-                      onClick={() => autoActivateOpenvas.mutate()}
-                      disabled={autoActivateOpenvas.isPending || !ovUser.trim() || !ovPassword.trim()}
-                    >
-                      {autoActivateOpenvas.isPending ? "Iniciando..." : "Probar y activar"}
-                    </button>
-                  </div>
-                </div>
+                )}
 
                 {autoActivateOpenvas.isError && (
                   <p className="error-text">
@@ -1126,7 +1171,7 @@ export default function Scans() {
                   </p>
                 )}
 
-                <details style={{ marginTop: 12 }}>
+                {!autoActivating && !autoActivateOpenvas.isPending && <details style={{ marginTop: 12 }}>
                   <summary className="empty-hint" style={{ cursor: "pointer" }}>
                     Metodo manual (avanzado -- correr los scripts de PowerShell vos mismo)
                   </summary>
@@ -1171,7 +1216,7 @@ export default function Scans() {
                       <code className="mono">openvas\Apagar-OpenVAS.ps1</code>.
                     </p>
                   </div>
-                </details>
+                </details>}
               </>
             )}
           </div>
