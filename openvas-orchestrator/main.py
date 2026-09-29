@@ -227,7 +227,18 @@ async def _run_activation(gvm_user: str, gvm_password: str, gvm_socket_path: str
             phase="iniciando", percent=1, detail="Levantando contenedores de OpenVAS...",
             gvm_user=None, gvm_password=None, gvm_socket_path=gvm_socket_path,
         )
-        up = await asyncio.to_thread(_run_compose, "--profile", "openvas", "up", "-d", timeout=180)
+        # IMPORTANTE: se listan los 16 servicios por nombre en vez de
+        # confiar solo en --profile openvas. Sin nombres explicitos, `up
+        # -d` toma como objetivo TODO el proyecto (los servicios sin
+        # profiles + los del profile pedido) -- lo que en la practica
+        # hizo que Compose recreara/reiniciara scan-service, frontend,
+        # remote-agent y este mismo orquestador en medio de la activacion
+        # (visto en logs: este proceso se reiniciaba solo apenas despues
+        # de un POST /start). Con la lista explicita, `up -d` solo puede
+        # tocar estos 16 -- nunca al resto del stack.
+        up = await asyncio.to_thread(
+            _run_compose, "--profile", "openvas", "up", "-d", *OPENVAS_SERVICES, timeout=180,
+        )
         if up.returncode != 0:
             _fail(f"no se pudieron levantar los contenedores: {up.stderr.strip()[-1500:]}")
             return
@@ -239,7 +250,7 @@ async def _run_activation(gvm_user: str, gvm_password: str, gvm_socket_path: str
         deadline = time.monotonic() + _SYNC_TIMEOUT_SECONDS
         while True:
             ps = await asyncio.to_thread(
-                _run_compose, "--profile", "openvas", "ps", "-a", "--format", "json", timeout=30,
+                _run_compose, "--profile", "openvas", "ps", "-a", "--format", "json", *OPENVAS_SERVICES, timeout=30,
             )
             if ps.returncode != 0:
                 _fail(f"no se pudo consultar el estado de los contenedores: {ps.stderr.strip()[-1500:]}")
