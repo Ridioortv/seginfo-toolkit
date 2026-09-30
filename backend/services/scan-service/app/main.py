@@ -489,6 +489,21 @@ async def list_openvas_tasks(claims: dict = Depends(get_current_claims)):
     return tasks
 
 
+@app.delete("/openvas/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_openvas_task(
+    task_id: str,
+    # Mismos roles que create/delete de targets y credenciales -- ver
+    # pedido explicito del usuario de poder borrar analisis/reportes uno
+    # por uno desde "Analisis y reportes".
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+):
+    socket_path, user, password = _require_gvm_credentials()
+    ok, err = await gvm_manage.delete_task(socket_path, user, password, task_id)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"no se pudo borrar el analisis: {err}")
+    logger.info("task GVM borrado", extra={"actor": claims.get("sub"), "task_id": task_id})
+
+
 @app.get("/openvas/reports/{report_id}")
 async def get_openvas_report(report_id: str, claims: dict = Depends(get_current_claims)):
     """Reporte NATIVO completo de gvmd (todos los hosts/resultados/metadata

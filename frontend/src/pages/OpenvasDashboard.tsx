@@ -306,6 +306,34 @@ export default function OpenvasDashboard() {
   // botones de exportar PDF/XML/CSV.
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
   const [exportError, setExportError] = useState<unknown>(null);
+  const [taskActionError, setTaskActionError] = useState<unknown>(null);
+  const [scanJobActionError, setScanJobActionError] = useState<unknown>(null);
+
+  // Pedido explicito del usuario: poder borrar analisis/reportes uno por
+  // uno. Cubre los DOS lugares donde puede haber quedado un analisis --
+  // el task nativo de gvmd (DELETE /openvas/tasks/{id}, ver
+  // gvm_manage.delete_task) y el intento propio de scan-service que
+  // nunca llego a crear un task (reusa el DELETE /scans/{id} generico que
+  // ya usa Escaneos).
+  const deleteTask = useMutation({
+    mutationFn: async (id: string) => scanApi.delete(`/openvas/tasks/${id}`),
+    onSuccess: (_data, id) => {
+      setTaskActionError(null);
+      if (expandedTaskId === id) setExpandedTaskId(null);
+      queryClient.invalidateQueries({ queryKey: ["openvas-tasks"] });
+    },
+    onError: (err: unknown) => setTaskActionError(err),
+  });
+
+  const deleteScanJob = useMutation({
+    mutationFn: async (id: string) => scanApi.delete(`/scans/${id}`),
+    onSuccess: () => {
+      setScanJobActionError(null);
+      queryClient.invalidateQueries({ queryKey: ["openvas-scan-jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["scans"] });
+    },
+    onError: (err: unknown) => setScanJobActionError(err),
+  });
 
   const report = useQuery({
     queryKey: ["openvas-report", expandedTaskId],
@@ -774,6 +802,7 @@ export default function OpenvasDashboard() {
                   <th>Estado</th>
                   <th>Error</th>
                   <th>Cuando</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -786,6 +815,9 @@ export default function OpenvasDashboard() {
                       <td><StatusBadge value={j.status} /></td>
                       <td className="error-detail">{j.error_message || "-"}</td>
                       <td>{new Date(j.created_at).toLocaleString()}</td>
+                      <td>
+                        <button className="btn-link" onClick={() => deleteScanJob.mutate(j.id)}>Eliminar</button>
+                      </td>
                     </tr>
                   ))}
               </tbody>
@@ -796,6 +828,12 @@ export default function OpenvasDashboard() {
           <p className="error-text">
             No se pudieron traer los intentos de analisis propios.{" "}
             <span className="error-detail">{connectionErrorDetail(scanJobs.error)}</span>
+          </p>
+        )}
+        {scanJobActionError != null && (
+          <p className="error-text">
+            No se pudo borrar el intento de analisis.{" "}
+            <span className="error-detail">{connectionErrorDetail(scanJobActionError)}</span>
           </p>
         )}
 
@@ -849,7 +887,9 @@ export default function OpenvasDashboard() {
                         <span className="empty-hint">todavia sin reporte</span>
                       )}
                     </td>
-                    <td></td>
+                    <td>
+                      <button className="btn-link" onClick={() => deleteTask.mutate(t.id)}>Eliminar</button>
+                    </td>
                   </tr>
                   {expandedTaskId === t.id && (
                     <tr key={`${t.id}-expanded`}>
@@ -891,6 +931,12 @@ export default function OpenvasDashboard() {
           <p className="error-text">
             No se pudo exportar el reporte.{" "}
             <span className="error-detail">{connectionErrorDetail(exportError)}</span>
+          </p>
+        )}
+        {taskActionError != null && (
+          <p className="error-text">
+            No se pudo borrar el analisis.{" "}
+            <span className="error-detail">{connectionErrorDetail(taskActionError)}</span>
           </p>
         )}
       </div>

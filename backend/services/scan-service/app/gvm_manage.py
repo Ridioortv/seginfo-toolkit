@@ -244,6 +244,20 @@ async def list_tasks(socket_path: str, user: str, password: str) -> tuple[bool, 
     return True, _parse_tasks_xml(out), ""
 
 
+async def delete_task(socket_path: str, user: str, password: str, task_id: str) -> tuple[bool, str]:
+    """Borra un task nativo de gvmd -- mismo criterio que delete_target/
+    delete_credential mas arriba: sin pasar ultimate='1', gvmd lo mueve a
+    su papelera en vez de borrarlo para siempre, pero get_tasks (sin
+    filtro de papelera, ver list_tasks) ya lo excluye por default, asi que
+    para el dashboard es indistinguible de un borrado definitivo. El
+    reporte asociado (last_report_id) queda en la papelera junto con el
+    task, no hace falta borrarlo aparte."""
+    rc, out, err = await gvm_query(socket_path, user, password, f"<delete_task task_id='{task_id}'/>")
+    if rc != 0 or not _response_status_ok(out):
+        return False, (err or out)[:1000]
+    return True, ""
+
+
 async def get_report_xml(socket_path: str, user: str, password: str, report_id: str) -> tuple[bool, str, str]:
     """Reporte NATIVO completo (todos los hosts/resultados/metadata de la
     corrida, no solo los findings resumidos que ya guarda ScanJob) -- para
