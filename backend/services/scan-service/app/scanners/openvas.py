@@ -63,9 +63,24 @@ def _severity_from_cvss(cvss: float) -> str:
 def _gvm_cmd(socket_path: str, user: str, password: str, xml: str) -> list[str]:
     """Funcion pura: construye el comando gvm-cli. Las credenciales van
     como flags globales -- gvm-cli se autentica solo, sin necesidad de
-    mandar un <authenticate/> manual."""
+    mandar un <authenticate/> manual.
+
+    "--config ''" es querido, no un accidente: por default gvm-cli busca
+    un archivo de config en ~/.config/gvm-tools.conf (ver
+    gvmtools/parser.py::DEFAULT_CONFIG_PATH), y "~" se expande con la
+    variable de entorno HOME -- que en este subproceso sigue siendo
+    /root (el HOME del proceso padre, que SI corre como root) aunque
+    _drop_priv_to_nobody le baje los privilegios a "nobody" antes del
+    exec (bajar privilegios con setuid/setgid no toca el entorno). Con
+    HOME=/root, gvm-cli (ya como "nobody") intenta revisar si
+    /root/.config/gvm-tools.conf existe y explota con PermissionError (no
+    tiene permiso para ni siquiera mirar adentro de /root) -- error real,
+    encontrado corriendo esto contra un gvmd real por primera vez.
+    Pasar un config vacio hace que gvm-cli ni intente tocar el filesystem
+    para esto (ver CliParser._load_config: "if not configfile: return
+    config", corta antes de llegar a esa parte)."""
     return [
-        "gvm-cli", "--gmp-username", user, "--gmp-password", password,
+        "gvm-cli", "--config", "", "--gmp-username", user, "--gmp-password", password,
         "socket", "--socketpath", socket_path, "--xml", xml,
     ]
 

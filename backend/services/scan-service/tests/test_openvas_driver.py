@@ -33,9 +33,14 @@ _GET_PORT_LISTS_XML = """<get_port_lists_response status="200" status_text="OK">
 def test_gvm_cmd_includes_auth_flags_and_socket():
     cmd = _gvm_cmd("/run/gvmd/gvmd.sock", "admin", "s3cret", "<get_tasks/>")
     assert cmd == [
-        "gvm-cli", "--gmp-username", "admin", "--gmp-password", "s3cret",
+        "gvm-cli", "--config", "", "--gmp-username", "admin", "--gmp-password", "s3cret",
         "socket", "--socketpath", "/run/gvmd/gvmd.sock", "--xml", "<get_tasks/>",
     ]
+    # "--config ''" no es un detalle de implementacion: sin esto, gvm-cli
+    # (ya corriendo como "nobody" via _drop_priv_to_nobody) intenta
+    # revisar ~/.config/gvm-tools.conf, que expande con HOME=/root
+    # (heredado del proceso padre) y explota con PermissionError -- ver
+    # el docstring de _gvm_cmd.
 
 
 def test_find_id_by_name_prefers_full_and_fast_config():
