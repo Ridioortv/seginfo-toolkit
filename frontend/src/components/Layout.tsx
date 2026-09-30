@@ -5,10 +5,7 @@ const NAV_ITEMS = [
   { to: "/", label: "Dashboard" },
   { to: "/assets", label: "Activos" },
   { to: "/scans", label: "Escaneos" },
-  { to: "/scan-images", label: "Imagenes y Paquetes" },
-  { to: "/surface", label: "Superficie Externa" },
-  { to: "/cloud", label: "Integraciones Cloud" },
-  { to: "/code-repos", label: "Código y Repositorios" },
+  { to: "/openvas-dashboard", label: "Dashboard OpenVAS" },
   { to: "/vulnerabilities", label: "Vulnerabilidades" },
   { to: "/siem", label: "SIEM" },
   { to: "/soar", label: "SOAR" },
@@ -17,24 +14,12 @@ const NAV_ITEMS = [
   { to: "/reports", label: "Reportes" },
   { to: "/notifications", label: "Notificaciones" },
   { to: "/integrations", label: "Integraciones" },
-  { to: "/help", label: "Ayuda" },
 ];
-
-// Solo un admin de organizacion (administra su propia empresa: usuarios,
-// SSO, facturacion) o un platform_admin (administra la plataforma entera:
-// crea organizaciones nuevas, ve/administra la facturacion de cualquiera)
-// necesita estas dos paginas -- ver Organizations.tsx, Billing.tsx y
-// dependencies.py::require_platform_admin/require_org_admin_or_platform_admin.
-const ORG_NAV_ITEM = { to: "/organizations", label: "Organizaciones" };
-const BILLING_NAV_ITEM = { to: "/billing", label: "Pagos y licencia" };
 
 export default function Layout() {
   const claims = useAuthStore((s) => s.claims);
   const logout = useAuthStore((s) => s.logout);
   const navigate = useNavigate();
-
-  const canManageOrganizations = claims?.role === "admin" || claims?.platform_admin === true;
-  const navItems = canManageOrganizations ? [...NAV_ITEMS, ORG_NAV_ITEM, BILLING_NAV_ITEM] : NAV_ITEMS;
 
   function handleLogout() {
     logout();
@@ -46,7 +31,7 @@ export default function Layout() {
       <aside className="sidebar">
         <div className="sidebar-brand">SentinelOps</div>
         <nav>
-          {navItems.map((item) => (
+          {NAV_ITEMS.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}

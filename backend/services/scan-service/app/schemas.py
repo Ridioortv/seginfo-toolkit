@@ -282,3 +282,64 @@ class OpenvasProgressOut(BaseModel):
     error: str | None = None
     gvm_user: str | None = None
     gvm_password: str | None = None
+
+
+# --- Dashboard de OpenVAS (ver app/gvm_manage.py y GET/POST/DELETE
+# /openvas/configs, /port-lists, /report-formats, /credentials, /targets,
+# /tasks, /reports/* en main.py) -- una vez que OpenVAS esta activo
+# (OpenvasProgressOut.ready / OpenvasStatusOut.ready), esto es lo que deja
+# elegir tipo de escaneo, credenciales para escaneo autenticado, targets
+# reusables y exportar reportes completos, en vez de que el driver elija
+# todo solo (ver _CONFIG_NAME_PREFERENCES etc. en app/scanners/openvas.py,
+# que sigue siendo el fallback cuando no se especifica nada de esto).
+
+class GvmEntityOut(BaseModel):
+    """Config de escaneo / scanner / formato de reporte tal como los
+    devuelve gvmd -- solo id+nombre, alcanza para poblar un <select/>."""
+
+    id: str
+    name: str
+
+
+class GvmCredentialCreate(BaseModel):
+    name: str = Field(..., min_length=1)
+    login: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+
+
+class GvmCredentialOut(BaseModel):
+    id: str
+    name: str
+    login: str
+    credential_type: str
+
+
+class GvmTargetCreate(BaseModel):
+    name: str = Field(..., min_length=1)
+    hosts: str = Field(..., min_length=1, description="Host, rango o CIDR -- mismo formato que ScanJobCreate.target")
+    port_list_id: str = Field(..., min_length=1)
+    ssh_credential_id: str | None = None
+    smb_credential_id: str | None = None
+
+    @field_validator("hosts")
+    @classmethod
+    def _validate_hosts(cls, v: str) -> str:
+        return validate_target(v)
+
+
+class GvmTargetOut(BaseModel):
+    id: str
+    name: str
+    hosts: str
+    port_list_id: str | None
+    ssh_credential_id: str | None
+    smb_credential_id: str | None
+
+
+class GvmTaskOut(BaseModel):
+    id: str
+    name: str
+    status: str
+    progress: int
+    target_id: str | None
+    last_report_id: str | None

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { scanApi, vulnApi } from "../services/api";
 import type {
@@ -156,6 +156,7 @@ function ScanResultsPanel({
 
 export default function Scans() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [name, setName] = useState("");
   const [nmapMode, setNmapMode] = useState<NmapMode>("full");
   const [targetsText, setTargetsText] = useState("");
@@ -327,6 +328,11 @@ export default function Scans() {
       if (data.ready) {
         setOpenvasPanelOpen(false);
         setOvPassword("");
+        // Paso 2 completo (activacion manual con credenciales ya en pie) --
+        // el dashboard propio de OpenVAS se abre solo, sin que el usuario
+        // tenga que ir a buscarlo (ver pedido original: "cuando termina de
+        // arrancar se habre el nuevo dashboard de openvas").
+        navigate("/openvas-dashboard");
       }
     },
   });
@@ -372,6 +378,9 @@ export default function Scans() {
       setAutoActivating(false);
       setAutoActivateResult({ gvm_user: data.gvm_user ?? ovUser, gvm_password: data.gvm_password ?? "" });
       queryClient.setQueryData(["openvas-status"], { configured: true, ready: true, detail: data.detail });
+      // Paso 2 completo (activacion automatica via orquestador) -- mismo
+      // auto-open del dashboard que en la activacion manual de arriba.
+      navigate("/openvas-dashboard");
     } else if (data.error) {
       setAutoActivating(false);
     } else if (!data.running) {

@@ -6,7 +6,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import tempfile
 import httpx
-from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks, UploadFile, File, Form
+from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks, UploadFile, File, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, make_asgi_app
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,9 +40,16 @@ from app.schemas import (
     OpenvasStatusOut,
     OpenvasAutoActivateRequest,
     OpenvasProgressOut,
+    GvmEntityOut,
+    GvmCredentialCreate,
+    GvmCredentialOut,
+    GvmTargetCreate,
+    GvmTargetOut,
+    GvmTaskOut,
 )
 from app.dependencies import get_current_claims, require_role, get_agent_from_key
 from app.scanners.openvas import probe_connection as _probe_openvas_connection
+from app import gvm_manage
 from app import services
 
 logger = configure_logging("scan-service")
@@ -333,6 +340,179 @@ async def openvas_auto_activate_progress(claims: dict = Depends(require_role("ad
         error=data.get("error") or probe_error,
         gvm_user=data.get("gvm_user"),
         gvm_password=data.get("gvm_password"),
+    )
+
+
+# --- Dashboard de OpenVAS ---------------------------------------------------
+# Una vez activo (ver /openvas/status), esto deja elegir tipo de escaneo,
+# credenciales para escaneo autenticado y targets reusables -- en vez de que
+# OpenVasDriver.run() elija todo solo (ver app/scanners/openvas.py) -- y ver/
+# exportar el reporte completo de gvmd de un analisis ya terminado. Todo pasa
+# por app/gvm_manage.py, que habla GMP directo con gvmd (misma via que ya usa
+# el driver, gvm-cli sobre el socket).
+
+def _require_gvm_credentials() -> tuple[str, str, str]:
+    """Mismas GVM_USER/GVM_PASSWORD/GVM_SOCKET_PATH que ya aplica en memoria
+    /openvas/activate o /openvas/auto-activate/progress -- si todavia no se
+    activo OpenVAS desde la UI, ninguna de las operaciones del dashboard
+    tiene con quien hablar."""
+    user = os.getenv("GVM_USER") or ""
+    password = os.getenv("GVM_PASSWORD") or ""
+    if not user or not password:
+        raise HTTPException(
+            status_code=409,
+            detail="OpenVAS todavia no esta activado -- primero arrancalo desde 'Activar OpenVAS' en Escaneos.",
+        )
+    socket_path = os.getenv("GVM_SOCKET_PATH") or _DEFAULT_GVM_SOCKET_PATH
+    return socket_path, user, password
+
+
+@app.get("/openvas/configs", response_model=list[GvmEntityOut])
+async def list_openvas_configs(claims: dict = Depends(get_current_claims)):
+    socket_path, user, password = _require_gvm_credentials()
+    ok, configs, err = await gvm_manage.list_configs(socket_path, user, password)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"no se pudieron listar los tipos de escaneo: {err}")
+    return configs
+
+
+@app.get("/openvas/port-lists", response_model=list[GvmEntityOut])
+async def list_openvas_port_lists(claims: dict = Depends(get_current_claims)):
+    socket_path, user, password = _require_gvm_credentials()
+    ok, port_lists, err = await gvm_manage.list_port_lists(socket_path, user, password)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"no se pudieron listar las listas de puertos: {err}")
+    return port_lists
+
+
+@app.get("/openvas/report-formats", response_model=list[GvmEntityOut])
+async def list_openvas_report_formats(claims: dict = Depends(get_current_claims)):
+    socket_path, user, password = _require_gvm_credentials()
+    ok, formats, err = await gvm_manage.list_report_formats(socket_path, user, password)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"no se pudieron listar los formatos de reporte: {err}")
+    return formats
+
+
+@app.get("/openvas/credentials", response_model=list[GvmCredentialOut])
+async def list_openvas_credentials(claims: dict = Depends(get_current_claims)):
+    socket_path, user, password = _require_gvm_credentials()
+    ok, creds, err = await gvm_manage.list_credentials(socket_path, user, password)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"no se pudieron listar las credenciales: {err}")
+    return [
+        GvmCredentialOut(id=c["id"], name=c["name"], login=c.get("login", ""), credential_type=c.get("type", ""))
+        for c in creds
+    ]
+
+
+@app.post("/openvas/credentials", response_model=GvmCredentialOut, status_code=status.HTTP_201_CREATED)
+async def create_openvas_credential(
+    payload: GvmCredentialCreate,
+    claims: dict = Depends(require_role("admin", "soc_manager")),
+):
+    socket_path, user, password = _require_gvm_credentials()
+    ok, credential_id, err = await gvm_manage.create_credential(
+        socket_path, user, password, payload.name, payload.login, payload.password,
+    )
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"no se pudo crear la credencial: {err}")
+    logger.info("credencial GVM creada", extra={"actor": claims.get("sub"), "credential_id": credential_id})
+    return GvmCredentialOut(id=credential_id, name=payload.name, login=payload.login, credential_type="up")
+
+
+@app.delete("/openvas/credentials/{credential_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_openvas_credential(
+    credential_id: str,
+    claims: dict = Depends(require_role("admin", "soc_manager")),
+):
+    socket_path, user, password = _require_gvm_credentials()
+    ok, err = await gvm_manage.delete_credential(socket_path, user, password, credential_id)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"no se pudo borrar la credencial: {err}")
+    logger.info("credencial GVM borrada", extra={"actor": claims.get("sub"), "credential_id": credential_id})
+
+
+@app.get("/openvas/targets", response_model=list[GvmTargetOut])
+async def list_openvas_targets(claims: dict = Depends(get_current_claims)):
+    socket_path, user, password = _require_gvm_credentials()
+    ok, targets, err = await gvm_manage.list_targets(socket_path, user, password)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"no se pudieron listar los targets: {err}")
+    return targets
+
+
+@app.post("/openvas/targets", response_model=GvmTargetOut, status_code=status.HTTP_201_CREATED)
+async def create_openvas_target(
+    payload: GvmTargetCreate,
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+):
+    socket_path, user, password = _require_gvm_credentials()
+    ok, target_id, err = await gvm_manage.create_target(
+        socket_path, user, password, payload.name, payload.hosts, payload.port_list_id,
+        payload.ssh_credential_id, payload.smb_credential_id,
+    )
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"no se pudo crear el target: {err}")
+    logger.info("target GVM creado", extra={"actor": claims.get("sub"), "target_id": target_id})
+    return GvmTargetOut(
+        id=target_id, name=payload.name, hosts=payload.hosts, port_list_id=payload.port_list_id,
+        ssh_credential_id=payload.ssh_credential_id, smb_credential_id=payload.smb_credential_id,
+    )
+
+
+@app.delete("/openvas/targets/{target_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_openvas_target(
+    target_id: str,
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+):
+    socket_path, user, password = _require_gvm_credentials()
+    ok, err = await gvm_manage.delete_target(socket_path, user, password, target_id)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"no se pudo borrar el target: {err}")
+    logger.info("target GVM borrado", extra={"actor": claims.get("sub"), "target_id": target_id})
+
+
+@app.get("/openvas/tasks", response_model=list[GvmTaskOut])
+async def list_openvas_tasks(claims: dict = Depends(get_current_claims)):
+    socket_path, user, password = _require_gvm_credentials()
+    ok, tasks, err = await gvm_manage.list_tasks(socket_path, user, password)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"no se pudieron listar los analisis: {err}")
+    return tasks
+
+
+@app.get("/openvas/reports/{report_id}")
+async def get_openvas_report(report_id: str, claims: dict = Depends(get_current_claims)):
+    """Reporte NATIVO completo de gvmd (todos los hosts/resultados/metadata
+    de la corrida) -- para "ver el reporte completo" en el dashboard, a
+    diferencia de los findings ya resumidos que guarda cada ScanJob."""
+    socket_path, user, password = _require_gvm_credentials()
+    ok, raw_xml, err = await gvm_manage.get_report_xml(socket_path, user, password, report_id)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"no se pudo obtener el reporte: {err}")
+    return {"report_id": report_id, "raw_xml": raw_xml}
+
+
+@app.get("/openvas/reports/{report_id}/export")
+async def export_openvas_report(
+    report_id: str,
+    format: str = "pdf",
+    claims: dict = Depends(get_current_claims),
+):
+    socket_path, user, password = _require_gvm_credentials()
+    ok, content, filename, err = await gvm_manage.export_report(socket_path, user, password, report_id, format)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"no se pudo exportar el reporte: {err}")
+    media_types = {"pdf": "application/pdf", "xml": "application/xml", "csv": "text/csv"}
+    media_type = media_types.get(format.strip().lower(), "application/octet-stream")
+    logger.info(
+        "reporte OpenVAS exportado", extra={"actor": claims.get("sub"), "report_id": report_id, "format": format},
+    )
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

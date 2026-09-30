@@ -112,6 +112,44 @@ export interface OpenvasProgressOut {
   gvm_password: string | null;
 }
 
+// --- Dashboard de OpenVAS (ver app/gvm_manage.py y GET/POST/DELETE
+// /openvas/configs, /port-lists, /report-formats, /credentials, /targets,
+// /tasks, /reports/* en el backend, y app/schemas.py: GvmEntityOut,
+// GvmCredentialOut, GvmTargetOut, GvmTaskOut) -- deja elegir tipo de
+// escaneo, credenciales para escaneo autenticado, targets reusables y
+// exportar reportes completos, todo contra gvmd real (sin base local
+// propia: gvmd es la unica fuente de verdad de targets/credenciales).
+
+export interface GvmEntityOut {
+  id: string;
+  name: string;
+}
+
+export interface GvmCredentialOut {
+  id: string;
+  name: string;
+  login: string;
+  credential_type: string;
+}
+
+export interface GvmTargetOut {
+  id: string;
+  name: string;
+  hosts: string;
+  port_list_id: string | null;
+  ssh_credential_id: string | null;
+  smb_credential_id: string | null;
+}
+
+export interface GvmTaskOut {
+  id: string;
+  name: string;
+  status: string;
+  progress: number;
+  target_id: string | null;
+  last_report_id: string | null;
+}
+
 export interface AgentScanJobOut {
   id: string;
   agent_id: string;

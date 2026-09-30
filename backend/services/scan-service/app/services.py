@@ -595,6 +595,18 @@ async def execute_scan_job(session_factory, job_id: str) -> None:
             job = await db.get(ScanJob, job_id)
             job.raw_result = (result.raw_output or "")[:200_000]
             job.finished_at = _now()
+            # OpenVasDriver.run() puede "marcar" el ScanResult con un
+            # gvm_task_id extra (ver app/scanners/openvas.py::_tag) cuando
+            # llega a crear un task real en gvmd, aunque el escaneo despues
+            # falle o de timeout -- se guarda en options (no hay columna
+            # propia) para que el dashboard de OpenVAS pueda pedir despues
+            # el reporte completo/exportarlo (GET /openvas/tasks trae el
+            # report_id de gvmd a partir de este task_id). Otros scanners
+            # (nmap/trivy/nuclei) nunca settean este atributo, asi que esto
+            # no les cambia nada.
+            gvm_task_id = getattr(result, "gvm_task_id", None)
+            if gvm_task_id:
+                job.options = {**(job.options or {}), "gvm_task_id": gvm_task_id}
             if result.error:
                 job.status = ScanStatus.failed
                 job.error_message = result.error[:2000]
@@ -602,7 +614,20 @@ async def execute_scan_job(session_factory, job_id: str) -> None:
             else:
                 job.status = ScanStatus.completed
                 job.findings = result.findings
-                job.packages = result.packages
+                # ScanResult (ver app/scanners/base.py) no declara ningun
+                # campo "packages" -- NINGUN driver (nmap/trivy/nuclei/
+                # openvas) lo setea hoy en el flujo generico de
+                # execute_scan_job. El inventario de paquetes de trivy se
+                # llena por una via COMPLETAMENTE distinta (la subida de un
+                # archivo, ver execute_uploaded_scan_job mas arriba, que
+                # escribe job.packages directo). Leer result.packages a
+                # secas revienta con AttributeError en CUALQUIER escaneo
+                # exitoso de este flujo -- dejando el job trabado en
+                # 'running' para siempre, porque nunca se llega a este
+                # commit. getattr(..., None) or [] lo deja en la misma
+                # lista vacia que ya trae por default la columna (ver el
+                # ALTER TABLE ... DEFAULT '[]' mas arriba en el lifespan).
+                job.packages = getattr(result, "packages", None) or []
                 logger.info("scan completado", extra={"job_id": job_id, "hallazgos": len(result.findings)})
             await db.commit()
 
