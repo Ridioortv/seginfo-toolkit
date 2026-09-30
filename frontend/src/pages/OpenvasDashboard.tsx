@@ -288,15 +288,41 @@ export default function OpenvasDashboard() {
   }
 
   if (!openvasReady) {
+    // "no listo" puede ser un genuino "todavia no se activo nada" O un
+    // bache transitorio de la prueba de conexion GMP justo despues de
+    // activarse (gvmd puede tardar un instante en asentarse tras crear/
+    // actualizar el usuario) -- esta pantalla sigue consultando sola cada
+    // 15s (ver refetchInterval de openvasStatus mas arriba) y muestra el
+    // detalle real que devuelve el backend en vez de un mensaje generico,
+    // para poder distinguir un caso del otro sin adivinar.
     return (
       <div>
         <PageHeader title="Dashboard de OpenVAS" subtitle="OpenVAS todavia no esta activo." />
         <div className="panel">
           <p className="empty-hint">
             Este dashboard necesita que OpenVAS este activo y conectado. Volve a{" "}
-            <Link to="/scans" className="btn-link">Escaneos</Link> y usa "Arrancar OpenVAS" (o "Probar y activar") --
-            en cuanto termine de arrancar, esta pagina se abre sola.
+            <Link to="/scans" className="btn-link">Escaneos</Link> y usa "Activar y abrir OpenVAS" -- en cuanto
+            termine de arrancar, esta pagina se abre sola.
           </p>
+          {openvasStatus.data?.detail && (
+            <p className="error-text">
+              Detalle del ultimo chequeo: <span className="error-detail">{openvasStatus.data.detail}</span>
+            </p>
+          )}
+          <div className="inline-form" style={{ marginTop: 8 }}>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => openvasStatus.refetch()}
+              disabled={openvasStatus.isFetching}
+            >
+              {openvasStatus.isFetching ? "Comprobando..." : "Reintentar ahora"}
+            </button>
+            <span className="empty-hint">
+              (tambien reintenta solo cada 15s -- si esto es un bache pasajero justo despues de activarse, se
+              deberia resolver solo en unos segundos)
+            </span>
+          </div>
         </div>
       </div>
     );
