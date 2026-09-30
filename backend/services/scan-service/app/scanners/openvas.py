@@ -26,6 +26,7 @@ escaneo):
 """
 import asyncio
 import os
+import pwd
 import shutil
 import time
 import xml.etree.ElementTree as ET
@@ -69,6 +70,41 @@ def _gvm_cmd(socket_path: str, user: str, password: str, xml: str) -> list[str]:
     ]
 
 
+def _drop_priv_to_nobody() -> None:
+    """preexec_fn para bajar privilegios del subproceso gvm-cli ANTES del
+    exec (corre en el hijo, entre fork y exec). gvm-tools (el paquete pip
+    que provee gvm-cli) se niega EXPLICITAMENTE a correr como root (ver
+    gvmtools/helper.py::do_not_run_as_root, `raise RuntimeError("This
+    tool MUST NOT be run as root user.")`) -- una proteccion de la
+    libreria en si, sin ningun flag/env var para saltearla. Este
+    contenedor si corre como root (necesario para nada en particular hoy,
+    pero cambiar el usuario de TODO el proceso rompería los permisos de
+    escritura de los caches de trivy/nuclei bajo /root -- ver Dockerfile),
+    asi que en vez de eso le bajamos los privilegios SOLO a este
+    subproceso puntual, usando "nobody" (uid/gid ya presentes en la
+    imagen base, sin tener que crear un usuario nuevo).
+
+    Si el socket de gvmd no fuera legible/escribible para "nobody" (un
+    "Permission denied" en la salida de gvm-cli, en vez del error de
+    "MUST NOT be run as root"), esa seria la siguiente pista: habria que
+    ajustar los permisos del socket del lado de gvmd o compartir un
+    grupo/uid especifico en vez de "nobody" generico."""
+    nobody = pwd.getpwnam("nobody")
+    os.setgroups([])
+    os.setgid(nobody.pw_gid)
+    os.setuid(nobody.pw_uid)
+
+
+async def _spawn_gvm_cli(cmd: list[str]) -> asyncio.subprocess.Process:
+    """Unico lugar que efectivamente lanza el subproceso gvm-cli -- tanto
+    gvm_query como probe_connection pasan por aca para no duplicar el
+    preexec_fn de mas arriba en dos lugares."""
+    return await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        preexec_fn=_drop_priv_to_nobody,
+    )
+
+
 async def gvm_query(socket_path: str, user: str, password: str, xml: str, timeout: int = 60) -> tuple[int, str, str]:
     """Ejecuta un comando GMP contra gvmd via gvm-cli y devuelve
     (returncode, stdout, stderr). Antes vivia como closure local de
@@ -80,9 +116,7 @@ async def gvm_query(socket_path: str, user: str, password: str, xml: str, timeou
     cmd = _gvm_cmd(socket_path, user, password, xml)
     proc = None
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
+        proc = await _spawn_gvm_cli(cmd)
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except FileNotFoundError:
         return -1, "", "gvm-cli no esta instalado en este contenedor"
@@ -249,9 +283,7 @@ async def probe_connection(socket_path: str, user: str, password: str, timeout: 
     cmd = _gvm_cmd(socket_path, user, password, "<get_version/>")
     proc = None
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
+        proc = await _spawn_gvm_cli(cmd)
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except FileNotFoundError:
         return False, "gvm-cli no esta instalado en este contenedor"
