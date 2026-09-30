@@ -409,7 +409,14 @@ async def list_openvas_credentials(claims: dict = Depends(get_current_claims)):
 @app.post("/openvas/credentials", response_model=GvmCredentialOut, status_code=status.HTTP_201_CREATED)
 async def create_openvas_credential(
     payload: GvmCredentialCreate,
-    claims: dict = Depends(require_role("admin", "soc_manager")),
+    # Mismos roles que create/delete de targets y que POST /scans
+    # (require_role("admin", "soc_manager", "analyst")) -- antes esto
+    # solo aceptaba admin/soc_manager, una inconsistencia sin motivo
+    # aparente que hacia que un analyst pudiera crear targets/lanzar
+    # escaneos pero se topara con un 403 silencioso (mostrado como "no se
+    # pudo crear la credencial" en el dashboard) justo al crear
+    # credenciales de escaneo autenticado.
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
 ):
     socket_path, user, password = _require_gvm_credentials()
     ok, credential_id, err = await gvm_manage.create_credential(
@@ -424,7 +431,7 @@ async def create_openvas_credential(
 @app.delete("/openvas/credentials/{credential_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_openvas_credential(
     credential_id: str,
-    claims: dict = Depends(require_role("admin", "soc_manager")),
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
 ):
     socket_path, user, password = _require_gvm_credentials()
     ok, err = await gvm_manage.delete_credential(socket_path, user, password, credential_id)

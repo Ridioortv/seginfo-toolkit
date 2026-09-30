@@ -12,13 +12,21 @@
 // entregable): alertas nativas de GVM, formatos de reporte personalizados,
 // politicas de escaneo editables a mano, usuarios/roles propios de GVM, y
 // exploracion de los feeds NVT/CVE.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { scanApi } from "../services/api";
-import type { OpenvasStatusOut, GvmEntityOut, GvmCredentialOut, GvmTargetOut, GvmTaskOut } from "../types";
+import type {
+  OpenvasStatusOut,
+  GvmEntityOut,
+  GvmCredentialOut,
+  GvmTargetOut,
+  GvmTaskOut,
+  ScanJobOut,
+} from "../types";
 import PageHeader from "../components/PageHeader";
 import { connectionErrorDetail } from "../utils/errors";
+import { StatusBadge } from "../components/Badge";
 
 const DAY_LABELS = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"];
 
@@ -79,6 +87,23 @@ export default function OpenvasDashboard() {
   });
   const openvasReady = openvasStatus.data?.ready ?? false;
 
+  // Recuerda si esta pagina llego a ver OpenVAS listo AL MENOS UNA VEZ en
+  // esta sesion (no persiste entre reloads -- ver mas abajo por que eso
+  // esta bien). Sin esto, cualquier bache transitorio de gvmd (ej. "no
+  // hubo respuesta en 15s" durante un escaneo pesado) hacia que
+  // openvasReady pasara a false y el gate de mas abajo reemplazara TODO
+  // el dashboard por la pantalla de "todavia no esta activo" -- el
+  // usuario lo describia como "el dashboard se cierra solo". Con esto,
+  // una vez que ya se vio listo, un bache pasajero muestra un banner de
+  // advertencia arriba en vez de tapar el dashboard entero (que ademas
+  // sigue mostrando los datos ya cacheados de configs/targets/tasks/etc,
+  // gracias a que sus queries usan `enabled: openvasReady` -- al quedar
+  // en `enabled: false` React Query no las vacia, solo deja de refetchear).
+  const hasBeenReadyRef = useRef(false);
+  useEffect(() => {
+    if (openvasReady) hasBeenReadyRef.current = true;
+  }, [openvasReady]);
+
   const configs = useQuery({
     queryKey: ["openvas-configs"],
     queryFn: async () => (await scanApi.get<GvmEntityOut[]>("/openvas/configs")).data,
@@ -102,6 +127,25 @@ export default function OpenvasDashboard() {
   const tasks = useQuery({
     queryKey: ["openvas-tasks"],
     queryFn: async () => (await scanApi.get<GvmTaskOut[]>("/openvas/tasks")).data,
+    enabled: openvasReady,
+    refetchInterval: 10_000,
+  });
+
+  // Los tasks de arriba son SOLO los que gvmd llego a crear -- si el
+  // driver (OpenVasDriver.run en app/scanners/openvas.py) falla ANTES de
+  // crear un target/task nativo (ej. "gvmd no tiene configuradas las
+  // entidades minimas para escanear", el error mas comun mientras el feed
+  // de NVTs/GVMD_DATA todavia esta sincronizando), ese intento fallido
+  // queda invisible aca -- el usuario lo reportaba como "lance un
+  // escaneo y no aparece en Analisis y reportes". Este query trae los
+  // ScanJob propios de scan-service (que SI se crean siempre, aun si el
+  // driver falla al toque) filtrados a scanner_type=openvas, para mostrar
+  // esos intentos con su error_message real en vez de que desaparezcan
+  // sin dejar rastro.
+  const scanJobs = useQuery({
+    queryKey: ["openvas-scan-jobs"],
+    queryFn: async () =>
+      (await scanApi.get<ScanJobOut[]>("/scans", { params: { scanner_type: "openvas" } })).data,
     enabled: openvasReady,
     refetchInterval: 10_000,
   });
@@ -249,6 +293,11 @@ export default function OpenvasDashboard() {
 
   const targetChosen = scanTargetMode === "saved" ? !!scanTargetId : !!scanAdhocHosts.trim();
   const launchMutation = scanWhen === "now" ? launchNow : launchScheduled;
+  // Ver el banner de "Nuevo analisis" mas abajo: sin ningun config
+  // disponible, el driver va a fallar con "entidades minimas" apenas se
+  // lance -- mejor bloquear el boton con una explicacion clara que dejar
+  // que el usuario lance un analisis condenado a fallar sin aviso previo.
+  const feedNotReady = configs.isSuccess && configs.data.length === 0;
 
   // --- Analisis y reportes: tasks nativos de GVM (ver GET /openvas/tasks)
   // -- id/nombre/estado/progreso/target/ultimo reporte, tal como los ve
@@ -287,7 +336,14 @@ export default function OpenvasDashboard() {
     );
   }
 
-  if (!openvasReady) {
+  if (!openvasReady && !hasBeenReadyRef.current) {
+    // Solo se muestra esta pantalla BLOQUEANTE (que tapa el dashboard
+    // entero) si todavia no se vio OpenVAS listo NI UNA VEZ en esta
+    // sesion. Si ya se vio listo antes, un bache pasajero muestra un
+    // banner de advertencia mas abajo en vez de esto (ver hasBeenReadyRef
+    // mas arriba) -- asi el dashboard no "se cierra solo" ante cualquier
+    // timeout transitorio de gvmd.
+    //
     // "no listo" puede ser un genuino "todavia no se activo nada" O un
     // bache transitorio de la prueba de conexion GMP justo despues de
     // activarse (gvmd puede tardar un instante en asentarse tras crear/
@@ -338,9 +394,46 @@ export default function OpenvasDashboard() {
         <Link to="/scans" className="btn-link">&larr; Volver a Escaneos</Link>
       </p>
 
+      {!openvasReady && (
+        <div className="panel" style={{ borderColor: "var(--color-high, #b45309)" }}>
+          <p className="error-text">
+            OpenVAS no esta respondiendo en este momento (bache transitorio -- se reintenta solo cada 15s). El
+            dashboard sigue mostrando los ultimos datos conocidos abajo, pero crear o lanzar algo nuevo puede fallar
+            hasta que se recupere.
+            {openvasStatus.data?.detail && (
+              <>
+                {" "}Detalle: <span className="error-detail">{openvasStatus.data.detail}</span>
+              </>
+            )}
+          </p>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => openvasStatus.refetch()}
+            disabled={openvasStatus.isFetching}
+          >
+            {openvasStatus.isFetching ? "Comprobando..." : "Reintentar ahora"}
+          </button>
+        </div>
+      )}
+
       {/* --- Nuevo analisis --- */}
       <div className="panel">
         <h2>Nuevo analisis</h2>
+
+        {configs.isSuccess && configs.data.length === 0 && (
+          <p className="error-text" style={{ marginBottom: 10 }}>
+            gvmd todavia no tiene ningun tipo de escaneo disponible (la lista de "configs" vino vacia). Esto es
+            normal la primera vez que se activa OpenVAS: el feed de NVTs/GVMD_DATA puede tardar 20-40 minutos (a
+            veces mas) en terminar de sincronizarse despues de que los contenedores ya estan arriba -- ver
+            README.md/STATUS.md. Lanzar un analisis ahora casi seguro va a fallar con "gvmd no tiene configuradas
+            las entidades minimas para escanear"; esperá un rato y volvé a{" "}
+            <button type="button" className="btn-link" onClick={() => configs.refetch()}>
+              revisar
+            </button>
+            .
+          </p>
+        )}
 
         <div className="inline-form">
           <input placeholder="Nombre (opcional)" value={scanName} onChange={(e) => setScanName(e.target.value)} />
@@ -442,7 +535,8 @@ export default function OpenvasDashboard() {
             className="btn-primary"
             style={{ width: "auto" }}
             onClick={() => launchMutation.mutate()}
-            disabled={launchMutation.isPending || !targetChosen}
+            disabled={launchMutation.isPending || !targetChosen || feedNotReady}
+            title={feedNotReady ? "gvmd todavia no tiene tipos de escaneo disponibles (ver aviso arriba)" : undefined}
           >
             {launchMutation.isPending
               ? "Lanzando..."
@@ -484,11 +578,16 @@ export default function OpenvasDashboard() {
           targets: se pueden reusar en cualquier target nuevo de mas arriba.
         </p>
         <div className="inline-form">
-          <input placeholder="Nombre" value={credName} onChange={(e) => setCredName(e.target.value)} />
-          <input placeholder="Usuario" value={credLogin} onChange={(e) => setCredLogin(e.target.value)} />
+          <input placeholder="Nombre *" value={credName} onChange={(e) => setCredName(e.target.value)} />
+          <input placeholder="Usuario *" value={credLogin} onChange={(e) => setCredLogin(e.target.value)} />
           <input
-            type="password"
-            placeholder="Contraseña"
+            // Sin mascara a pedido explicito del usuario ("quiero que
+            // aparezca la contraseña escrita") -- esta contraseña es para
+            // que gvmd loguee al HOST escaneado, no la contraseña de la
+            // cuenta de SentinelOps, asi que mostrarla en claro aca no
+            // expone ninguna credencial de la app en si.
+            type="text"
+            placeholder="Contraseña *"
             className="mono"
             value={credPassword}
             onChange={(e) => setCredPassword(e.target.value)}
@@ -501,6 +600,12 @@ export default function OpenvasDashboard() {
             {createCredential.isPending ? "Creando..." : "Crear credencial"}
           </button>
         </div>
+        {!createCredential.isPending && (!credName.trim() || !credLogin.trim() || !credPassword.trim()) && (
+          <p className="empty-hint">
+            Completá nombre, usuario y contraseña (los tres son obligatorios) para poder crear la credencial -- el
+            boton queda deshabilitado hasta entonces.
+          </p>
+        )}
         {createCredential.isError && (
           <p className="error-text">
             No se pudo crear la credencial.{" "}
@@ -654,6 +759,46 @@ export default function OpenvasDashboard() {
           aparecen enriquecidos con CVSS/EPSS/KEV en <Link to="/scans" className="btn-link">Escaneos</Link> y en{" "}
           <Link to="/vulnerabilities" className="btn-link">Vulnerabilidades</Link>.
         </p>
+
+        {(scanJobs.data ?? []).filter((j) => j.status === "failed").length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <p className="empty-hint">
+              Intentos que fallaron ANTES de llegar a crear un task en gvmd (por eso no aparecen en la tabla nativa
+              de abajo) -- por ejemplo, cuando gvmd todavia no tenia listas las entidades minimas para escanear:
+            </p>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Nombre</th>
+                  <th>Target</th>
+                  <th>Estado</th>
+                  <th>Error</th>
+                  <th>Cuando</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(scanJobs.data ?? [])
+                  .filter((j) => j.status === "failed")
+                  .map((j) => (
+                    <tr key={j.id}>
+                      <td>{j.name || "(sin nombre)"}</td>
+                      <td className="mono">{j.target}</td>
+                      <td><StatusBadge value={j.status} /></td>
+                      <td className="error-detail">{j.error_message || "-"}</td>
+                      <td>{new Date(j.created_at).toLocaleString()}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {scanJobs.isError && (
+          <p className="error-text">
+            No se pudieron traer los intentos de analisis propios.{" "}
+            <span className="error-detail">{connectionErrorDetail(scanJobs.error)}</span>
+          </p>
+        )}
+
         {tasks.isError && (
           <p className="error-text">
             No se pudieron traer los analisis de gvmd.{" "}
