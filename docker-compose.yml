@@ -483,6 +483,50 @@ services:
       scan-service:
         condition: service_healthy
 
+  # Agente dedicado a OpenVAS ("gvm" en el selector de agente de la UI).
+  # A diferencia de "remote-agent" (Agente Docker) de arriba, que NO tiene
+  # ni el socket ni las credenciales de gvmd, este SI se conecta al MISMO
+  # gvmd/ospd-openvas de este stack (montando el mismo socket que ya usa
+  # scan-service, gvmd_socket_vol) -- asi que no necesita el motor GVM
+  # aparte en ninguna otra maquina: reusa el que ya levanta el profile
+  # "openvas" en este mismo docker-compose.yml.
+  #
+  # A proposito NO se setea AGENT_BEHIND_DOCKER_NAT aca: ese flag frena
+  # trivy/nuclei/openvas contra IPs de LAN (ver remote-agent, arriba), pero
+  # desde el fix de alive_tests="Consider Alive" (app/scanners/openvas.py
+  # y remote-agent/agent.py::run_openvas, commit 58396b1) un escaneo real
+  # de openvas YA puede llegar a la LAN sin ping/ARP -- bloquearlo aca de
+  # nuevo anularia ese fix. Nota: este agente SI podria recibir por error
+  # un job de nmap/nuclei/trivy (el modelo de agentes no restringe por
+  # scanner) -- contra un target de LAN esos tres se quedarian intentando
+  # hasta su propio timeout en vez de fallar al toque, por no tener ese
+  # guard; en la practica no deberia pasar porque los otros dos agentes
+  # (LAN/Docker) ya cubren esos 3 scanners.
+  gvm-agent:
+    profiles: ["openvas"]
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: backend/services/scan-service/Dockerfile
+    command: ["python", "/agent.py"]
+    environment:
+      SCAN_SERVICE_URL: http://scan-service:8000
+      AGENT_API_KEY: ${REMOTE_AGENT_GVM_KEY}
+      POLL_INTERVAL_SECONDS: "10"
+      GVM_SOCKET_PATH: /run/gvmd/gvmd.sock
+      GVM_USER: ${GVM_USER}
+      GVM_PASSWORD: ${GVM_PASSWORD}
+    healthcheck:
+      disable: true
+    volumes:
+      - ./remote-agent/agent.py:/agent.py:ro
+      - gvmd_socket_vol:/run/gvmd:ro
+    depends_on:
+      scan-service:
+        condition: service_healthy
+      gvmd:
+        condition: service_started
+
   vuln-service:
     restart: unless-stopped
     build:
