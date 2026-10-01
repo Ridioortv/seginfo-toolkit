@@ -326,14 +326,6 @@ export default function Scans() {
       if (data.ready) {
         setOpenvasPanelOpen(false);
         setOvPassword("");
-        // El auto-open del dashboard (paso 2: "cuando termina de arrancar
-        // se habre el nuevo dashboard de openvas") ya no vive aca -- lo
-        // hace Layout.tsx, mirando la transicion de openvas-status a
-        // "ready" (ver ese archivo). Puesto en Layout (montado siempre,
-        // en cualquier pantalla) funciona sin importar donde este el
-        // usuario, y sobrevive un F5 a mitad de la espera -- antes,
-        // atado solo a este componente, se perdia si el usuario cambiaba
-        // de pantalla o recargaba mientras esperaba.
       }
     },
   });
@@ -384,10 +376,6 @@ export default function Scans() {
       setAutoActivating(false);
       setAutoActivateResult({ gvm_user: data.gvm_user ?? ovUser, gvm_password: data.gvm_password ?? "" });
       queryClient.setQueryData(["openvas-status"], { configured: true, ready: true, detail: data.detail });
-      // El auto-open del dashboard lo hace Layout.tsx (ver comentario en
-      // activateOpenvas.onSuccess mas arriba) -- aca alcanza con reflejar
-      // el resultado en este panel para quien lo tenga abierto en el
-      // momento justo en que termina.
     } else if (data.error) {
       setAutoActivating(false);
     } else if (data.running) {
@@ -1093,7 +1081,9 @@ export default function Scans() {
                   apagado. Un solo boton levanta todo solo (contenedores, sincronizacion de feeds y usuario GVM) --
                   la contraseña la genera el sistema y se muestra aca apenas termine. La primera vez puede tardar
                   20-40 minutos por la sincronizacion de feeds; podes cerrar este panel o irte a otra pantalla
-                  mientras tanto, que el dashboard de OpenVAS se abre solo apenas este listo, este donde este.
+                  mientras tanto, que esta pantalla sigue consultando sola el progreso -- volve a abrir este panel
+                  cuando quieras ver si ya esta listo (una vez que lo este, aparece arriba como scanner disponible en
+                  "Escaneos programados" y "Escaneos remotos", mas abajo).
                 </p>
 
                 {autoActivateOpenvas.isPending || autoActivating ? (
@@ -1105,7 +1095,7 @@ export default function Scans() {
                     onClick={() => autoActivateOpenvas.mutate({ gvm_user: "admin", gvm_password: "", gvm_socket_path: "" })}
                     disabled={autoActivateOpenvas.isPending}
                   >
-                    Activar y abrir OpenVAS
+                    Activar OpenVAS
                   </button>
                 )}
 

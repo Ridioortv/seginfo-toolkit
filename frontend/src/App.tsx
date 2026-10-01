@@ -5,7 +5,6 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import Dashboard from "./pages/Dashboard";
 import Assets from "./pages/Assets";
 import Scans from "./pages/Scans";
-import OpenvasDashboard from "./pages/OpenvasDashboard";
 import Vulnerabilities from "./pages/Vulnerabilities";
 import Siem from "./pages/Siem";
 import Soar from "./pages/Soar";
@@ -25,7 +24,6 @@ export default function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/assets" element={<Assets />} />
             <Route path="/scans" element={<Scans />} />
-            <Route path="/openvas-dashboard" element={<OpenvasDashboard />} />
             <Route path="/vulnerabilities" element={<Vulnerabilities />} />
             <Route path="/siem" element={<Siem />} />
             <Route path="/soar" element={<Soar />} />
