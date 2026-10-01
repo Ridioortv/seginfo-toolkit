@@ -624,9 +624,21 @@ def run_openvas(target: str, options: dict) -> tuple[str, list[dict], str]:
         )
 
     task_name = f"sentinelops-{target}-{int(time.time())}"
+    # alive_tests="Consider Alive" por default -- salta la fase de
+    # deteccion de host-vivo de gvmd/ospd-openvas (ICMP/ARP Ping, sockets
+    # raw/broadcast), que no atraviesa el NAT de Docker Desktop cuando
+    # este agente corre DENTRO de un contenedor (Agente Docker, ver
+    # AGENT_BEHIND_DOCKER_NAT mas arriba) -- mismo criterio que
+    # app/scanners/openvas.py::_build_create_target_xml en scan-service.
+    # Override opcional (options["gvm_alive_tests"]) para cuando este
+    # mismo agent.py corre con visibilidad de red real (ver remote-agent/
+    # openvas-agent/), donde el default de gvmd puede convenir mas
+    # (salta hosts caidos mas rapido).
+    alive_tests = (opts.get("gvm_alive_tests") or "").strip() or "Consider Alive"
     create_target = (
         f"<create_target><name>{_xml_escape(task_name)}</name>"
-        f"<hosts>{_xml_escape(target)}</hosts><port_list id='{port_list_id}'/></create_target>"
+        f"<hosts>{_xml_escape(target)}</hosts><port_list id='{port_list_id}'/>"
+        f"<alive_tests>{_xml_escape(alive_tests)}</alive_tests></create_target>"
     )
     rc, out, err = _ov_query(socket_path, user, password, create_target)
     if rc != 0 or not _ov_status_ok(out):

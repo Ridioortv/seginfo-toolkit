@@ -77,6 +77,23 @@ def test_build_create_target_xml_escapes_and_embeds_port_list():
     assert "port_list id='pl-222'" in xml
 
 
+def test_build_create_target_xml_defaults_to_consider_alive():
+    # Sin esto, gvmd usa su propio default ("Scan Config Default" -- ICMP
+    # + ARP Ping), que depende de pings/ARP crudos que NO atraviesan el
+    # NAT de Docker Desktop -- "Consider Alive" es lo que permite escanear
+    # un target de LAN desde el mismo Docker Desktop del operador, sin
+    # necesitar una maquina aparte con visibilidad de red nativa (ver
+    # remote-agent/openvas-agent/).
+    xml = _build_create_target_xml("t1", "192.168.0.143", "pl-222")
+    assert "<alive_tests>Consider Alive</alive_tests>" in xml
+
+
+def test_build_create_target_xml_alive_tests_override():
+    xml = _build_create_target_xml("t1", "192.168.0.143", "pl-222", alive_tests="ICMP Ping")
+    assert "<alive_tests>ICMP Ping</alive_tests>" in xml
+    assert "Consider Alive" not in xml
+
+
 def test_build_create_task_xml_embeds_all_ids():
     xml = _build_create_task_xml("t1", "target-1", "config-1", "scanner-1")
     assert "target id='target-1'" in xml

@@ -220,14 +220,31 @@ def _build_create_target_xml(
     port_list_id: str,
     ssh_credential_id: str | None = None,
     smb_credential_id: str | None = None,
+    alive_tests: str = "Consider Alive",
 ) -> str:
     """ssh_credential_id/smb_credential_id son opcionales -- sin ellos, el
     target queda igual que antes (escaneo SIN autenticar, solo deteccion
     de red). Con ellos, gvmd usa esas credenciales para loguearse al host
     durante el escaneo (ver create_credential en app/gvm_manage.py) y
     detectar mucho mas (vulnerabilidades locales, no solo expuestas por
-    red) -- lo que GVM llama "escaneo autenticado"."""
-    extra = ""
+    red) -- lo que GVM llama "escaneo autenticado".
+
+    alive_tests="Consider Alive" (default, en vez de dejar que gvmd use su
+    default propio -- "Scan Config Default", que combina ICMP+ARP Ping)
+    salta POR COMPLETO la fase de deteccion de host-vivo de gvmd/ospd-
+    openvas: esa fase manda pings ICMP y/o ARP crudos (sockets raw,
+    broadcast), que NO atraviesan el NAT de Docker Desktop (Windows/Mac) --
+    el mismo motivo documentado en remote-agent/README.md para nmap, y por
+    el que el escaneo TCP interno de remote-agent/agent.py usa connect()
+    en vez de pings. El trafico de los NVTs de deteccion real que corren
+    DESPUES (la mayoria via conexiones TCP/UDP normales, ruteadas, no raw)
+    SI puede atravesar ese NAT -- asi que "Consider Alive" es lo que deja
+    pasar un escaneo real contra un target de LAN sin necesitar una
+    maquina aparte con visibilidad de red nativa. Costo: si el host esta
+    realmente apagado/inalcanzable, el escaneo tarda lo mismo que contra
+    uno vivo en vez de saltarlo rapido -- aceptable dado el objetivo
+    (poder escanear LAN desde el mismo Docker Desktop del operador)."""
+    extra = f"<alive_tests>{_xml_escape(alive_tests)}</alive_tests>" if alive_tests else ""
     if ssh_credential_id:
         extra += f"<ssh_lsc_credential id='{ssh_credential_id}'/>"
     if smb_credential_id:
@@ -388,6 +405,13 @@ class OpenVasDriver(ScannerDriver):
         override_port_list_id = (options.get("gvm_port_list_id") or "").strip() or None
         override_ssh_credential_id = (options.get("gvm_ssh_credential_id") or "").strip() or None
         override_smb_credential_id = (options.get("gvm_smb_credential_id") or "").strip() or None
+        # Ver el docstring de _build_create_target_xml: default "Consider
+        # Alive" para que el escaneo no dependa de ICMP/ARP (no atraviesan
+        # el NAT de Docker Desktop). Dejar pasar un override explicito por
+        # si algun dia esto corre en una maquina con visibilidad de red
+        # nativa (ver remote-agent/openvas-agent/) donde SI conviene el
+        # default de gvmd (salta hosts caidos mas rapido).
+        override_alive_tests = (options.get("gvm_alive_tests") or "").strip() or "Consider Alive"
 
         # task_id se completa en el paso 2 -- se declara antes del try para
         # que el except CancelledError de mas abajo sepa si ya existe un
@@ -453,6 +477,7 @@ class OpenVasDriver(ScannerDriver):
                 rc, out, err = await q(
                     _build_create_target_xml(
                         task_name, target, port_list_id, override_ssh_credential_id, override_smb_credential_id,
+                        override_alive_tests,
                     )
                 )
                 if rc != 0 or not _response_status_ok(out):
