@@ -157,6 +157,7 @@ function ScanResultsPanel({
 export default function Scans() {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
+  const [quickScannerType, setQuickScannerType] = useState<ScannerType>("nmap");
   const [nmapMode, setNmapMode] = useState<NmapMode>("full");
   const [targetsText, setTargetsText] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
@@ -561,13 +562,20 @@ export default function Scans() {
       if (targets.length === 0) {
         throw new Error("Ingresa al menos una IP, rango CIDR o hostname.");
       }
+      const isOpenvas = quickScannerType === "openvas";
       const results = await Promise.allSettled(
         targets.map((target) =>
           scanApi.post("/scans", {
-            name: name || "Escaneo WAN (nmap)",
-            scanner_type: "nmap",
+            name: name || (isOpenvas ? "Escaneo OpenVAS" : "Escaneo WAN (nmap)"),
+            scanner_type: quickScannerType,
             target,
-            options: { network_scope: "wan", mode: nmapMode },
+            // Sin agente, options.network_scope/mode solo los usa el driver
+            // de nmap (ver app/scanners/nmap.py) -- openvas los ignora: su
+            // propio default (alive_tests="Consider Alive", ver
+            // app/scanners/openvas.py::_build_create_target_xml) es lo que
+            // permite que este panel tambien alcance la LAN real para ese
+            // scanner, a diferencia de nmap aca (que sigue siendo solo WAN).
+            options: isOpenvas ? {} : { network_scope: "wan", mode: nmapMode },
           })
         )
       );
@@ -598,32 +606,62 @@ export default function Scans() {
       <div className="panel">
         <h2>Nuevo escaneo</h2>
         <p className="empty-hint">
-          Nmap contra internet (WAN) -- la unica combinacion de este panel que corre de forma confiable desde
-          dentro de Docker, sin que la NAT del contenedor la bloquee. Un escaneo por linea de destino: IP suelta,
-          rango CIDR (ej. 203.0.113.0/24) o hostname/dominio publico. Para tu red local (LAN) usa{" "}
-          <strong>"Escaneos remotos"</strong> mas abajo, con un agente.
+          {quickScannerType === "openvas" ? (
+            <>
+              OpenVAS corre DENTRO del contenedor de scan-service, igual que un escaneo sin agente de "Escaneos
+              programados" -- a diferencia de nmap (abajo), que por el aislamiento de red de Docker Desktop solo
+              alcanza WAN/internet desde aca, OpenVAS tambien puede llegar a tu LAN real (192.168.x.x, etc.): no
+              depende de ping/ARP para decidir si un host esta vivo, asi que esa parte del aislamiento de Docker no
+              lo bloquea. Un escaneo por linea de destino.
+            </>
+          ) : (
+            <>
+              Nmap contra internet (WAN) -- la unica combinacion de este panel que corre de forma confiable desde
+              dentro de Docker, sin que la NAT del contenedor la bloquee. Un escaneo por linea de destino: IP
+              suelta, rango CIDR (ej. 203.0.113.0/24) o hostname/dominio publico. Para tu red local (LAN) con nmap
+              usa <strong>"Escaneos remotos"</strong> mas abajo, con un agente.
+            </>
+          )}
         </p>
 
         <div className="inline-form">
           <input placeholder="Nombre (opcional)" value={name} onChange={(e) => setName(e.target.value)} />
           <select
-            value={nmapMode}
-            onChange={(e) => setNmapMode(e.target.value as NmapMode)}
-            title="Rapido: sin scripts NSE, top-100 puertos, mas veloz. Completo: deteccion de version + scripts NSE seguros, mas lento y mas exhaustivo."
+            value={quickScannerType}
+            onChange={(e) => setQuickScannerType(e.target.value as ScannerType)}
+            title="openvas corre contra LAN e internet; nmap en este panel solo contra WAN/internet (ver 'Escaneos remotos' para nmap de LAN)."
           >
-            <option value="fast">nmap rapido (top-100 puertos, sin scripts, mas veloz)</option>
-            <option value="full">nmap completo (deteccion + scripts seguros, mas lento)</option>
+            <option value="nmap">nmap</option>
+            {openvasReady && <option value="openvas">openvas (activo)</option>}
           </select>
+          {quickScannerType === "nmap" && (
+            <select
+              value={nmapMode}
+              onChange={(e) => setNmapMode(e.target.value as NmapMode)}
+              title="Rapido: sin scripts NSE, top-100 puertos, mas veloz. Completo: deteccion de version + scripts NSE seguros, mas lento y mas exhaustivo."
+            >
+              <option value="fast">nmap rapido (top-100 puertos, sin scripts, mas veloz)</option>
+              <option value="full">nmap completo (deteccion + scripts seguros, mas lento)</option>
+            </select>
+          )}
         </div>
 
         <textarea
           className="targets-textarea"
-          placeholder={"203.0.113.10\nvpn.tuempresa.com\nmiweb.com"}
+          placeholder={
+            quickScannerType === "openvas" ? "192.168.0.143\n203.0.113.10\nmiweb.com" : "203.0.113.10\nvpn.tuempresa.com\nmiweb.com"
+          }
           value={targetsText}
           onChange={(e) => setTargetsText(e.target.value)}
           rows={4}
           style={{ width: "100%", marginTop: 8, fontFamily: "monospace" }}
         />
+        {quickScannerType === "openvas" && (
+          <p className="empty-hint" style={{ marginTop: 4 }}>
+            OpenVAS es mucho mas lento que nmap (minutos, no segundos) -- el resultado aparece mas abajo en
+            "Escaneos realizados" cuando termine.
+          </p>
+        )}
 
         <div style={{ marginTop: 10 }}>
           <button
@@ -708,12 +746,13 @@ export default function Scans() {
               <p className="empty-hint">
                 Sin agente, la regla corre DENTRO del contenedor de scan-service: nmap y nuclei siempre (trivy no
                 escanea IPs/hosts, usa el panel de arriba) y openvas tambien si ya lo activaste (ver "Escaneos
-                remotos" mas abajo) -- por el aislamiento de red de Docker Desktop, sin agente solo alcanza
-                WAN/internet, nunca tu LAN real. Elegi{" "}
-                <strong>Agente LAN</strong> para poder programar escaneos a tu red real (192.168.x.x, etc.) o{" "}
-                <strong>Agente Docker</strong> para que lo ejecute el propio host Docker (internet/host, misma
-                visibilidad que corriendo sin agente). La api key de estos dos se carga sola -- no hace falta
-                pegarla. Para un agente registrado a mano hay que pegar su api key aca.
+                remotos" mas abajo) -- por el aislamiento de red de Docker Desktop, sin agente nmap/nuclei solo
+                alcanzan WAN/internet, nunca tu LAN real; openvas es la excepcion (no depende de ping/ARP para
+                decidir si un host esta vivo), asi que SI puede llegar a tu LAN tambien sin agente. Para nmap/nuclei
+                contra tu red real elegi{" "}
+                <strong>Agente LAN</strong> o <strong>Agente Docker</strong> para que lo ejecute el propio host
+                Docker (internet/host, misma visibilidad que corriendo sin agente). La api key de estos dos se carga
+                sola -- no hace falta pegarla. Para un agente registrado a mano hay que pegar su api key aca.
               </p>
               <div className="inline-form">
                 <select
