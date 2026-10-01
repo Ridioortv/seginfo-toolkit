@@ -136,8 +136,18 @@ async def gvm_query(socket_path: str, user: str, password: str, xml: str, timeou
     except FileNotFoundError:
         return -1, "", "gvm-cli no esta instalado en este contenedor"
     except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
+        if proc is not None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                # El proceso ya termino/fue cosechado por el event loop
+                # justo en la ventana entre el timeout y este kill() --
+                # race benigna de asyncio+uvloop con subprocesos (uvloop,
+                # a diferencia del event loop por default de asyncio, NO
+                # la absorbe silenciosamente). No es un error real: no hay
+                # nada que matar porque el proceso ya no existe.
+                pass
+            await proc.wait()
         return -1, "", f"timeout ({timeout}s) hablando con gvmd"
     except asyncio.CancelledError:
         # Ver nmap.py: mata el gvm-cli que estaba esperando en vez de
@@ -145,7 +155,12 @@ async def gvm_query(socket_path: str, user: str, password: str, xml: str, timeou
         # (ver OpenVasDriver.run: best-effort stop_task si ya hay un task
         # creado).
         if proc is not None:
-            proc.kill()
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                # Misma race benigna que en el except TimeoutError de
+                # arriba -- el proceso ya se fue solo.
+                pass
             await proc.wait()
         raise
     return proc.returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace")
@@ -304,7 +319,20 @@ async def probe_connection(socket_path: str, user: str, password: str, timeout: 
         return False, "gvm-cli no esta instalado en este contenedor"
     except asyncio.TimeoutError:
         if proc is not None:
-            proc.kill()
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                # El proceso ya termino/fue cosechado justo entre el
+                # timeout y este kill() -- race benigna de asyncio+uvloop
+                # con subprocesos (ver gvm_query mas arriba, mismo patron).
+                # Sin este guard, GET /openvas/status explotaba con un
+                # ProcessLookupError sin manejar (500) cada vez que gvmd
+                # respondia justo al borde del timeout, dejando
+                # openvasReady en false para siempre del lado del
+                # frontend -- "Activar OpenVAS" no cargaba y el scanner
+                # nunca aparecia en los dropdowns de Escaneos programados/
+                # remotos.
+                pass
             await proc.wait()
         return False, (
             f"no hubo respuesta de gvmd en {timeout}s -- revisa que los contenedores del profile "
