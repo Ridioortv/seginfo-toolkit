@@ -376,6 +376,7 @@ services:
         condition: service_healthy
     networks:
       - gvm_internal
+      - gvm_scan_egress
 
   scan-service:
     restart: unless-stopped
@@ -758,6 +759,18 @@ networks:
   # no tiene ningun camino de red hacia el resto de la plataforma.
   gvm_internal:
     internal: true
+  # Red separada, CON salida real (sin `internal: true`), dedicada
+  # EXCLUSIVAMENTE a que ospd-openvas pueda llegar a los targets reales
+  # que escanea (LAN/internet). Ningun otro servicio de SentinelOps se
+  # conecta a esta red, asi que sigue sin existir ningun camino nuevo
+  # hacia postgres/redis/el resto de los microservicios -- el
+  # aislamiento de gvm_internal (mas arriba) se mantiene intacto para
+  # eso. Sin esta red, ospd-openvas (el unico contenedor que manda los
+  # paquetes crudos del escaneo real, ver NET_ADMIN/NET_RAW mas abajo)
+  # quedaba con CERO salida de red: la creacion de target/task via GMP
+  # (por el socket unix) andaba bien, pero el escaneo de verdad nunca
+  # podia salir a tocar ningun host -- ni de LAN ni de internet.
+  gvm_scan_egress: {}
 
 volumes:
   pgdata:
