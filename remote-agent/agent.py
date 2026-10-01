@@ -580,10 +580,43 @@ def _ov_parse_results(xml_text: str) -> list[dict]:
     return findings
 
 
+def _ov_drop_priv_to_nobody() -> None:
+    """preexec_fn para bajar privilegios del subproceso gvm-cli ANTES del
+    exec -- mismo motivo y mecanismo que _drop_priv_to_nobody en
+    app/scanners/openvas.py (gvm-tools se niega EXPLICITAMENTE a correr
+    como root: gvmtools/helper.py::do_not_run_as_root, "This tool MUST
+    NOT be run as root user."). Encontrado recien al correr esto por
+    primera vez contra un gvmd real desde gvm-agent (el Dockerfile de
+    scan-service, que gvm-agent reusa, no tiene USER -> corre como root).
+
+    Noop en Windows (donde corre Agente LAN con este mismo agent.py: ahi
+    no existe el modulo pwd ni hace falta nada de esto) y noop si por
+    alguna razon este proceso YA no es root (setuid a otro uid sin serlo
+    tira PermissionError)."""
+    if sys.platform == "win32" or os.geteuid() != 0:
+        return
+    import pwd
+    nobody = pwd.getpwnam("nobody")
+    os.setgroups([])
+    os.setgid(nobody.pw_gid)
+    os.setuid(nobody.pw_uid)
+
+
 def _ov_query(socket_path: str, user: str, password: str, xml: str, timeout: int = 60):
-    cmd = ["gvm-cli", "--gmp-username", user, "--gmp-password", password, "socket", "--socketpath", socket_path, "--xml", xml]
+    # "--config ''" evita que gvm-cli busque ~/.config/gvm-tools.conf: con
+    # HOME=/root (heredado del proceso padre -- bajar privilegios con
+    # setuid/setgid no toca el entorno) y ya corriendo como "nobody", ese
+    # intento explota con PermissionError. Ver _gvm_cmd en
+    # app/scanners/openvas.py, mismo problema, mismo arreglo.
+    cmd = [
+        "gvm-cli", "--config", "", "--gmp-username", user, "--gmp-password", password,
+        "socket", "--socketpath", socket_path, "--xml", xml,
+    ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        proc = subprocess.run(
+            cmd, capture_output=True, timeout=timeout,
+            preexec_fn=_ov_drop_priv_to_nobody if sys.platform != "win32" else None,
+        )
     except FileNotFoundError:
         return -1, "", "gvm-cli no esta instalado en esta maquina"
     except subprocess.TimeoutExpired:
