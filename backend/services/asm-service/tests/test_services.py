@@ -9,6 +9,7 @@ import pytest
 from app.services import (
     cert_alert_for_expiry,
     diff_new_hostnames,
+    is_blocked_target_ip,
     normalize_domain,
     parse_crtsh_entries,
     should_create_alert,
@@ -37,6 +38,32 @@ class TestNormalizeDomain:
     def test_rejects_empty_string(self):
         with pytest.raises(ValueError):
             normalize_domain("")
+
+    def test_rejects_loopback_ip_literal(self):
+        with pytest.raises(ValueError):
+            normalize_domain("127.0.0.1")
+
+    def test_rejects_cloud_metadata_ip_literal(self):
+        # 169.254.169.254 -- endpoint de metadata de AWS/GCP/Azure. Si un
+        # cliente pudiera registrar esto como "dominio a monitorear", el
+        # scheduler de este servicio terminaria conectandose a su propio
+        # endpoint de metadata interno (SSRF) cada ASM_CHECK_INTERVAL_HOURS.
+        with pytest.raises(ValueError):
+            normalize_domain("169.254.169.254")
+
+    def test_rejects_private_rfc1918_ip_literal(self):
+        with pytest.raises(ValueError):
+            normalize_domain("10.0.0.5")
+        with pytest.raises(ValueError):
+            normalize_domain("192.168.1.1")
+
+    def test_allows_public_ip_literal(self):
+        # Una IP publica literal no es un vector de SSRF contra
+        # infraestructura interna -- no hace falta bloquearla.
+        assert normalize_domain("8.8.8.8") == "8.8.8.8"
+
+    def test_normal_domain_name_is_unaffected_by_ip_check(self):
+        assert normalize_domain("empresa.com") == "empresa.com"
 
 
 class TestParseCrtshEntries:
@@ -131,3 +158,35 @@ class TestShouldCreateAlert:
             alert_type="cert_expiring", created_at=datetime.now(timezone.utc) - timedelta(hours=1)
         )
         assert should_create_alert([recent_other_type], "new_subdomain") is True
+
+
+class TestIsBlockedTargetIp:
+    def test_loopback_v4_is_blocked(self):
+        assert is_blocked_target_ip("127.0.0.1") is True
+
+    def test_loopback_v6_is_blocked(self):
+        assert is_blocked_target_ip("::1") is True
+
+    def test_cloud_metadata_ip_is_blocked(self):
+        assert is_blocked_target_ip("169.254.169.254") is True
+
+    def test_rfc1918_private_ranges_are_blocked(self):
+        assert is_blocked_target_ip("10.1.2.3") is True
+        assert is_blocked_target_ip("172.16.0.1") is True
+        assert is_blocked_target_ip("192.168.0.1") is True
+
+    def test_unspecified_is_blocked(self):
+        assert is_blocked_target_ip("0.0.0.0") is True
+
+    def test_multicast_is_blocked(self):
+        assert is_blocked_target_ip("224.0.0.1") is True
+
+    def test_public_ip_is_not_blocked(self):
+        assert is_blocked_target_ip("8.8.8.8") is False
+        assert is_blocked_target_ip("1.1.1.1") is False
+
+    def test_invalid_ip_string_is_not_blocked(self):
+        # No es este chequeo el que valida formato de IP -- un hostname
+        # normal (no una IP) devuelve False aca, no una excepcion.
+        assert is_blocked_target_ip("not-an-ip") is False
+        assert is_blocked_target_ip("empresa.com") is False

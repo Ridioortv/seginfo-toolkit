@@ -52,6 +52,17 @@ VULN_SERVICE_URL = os.getenv("VULN_SERVICE_URL", "http://vuln-service:8000")
 # de la DB). Ver el reporte de este cambio para el bloque exacto.
 TRIVY_CACHE_DIR = os.getenv("TRIVY_CACHE_DIR", "/root/.cache/trivy")
 
+# Limite de tamaño (en bytes) para un repositorio recien clonado, antes de
+# correr gitleaks/trivy sobre el. Sin esto, un repositorio enorme (o
+# intencionalmente armado para serlo -- ej. blobs gigantes en el
+# historial, que es justo lo que este servicio necesita clonar completo
+# para gitleaks) agregado por CUALQUIER cliente puede llenar el disco
+# compartido del host y afectar el escaneo de TODOS los demas clientes.
+# Default 2 GiB -- generoso para un repo de aplicacion tipico, pero lejos
+# de "todo el disco". Configurable por si algun cliente legitimo necesita
+# escanear un monorepo mas grande.
+MAX_CLONE_SIZE_BYTES = int(os.getenv("CODEREPO_MAX_CLONE_SIZE_BYTES", str(2 * 1024 ** 3)))
+
 _TRIVY_SEVERITY_MAP = {
     "CRITICAL": "critical",
     "HIGH": "high",
@@ -192,6 +203,13 @@ def parse_trivy_vuln_json(raw_json: str, repo_name: str) -> list[dict]:
     return findings
 
 
+def clone_exceeds_size_limit(size_bytes: int, max_bytes: int = MAX_CLONE_SIZE_BYTES) -> bool:
+    """Funcion pura (sin I/O) para poder testear la logica del limite sin
+    crear archivos de verdad. True si `size_bytes` (el tamaño total del
+    checkout clonado, ver _directory_size_bytes) supera `max_bytes`."""
+    return size_bytes > max_bytes
+
+
 def should_create_secret_finding(existing_same_key: list[dict]) -> bool:
     """Recibe los hallazgos previos para la misma
     (repo_target_id, rule_id, file_path, start_line), cada uno con
@@ -228,6 +246,24 @@ async def _clone_repo(repo_url: str, branch: str, token: str | None, dest_dir: s
 
     if proc.returncode != 0:
         raise RuntimeError(redact_url(stderr.decode(errors="replace")[:2000]))
+
+
+def _directory_size_bytes(path: str) -> int:
+    """Suma el tamaño (st_size, sin seguir symlinks) de todos los archivos
+    bajo `path` -- usado por run_repo_scan justo despues de clonar, para
+    frenar el escaneo ANTES de correr gitleaks/trivy (las dos partes mas
+    pesadas en tiempo/memoria) si el repo clonado supera
+    MAX_CLONE_SIZE_BYTES. No sigue symlinks (followlinks=False en
+    os.walk, y os.lstat en vez de os.stat) para no sumar de mas ni quedar
+    en un loop si el repo clonado trae un symlink circular."""
+    total = 0
+    for dirpath, _dirnames, filenames in os.walk(path, followlinks=False):
+        for filename in filenames:
+            try:
+                total += os.lstat(os.path.join(dirpath, filename)).st_size
+            except OSError:
+                continue
+    return total
 
 
 async def _run_gitleaks(repo_path: str) -> list[dict]:
@@ -425,6 +461,19 @@ async def run_repo_scan(db: AsyncSession, target: RepoTarget) -> None:
             token = decrypt_secret(target.github_token_encrypted) if target.github_token_encrypted else None
 
             await _clone_repo(target.repo_url, target.branch, token, tmp_dir)
+
+            # Limite de recursos: se mide el tamaño del checkout clonado
+            # ANTES de correr gitleaks/trivy (las partes mas pesadas en
+            # tiempo/CPU/memoria) para que un repo enorme de un cliente no
+            # pueda agotar disco/CPU compartido a costa del resto -- ver
+            # MAX_CLONE_SIZE_BYTES. El directorio igual se borra en el
+            # finally de mas abajo, este chequeo solo evita escanearlo.
+            clone_size = _directory_size_bytes(tmp_dir)
+            if clone_exceeds_size_limit(clone_size):
+                raise RuntimeError(
+                    f"el repositorio clonado ({clone_size} bytes) supera el limite permitido "
+                    f"({MAX_CLONE_SIZE_BYTES} bytes) -- escaneo cancelado"
+                )
 
             secret_items = await _run_gitleaks(tmp_dir)
             vuln_items = await _run_trivy_fs(tmp_dir, target.name)

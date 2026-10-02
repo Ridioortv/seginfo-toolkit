@@ -4,10 +4,15 @@ run_repo_scan, que si hacen I/O, quedan fuera de este archivo a
 proposito)."""
 import json
 
+import os
+import tempfile
+
 from app.services import (
+    _directory_size_bytes,
     build_authenticated_clone_url,
     build_trivy_fs_vuln_cmd,
     classify_gitleaks_severity,
+    clone_exceeds_size_limit,
     parse_gitleaks_report,
     parse_trivy_vuln_json,
     redact_secret_match,
@@ -270,3 +275,43 @@ class TestShouldCreateSecretFinding:
     def test_last_not_acknowledged_blocks_new_finding(self):
         findings = [{"is_acknowledged": True}, {"is_acknowledged": False}]
         assert should_create_secret_finding(findings) is False
+
+
+class TestCloneExceedsSizeLimit:
+    def test_under_limit_is_false(self):
+        assert clone_exceeds_size_limit(100, max_bytes=1000) is False
+
+    def test_exactly_at_limit_is_false(self):
+        assert clone_exceeds_size_limit(1000, max_bytes=1000) is False
+
+    def test_over_limit_is_true(self):
+        assert clone_exceeds_size_limit(1001, max_bytes=1000) is True
+
+    def test_uses_module_default_when_not_overridden(self):
+        # Por default (MAX_CLONE_SIZE_BYTES, 2 GiB) un repo chico nunca
+        # dispara el limite -- evita que un cambio futuro del default rompa
+        # este test silenciosamente si alguien lo baja demasiado.
+        assert clone_exceeds_size_limit(1024) is False
+
+
+class TestDirectorySizeBytes:
+    def test_sums_file_sizes_recursively(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "a.txt"), "wb") as fh:
+                fh.write(b"x" * 100)
+            nested = os.path.join(tmp, "nested")
+            os.mkdir(nested)
+            with open(os.path.join(nested, "b.txt"), "wb") as fh:
+                fh.write(b"y" * 250)
+            assert _directory_size_bytes(tmp) == 350
+
+    def test_empty_directory_is_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assert _directory_size_bytes(tmp) == 0
+
+    def test_missing_directory_does_not_raise(self):
+        # os.walk sobre un path que no existe simplemente no itera nada --
+        # esto documenta que _directory_size_bytes nunca tira una
+        # excepcion por eso (mismo criterio defensivo que el resto del
+        # modulo: nunca tumbar el escaneo).
+        assert _directory_size_bytes("/path/que/no/existe/para/este/test") == 0

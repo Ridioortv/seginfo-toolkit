@@ -8,7 +8,9 @@ como propio (lo mismo que hace cualquier navegador al visitar el sitio).
 Funciones puras (testeables sin DB/red/TLS real) arriba; funciones de I/O
 (con manejo de error acotado, nunca deben tumbar el scheduler) abajo."""
 import hashlib
+import ipaddress
 import os
+import socket
 import ssl
 from datetime import datetime, timedelta, timezone
 
@@ -64,7 +66,53 @@ def normalize_domain(raw: str) -> str:
     domain = domain.strip().rstrip(".")
     if not domain or "." not in domain:
         raise ValueError(f"Dominio invalido: '{raw}' -- se espera algo como 'empresa.com'")
+    # SSRF: si lo que el usuario tipeo es literalmente una direccion IP (no
+    # un nombre de dominio) y esa IP es privada/loopback/link-local/reservada
+    # (incluye 169.254.169.254, el endpoint de metadata de AWS/GCP/Azure),
+    # se rechaza aca mismo en el alta -- evita que alguien registre su
+    # propia infraestructura interna (o la de SentinelOps) como "dominio a
+    # monitorear" y consiga que este servicio le haga un connect TCP/TLS
+    # recurrente (el scheduler corre esto cada ASM_CHECK_INTERVAL_HOURS).
+    # Esto es defensa en profundidad -- la validacion que realmente importa
+    # (porque cubre tambien un nombre de dominio normal que resuelve, o es
+    # rebindeado via DNS, a una IP interna) es la de _resolve_hostname_ips,
+    # que se corre de nuevo justo antes de cada conexion TLS real.
+    try:
+        literal_ip = ipaddress.ip_address(domain)
+    except ValueError:
+        literal_ip = None
+    if literal_ip is not None and is_blocked_target_ip(domain):
+        raise ValueError(
+            f"Dominio invalido: '{raw}' -- no se permite monitorear direcciones IP privadas/reservadas/loopback"
+        )
     return domain
+
+
+def is_blocked_target_ip(ip_str: str) -> bool:
+    """True si `ip_str` cae en un rango privado (RFC1918), loopback
+    (127.0.0.0/8, ::1), link-local (169.254.0.0/16 -- esto incluye
+    169.254.169.254, el endpoint de metadata de AWS/GCP/Azure, y
+    fe80::/10), reservado, multicast, o "unspecified" (0.0.0.0/::).
+    Se usa tanto al registrar un dominio (si el usuario puso una IP literal,
+    ver normalize_domain) como, mas importante, justo antes de CADA
+    conexion TLS real (ver _resolve_hostname_ips/_do_fetch_tls_certificate)
+    para que este servicio nunca termine conectandose a su propia
+    infraestructura interna ni a un endpoint de metadata de un cloud
+    provider via SSRF (un dominio publico que resuelve, o es rebindeado por
+    DNS, a una de estas IPs). `ip_str` invalido (no parseable como IP)
+    devuelve False -- no es este chequeo el que valida formato de IP."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
 
 
 def parse_crtsh_entries(entries: list[dict]) -> set[str]:
@@ -217,8 +265,36 @@ async def fetch_tls_certificate(hostname: str, port: int = 443, timeout: float =
         return {"error": f"{type(exc).__name__}: {exc}"[:500]}
 
 
+async def _resolve_hostname_ips(hostname: str, port: int) -> list[str]:
+    """Resuelve DNS para `hostname` (SIN conectarse) y devuelve la lista de
+    IPs resultantes. Se llama SIEMPRE justo antes de abrir la conexion TLS
+    real (ver _do_fetch_tls_certificate) para validarlas contra
+    is_blocked_target_ip -- la resolucion se hace de nuevo en cada chequeo
+    (no se reusa la de un chequeo anterior) a proposito: un dominio puede
+    resolver a una IP publica hoy y a una privada mañana (DNS rebinding),
+    y el scheduler vuelve a correr este chequeo periodicamente."""
+    loop = asyncio.get_running_loop()
+    infos = await loop.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    return sorted({info[4][0] for info in infos})
+
+
 async def _do_fetch_tls_certificate(hostname: str, port: int, timeout: float) -> dict:
     import asyncio
+
+    resolved_ips = await _resolve_hostname_ips(hostname, port)
+    blocked_ips = [ip for ip in resolved_ips if is_blocked_target_ip(ip)]
+    if blocked_ips:
+        # SSRF: `hostname` (dominio raiz o subdominio descubierto via
+        # crt.sh) resuelve a una IP privada/loopback/link-local/reservada
+        # -- jamas se abre la conexion TLS. Esto es lo que realmente
+        # protege contra un dominio PUBLICO que resuelve (o es rebindeado
+        # via DNS) a infraestructura interna de SentinelOps o al endpoint
+        # de metadata de un cloud provider (169.254.169.254); el chequeo en
+        # normalize_domain solo cubre el caso mas obvio (IP literal en el
+        # alta).
+        raise ValueError(
+            f"conexion bloqueada: '{hostname}' resuelve a una direccion de red privada/reservada ({', '.join(blocked_ips)})"
+        )
 
     async def _connect_and_read() -> dict:
         ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
