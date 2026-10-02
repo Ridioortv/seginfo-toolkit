@@ -135,11 +135,21 @@ async def list_action_logs(claims: dict = Depends(get_current_claims), db: Async
 
 
 @app.post("/internal/actions/block-ip", response_model=ActionLogOut)
-async def internal_block_ip(payload: BlockIpRequest, db: AsyncSession = Depends(get_db)):
-    """Endpoint interno (sin auth de usuario) para que soar-service dispare
-    la contencion real -- o simulada, si INTEGRATION_DRY_RUN=true -- de una
-    IP marcada como origen malicioso en una alerta."""
-    organization_id = payload.organization_id or DEFAULT_ORGANIZATION_ID
+async def internal_block_ip(
+    payload: BlockIpRequest,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+):
+    """Endpoint de servicio-a-servicio (soar-service dispara esto desde un
+    playbook) para la contencion real -- o simulada, si
+    INTEGRATION_DRY_RUN=true -- de una IP marcada como origen malicioso en
+    una alerta. Exige un JWT (de servicio, ver app/actions/base.py de
+    soar-service) y el organization_id SIEMPRE sale de ese JWT, nunca del
+    body -- antes este endpoint no pedia ningun JWT y confiaba en el
+    organization_id que mandaba el propio caller: cualquiera que alcanzara
+    el puerto publicado de este servicio (ver docker-compose.yml) podia
+    disparar un bloqueo real contra el conector de CUALQUIER organizacion."""
+    organization_id = org_id_from_claims(claims)
     log = await services.block_ip(db, payload.ip, organization_id, payload.connector_id)
     await db.commit()
     actions_total.labels(action="block_ip", status=log.status).inc()
@@ -147,10 +157,16 @@ async def internal_block_ip(payload: BlockIpRequest, db: AsyncSession = Depends(
 
 
 @app.post("/internal/actions/isolate-host", response_model=ActionLogOut)
-async def internal_isolate_host(payload: IsolateHostRequest, db: AsyncSession = Depends(get_db)):
-    """Endpoint interno (sin auth de usuario) para que soar-service dispare
-    el aislamiento real -- o simulado -- de un host comprometido."""
-    organization_id = payload.organization_id or DEFAULT_ORGANIZATION_ID
+async def internal_isolate_host(
+    payload: IsolateHostRequest,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+):
+    """Endpoint de servicio-a-servicio (soar-service dispara esto desde un
+    playbook) para el aislamiento real -- o simulado -- de un host
+    comprometido. Mismo motivo/fix que internal_block_ip arriba: exige JWT,
+    organization_id sale del JWT, nunca del body."""
+    organization_id = org_id_from_claims(claims)
     log = await services.isolate_host(db, payload.hostname, organization_id, payload.connector_id)
     await db.commit()
     actions_total.labels(action="isolate_host", status=log.status).inc()
@@ -163,12 +179,17 @@ async def list_tickets(claims: dict = Depends(get_current_claims), db: AsyncSess
 
 
 @app.post("/internal/actions/create-ticket", response_model=TicketLogOut)
-async def internal_create_ticket(payload: CreateTicketRequest, db: AsyncSession = Depends(get_db)):
-    """Endpoint interno (sin auth de usuario) para que soar-service abra
-    un ticket -- o lo simule -- en el sistema de ticketing configurado
-    (ej. Jira, via un conector kind='ticketing'; ver app/services.py
-    _call_jira)."""
-    organization_id = payload.organization_id or DEFAULT_ORGANIZATION_ID
+async def internal_create_ticket(
+    payload: CreateTicketRequest,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+):
+    """Endpoint de servicio-a-servicio (soar-service dispara esto desde un
+    playbook) para abrir -- o simular -- un ticket en el sistema de
+    ticketing configurado (ej. Jira, via un conector kind='ticketing'; ver
+    app/services.py _call_jira). Mismo motivo/fix que internal_block_ip:
+    exige JWT, organization_id sale del JWT, nunca del body."""
+    organization_id = org_id_from_claims(claims)
     log = await services.create_ticket(
         db, payload.title, payload.description, payload.priority, payload.connector_id, organization_id
     )

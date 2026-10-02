@@ -50,7 +50,7 @@ async def ingest_events(db: AsyncSession, os_client, payload) -> tuple[int, int]
                 alert = await _create_alert(db, rule, document, organization_id)
                 alerts_created += 1
                 await _enrich_alert_with_threat_intel(alert, document)
-                await _notify_soar(alert, organization_id)
+                alert.soar_triggered = await _notify_soar(alert, organization_id)
 
     await db.flush()
     return indexed, alerts_created
@@ -118,9 +118,14 @@ async def _enrich_alert_with_threat_intel(alert: Alert, event: dict) -> None:
         alert.threat_intel = malicious
 
 
-async def _notify_soar(alert: Alert, organization_id: str) -> None:
+async def _notify_soar(alert: Alert, organization_id: str) -> bool:
     """Best-effort: si soar-service no responde, la alerta ya quedo guardada
-    igual; esto solo dispara la evaluacion automatica de playbooks."""
+    igual; esto solo dispara la evaluacion automatica de playbooks. Devuelve
+    True/False segun si la notificacion salio bien -- lo usa _create_alert
+    para poblar Alert.soar_triggered (bug real corregido: antes este valor
+    quedaba siempre en el default False de la columna, sin importar si
+    soar-service de verdad recibio el trigger, porque el resultado de este
+    llamado nunca se usaba)."""
     payload = {
         "alert_id": alert.id,
         "rule_name": alert.rule_name,
@@ -128,11 +133,26 @@ async def _notify_soar(alert: Alert, organization_id: str) -> None:
         "event": alert.matched_event,
         "organization_id": organization_id,
     }
+    from backend.shared.security import create_access_token
+
+    # soar-service ahora exige un JWT de servicio-a-servicio en /trigger
+    # (antes no exigia ninguno y confiaba en el organization_id del body,
+    # lo que permitia a cualquiera que alcanzara su puerto publicado
+    # disparar los playbooks de respuesta automatica de otra organizacion
+    # sin credenciales -- ver soar-service/app/main.py::trigger).
+    token = create_access_token("system:siem-service", "admin", org_id=organization_id)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(f"{SOAR_SERVICE_URL}/trigger", json=payload)
+            response = await client.post(
+                f"{SOAR_SERVICE_URL}/trigger",
+                json=payload,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            response.raise_for_status()
+        return True
     except httpx.HTTPError as exc:
         logger.warning("no se pudo notificar a soar-service", extra={"alert_id": alert.id, "error": str(exc)})
+        return False
 
 
 async def create_rule(db: AsyncSession, payload, organization_id: str) -> SigmaRule:

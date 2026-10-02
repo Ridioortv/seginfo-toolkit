@@ -6,7 +6,7 @@ base de soar-service, para que case-service la pueda importar cuando se
 implemente. Nunca se pierde la solicitud de apertura de caso."""
 import os
 import httpx
-from app.actions.base import ActionExecutor, ActionResult
+from app.actions.base import ActionExecutor, ActionResult, service_auth_headers
 from app.models import PendingCase
 from backend.shared.logging import configure_logging
 
@@ -32,8 +32,9 @@ class CreateCaseAction(ActionExecutor):
                         f"{CASE_SERVICE_URL}/cases",
                         json={
                             "title": title, "description": description, "priority": priority,
-                            "alert_id": alert.get("id"), "organization_id": organization_id,
+                            "alert_id": alert.get("id"),
                         },
+                        headers=service_auth_headers(organization_id),
                     )
                     if resp.status_code < 300:
                         return ActionResult(

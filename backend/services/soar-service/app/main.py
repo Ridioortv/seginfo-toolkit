@@ -67,9 +67,20 @@ async def health():
 
 
 @app.post("/trigger", response_model=TriggerResponse)
-async def trigger(payload: TriggerRequest, db: AsyncSession = Depends(get_db)):
+async def trigger(
+    payload: TriggerRequest,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+):
     """Llamado por siem-service ante cada alerta nueva (best-effort, ver
-    siem-service/app/services.py _notify_soar)."""
+    siem-service/app/services.py _notify_soar) con un JWT de servicio-a-
+    servicio. organization_id SIEMPRE sale de ese JWT, nunca del body --
+    antes este endpoint no exigia ningun JWT y confiaba en el
+    organization_id que mandaba el propio caller: cualquiera que alcanzara
+    el puerto publicado de este servicio (ver docker-compose.yml) podia
+    disparar los playbooks de respuesta automatica (bloqueo de IP,
+    aislamiento de host, etc.) de CUALQUIER organizacion sin credenciales."""
+    payload.organization_id = org_id_from_claims(claims)
     matched, runs = await services.trigger_playbooks(db, payload)
     await db.commit()
     for run in runs:

@@ -11,7 +11,7 @@ red de docker-compose, mismo patron que /internal/actions/* de
 integration-service)."""
 import os
 import httpx
-from app.actions.base import ActionExecutor, ActionResult, dry_run_enabled
+from app.actions.base import ActionExecutor, ActionResult, dry_run_enabled, service_auth_headers
 
 NOTIFICATION_SERVICE_URL = os.getenv("NOTIFICATION_SERVICE_URL", "http://notification-service:8000")
 
@@ -44,6 +44,7 @@ class NotifyAction(ActionExecutor):
                         "channel_ids": channel_ids,
                         "organization_id": context.get("organization_id"),
                     },
+                    headers=service_auth_headers(context.get("organization_id")),
                 )
                 response.raise_for_status()
                 result = response.json()

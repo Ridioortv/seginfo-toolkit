@@ -127,14 +127,22 @@ async def list_logs(claims: dict = Depends(get_current_claims), db: AsyncSession
 
 
 @app.post("/internal/notify", response_model=NotifyResult)
-async def internal_notify(payload: NotifyRequest, db: AsyncSession = Depends(get_db)):
-    """Igual que POST /notify pero sin requerir un JWT de usuario -- para
-    llamadas servicio-a-servicio dentro de la red de docker-compose (ej.
+async def internal_notify(
+    payload: NotifyRequest,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+):
+    """Igual que POST /notify pero para llamadas servicio-a-servicio (ej.
     soar-service disparando una notificacion desde un playbook, ver
-    app/actions/notify.py de soar-service), mismo patron que los
-    endpoints /internal/actions/* de integration-service. organization_id
-    lo manda el caller explicitamente (no hay JWT de donde derivarlo); si
-    falta, se asume la organizacion default."""
+    app/actions/notify.py de soar-service) -- exige un JWT de servicio
+    (mismo mecanismo que get_current_claims usa para todo el resto de este
+    archivo) y el organization_id SIEMPRE sale de ese JWT, nunca del body.
+    Antes este endpoint no exigia ningun JWT y confiaba en el
+    organization_id que mandaba el propio caller: cualquiera que alcanzara
+    el puerto publicado de este servicio (ver docker-compose.yml) podia
+    disparar una notificacion real por el canal configurado de CUALQUIER
+    organizacion."""
+    payload.organization_id = org_id_from_claims(claims)
     logs = await services.notify(db, payload)
     await db.commit()
     for log in logs:

@@ -5,7 +5,7 @@ tiene su propio modo dry-run por defecto (INTEGRATION_DRY_RUN) hasta que un
 operador configure un conector de firewall real."""
 import os
 import httpx
-from app.actions.base import ActionExecutor, ActionResult, dry_run_enabled
+from app.actions.base import ActionExecutor, ActionResult, dry_run_enabled, service_auth_headers
 
 INTEGRATION_SERVICE_URL = os.getenv("INTEGRATION_SERVICE_URL", "http://integration-service:8000")
 
@@ -31,6 +31,7 @@ class BlockIpAction(ActionExecutor):
                 response = await client.post(
                     f"{INTEGRATION_SERVICE_URL}/internal/actions/block-ip",
                     json={"ip": ip, "organization_id": context.get("organization_id")},
+                    headers=service_auth_headers(context.get("organization_id")),
                 )
                 response.raise_for_status()
                 result = response.json()

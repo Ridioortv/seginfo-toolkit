@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
+from backend.shared.ssrf_guard import validate_outbound_url, UnsafeUrlError
 from app.models import NotificationChannel, NotificationLog
 
 logger = configure_logging("notification-service")
@@ -118,6 +119,16 @@ async def _send_webhook(channel: NotificationChannel, subject: str, body: str, s
     url = channel.config.get("webhook_url", "")
     if not url:
         return "failed", "el canal no tiene 'webhook_url' configurado"
+    # SSRF: webhook_url lo configura un admin/soc_manager del tenant -- sin
+    # esto, podria apuntar un canal a infraestructura interna
+    # (169.254.169.254, localhost, un servicio de docker-compose, una IP
+    # RFC1918) y hacer que ESTE backend le pegue por el. Se valida aca,
+    # justo antes de la unica llamada de red real de este canal (ver
+    # backend/shared/ssrf_guard.py).
+    try:
+        validate_outbound_url(url, field_name="webhook_url")
+    except UnsafeUrlError as exc:
+        return "failed", str(exc)
     payload = {"subject": subject, "body": body, "severity": severity, "source": "sentinelops"}
     if channel.channel_type == "slack_webhook":
         payload = {"text": f"*[{severity.upper()}] {subject}*\n{body}"}

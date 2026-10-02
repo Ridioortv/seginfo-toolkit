@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
 from backend.shared.crypto import encrypt_secret, decrypt_secret
+from backend.shared.ssrf_guard import validate_outbound_url, UnsafeUrlError
 from app.models import Connector, IntegrationActionLog, TicketLog
 
 logger = configure_logging("integration-service")
@@ -130,6 +131,16 @@ async def _call_connector(connector: Connector, action: str, payload: dict) -> t
     base_url = connector.config.get("base_url", "")
     if not base_url:
         return "failed", "el conector no tiene 'base_url' configurado"
+    # SSRF: base_url lo configura un admin del tenant -- sin esto, un admin
+    # (o una cuenta de admin comprometida) podria apuntar un conector a
+    # infraestructura interna (169.254.169.254, localhost, un servicio de
+    # docker-compose, una IP RFC1918) y hacer que ESTE backend le pegue por
+    # el. Se valida aca, justo antes de la unica llamada de red real de este
+    # conector (ver backend/shared/ssrf_guard.py).
+    try:
+        validate_outbound_url(base_url, field_name="base_url")
+    except UnsafeUrlError as exc:
+        return "failed", str(exc)
     headers = {}
     header_name = connector.config.get("header_name")
     if header_name and connector.config.get("api_key"):
@@ -213,6 +224,13 @@ async def _call_jira(connector: Connector, title: str, description: str, priorit
             "",
             "",
         )
+
+    # SSRF: mismo razonamiento que _call_connector -- base_url lo configura
+    # un admin del tenant, se valida justo antes de la llamada de red real.
+    try:
+        validate_outbound_url(base_url, field_name="base_url")
+    except UnsafeUrlError as exc:
+        return "failed", str(exc), "", ""
 
     fields: dict = {
         "project": {"key": project_key},
