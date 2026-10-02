@@ -210,24 +210,50 @@ def _restore(saved: dict):
 
 # ---- /start + /status via fakes (no real Docker) ----
 
-def test_full_activation_flow_success():
-    ps_calls = []
+def _fake_run_compose_full_pipeline(ps_calls=None, reload_calls=None, rebuild_calls=None,
+                                     config_count_calls=None, config_count=3):
+    """Fake de _run_compose que cubre TODO el pipeline post-sync: crear
+    usuario (exec -T ... gvmd), recargar gvm-agent (--profile openvas up
+    -d --force-recreate), reimportar gvmd-data (exec -T ... gvmd
+    --rebuild-gvmd-data) y verificar (--profile openvas exec ... gvm-cli).
+    Las listas opcionales, si se pasan, registran cada llamada para poder
+    assertear argumentos especificos despues."""
+    import subprocess as sp
 
     def fake_run_compose(*args, timeout=60):
-        import subprocess as sp
         if args[:3] == ("--profile", "openvas", "ps"):
-            ps_calls.append(args)
+            if ps_calls is not None:
+                ps_calls.append(args)
             entries = [{"Service": n, "State": "running", "Health": "healthy"} for n in orch.OPENVAS_SERVICES]
             return sp.CompletedProcess(args, 0, stdout=json.dumps(entries), stderr="")
+        if args[:3] == ("--profile", "openvas", "up"):
+            if reload_calls is not None:
+                reload_calls.append(args)
+            return sp.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:3] == ("--profile", "openvas", "exec"):
+            if config_count_calls is not None:
+                config_count_calls.append(args)
+            return sp.CompletedProcess(args, 0, stdout=f"COUNT:{config_count}\n", stderr="")
+        if args[:2] == ("exec", "-T") and "--create-user=admin" in str(args):
+            return sp.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:2] == ("exec", "-T") and any(str(a).startswith("--rebuild-gvmd-data") for a in args):
+            if rebuild_calls is not None:
+                rebuild_calls.append(args)
+            return sp.CompletedProcess(args, 0, stdout="", stderr="")
         if args[:2] == ("exec", "-T"):
             return sp.CompletedProcess(args, 0, stdout="", stderr="")
         raise AssertionError(f"comando compose inesperado: {args}")
 
+    return fake_run_compose
+
+
+def test_full_activation_flow_success():
+    ps_calls, reload_calls, rebuild_calls, config_count_calls = [], [], [], []
     fake_proc = FakeProc(returncode=0)
     written = {}
 
     saved = _patch_common(["_run_compose", "_spawn_compose_up", "_write_env_vars", "_POLL_INTERVAL_SECONDS"])
-    orch._run_compose = fake_run_compose
+    orch._run_compose = _fake_run_compose_full_pipeline(ps_calls, reload_calls, rebuild_calls, config_count_calls)
     orch._spawn_compose_up = lambda: _async_return(fake_proc)
     orch._write_env_vars = lambda values: written.update(values)
     orch._POLL_INTERVAL_SECONDS = 0
@@ -238,9 +264,11 @@ def test_full_activation_flow_success():
 
     assert orch._state["provisioned"] is True
     assert orch._state["percent"] == 100
+    assert orch._state["phase"] == "listo"
     assert orch._state["error"] is None
     assert orch._state["gvm_user"] == "admin"
     assert orch._state["gvm_password"] == "s3cr3t"
+    assert "3 scan config" in orch._state["detail"]
     assert written == {"GVM_SOCKET_PATH": "/run/gvmd/gvmd.sock", "GVM_USER": "admin", "GVM_PASSWORD": "s3cr3t"}
 
     # Regresion: el `ps` tiene que listar los 16 servicios por nombre --
@@ -249,6 +277,125 @@ def test_full_activation_flow_success():
     # reiniciaba solo en medio de una activacion).
     assert ps_calls, "nunca se llamo a ps"
     assert set(ps_calls[0][6:]) == set(orch.OPENVAS_SERVICES), ps_calls[0]
+
+    # Las tres etapas nuevas (recargar gvm-agent, reimportar gvmd-data,
+    # verificar con una consulta GMP real) tienen que haberse disparado --
+    # sin esto quedaria exactamente el estado manual de toda la sesion:
+    # usuario creado pero gvm-agent con la password vieja y gvmd sin
+    # scan configs reales.
+    assert reload_calls, "nunca se recargo gvm-agent con las credenciales nuevas"
+    assert reload_calls[0][:6] == ("--profile", "openvas", "up", "-d", "--force-recreate", "gvm-agent")
+    assert rebuild_calls, "nunca se corrio --rebuild-gvmd-data"
+    assert config_count_calls, "nunca se verifico el conteo real de scan configs"
+
+
+def test_activation_flow_fails_if_config_count_stays_zero_after_rebuild():
+    """Si gvmd sigue sin scan configs reales DESPUES de --rebuild-gvmd-data
+    (feed todavia sin terminar de sincronizar, por ejemplo), la activacion
+    tiene que fallar con un mensaje claro en vez de marcar 'listo' con un
+    agente que de todas formas no va a poder escanear nada."""
+    fake_proc = FakeProc(returncode=0)
+
+    saved = _patch_common(["_run_compose", "_spawn_compose_up", "_write_env_vars", "_POLL_INTERVAL_SECONDS"])
+    orch._run_compose = _fake_run_compose_full_pipeline(config_count=0)
+    orch._spawn_compose_up = lambda: _async_return(fake_proc)
+    orch._write_env_vars = lambda values: None
+    orch._POLL_INTERVAL_SECONDS = 0
+    try:
+        asyncio.run(orch._run_activation("admin", "s3cr3t", "/run/gvmd/gvmd.sock"))
+    finally:
+        _restore(saved)
+
+    assert orch._state["provisioned"] is False
+    assert orch._state["running"] is False
+    assert "scan configs" in orch._state["error"]
+
+
+def test_activation_flow_fails_if_gvm_agent_reload_fails():
+    """Si el force-recreate de gvm-agent falla (socket de Docker caido,
+    build roto, etc.), la activacion se reporta como fallida en vez de
+    seguir adelante con un agente que sigue corriendo con la password
+    vieja."""
+    import subprocess as sp
+
+    def fake_run_compose(*args, timeout=60):
+        if args[:3] == ("--profile", "openvas", "ps"):
+            entries = [{"Service": n, "State": "running", "Health": "healthy"} for n in orch.OPENVAS_SERVICES]
+            return sp.CompletedProcess(args, 0, stdout=json.dumps(entries), stderr="")
+        if args[:2] == ("exec", "-T"):
+            return sp.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:3] == ("--profile", "openvas", "up"):
+            return sp.CompletedProcess(args, 1, stdout="", stderr="Error: no se pudo recrear gvm-agent")
+        raise AssertionError(f"no deberia llegar a reimportar/verificar si el reload fallo: {args}")
+
+    fake_proc = FakeProc(returncode=0)
+
+    saved = _patch_common(["_run_compose", "_spawn_compose_up", "_write_env_vars", "_POLL_INTERVAL_SECONDS"])
+    orch._run_compose = fake_run_compose
+    orch._spawn_compose_up = lambda: _async_return(fake_proc)
+    orch._write_env_vars = lambda values: None
+    orch._POLL_INTERVAL_SECONDS = 0
+    try:
+        asyncio.run(orch._run_activation("admin", "s3cr3t", "/run/gvmd/gvmd.sock"))
+    finally:
+        _restore(saved)
+
+    assert orch._state["provisioned"] is False
+    assert orch._state["running"] is False
+    assert "recrear gvm-agent" in orch._state["error"] or "reiniciar el agente GVM" in orch._state["error"]
+
+
+# ---- _read_env_dict / /start reusa credenciales existentes ----
+
+def test_read_env_dict_parses_lines(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text("GVM_USER=sentinelops_agent\nGVM_PASSWORD=s3cr3t\n# comment\nEMPTY=\n")
+    saved = _patch_common(["ENV_PATH"])
+    orch.ENV_PATH = str(env_file)
+    try:
+        values = orch._read_env_dict()
+    finally:
+        _restore(saved)
+    assert values["GVM_USER"] == "sentinelops_agent"
+    assert values["GVM_PASSWORD"] == "s3cr3t"
+    assert values["EMPTY"] == ""
+
+
+def test_start_endpoint_reuses_existing_env_credentials_when_payload_empty(tmp_path):
+    """Regresion del bug de fondo detras de los 'Authentication failed'
+    intermitentes: un POST /start sin credenciales explicitas (el payload
+    que manda el boton 'Activar OpenVAS' por default) tiene que reusar lo
+    que ya haya en .env en vez de generar una password al azar -- generar
+    una nueva en cada click deja a gvm-agent/remote-agent con una
+    credencial que nadie les va a propagar."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("GVM_USER=sentinelops_agent\nGVM_PASSWORD=existing-pass\n")
+
+    captured = {}
+
+    async def fake_run_activation(gvm_user, gvm_password, gvm_socket_path):
+        captured["gvm_user"] = gvm_user
+        captured["gvm_password"] = gvm_password
+        orch._state.update(running=False, provisioned=True, error=None, phase="listo", percent=100, detail="listo")
+
+    async def scenario():
+        orch._state.update(running=False, provisioned=False, error=None)
+        await orch.start({})
+        for _ in range(10):
+            await asyncio.sleep(0)
+            if "gvm_user" in captured:
+                break
+
+    saved = _patch_common(["ENV_PATH", "_run_activation"])
+    orch.ENV_PATH = str(env_file)
+    orch._run_activation = fake_run_activation
+    try:
+        asyncio.run(scenario())
+    finally:
+        _restore(saved)
+
+    assert captured.get("gvm_user") == "sentinelops_agent"
+    assert captured.get("gvm_password") == "existing-pass"
 
 
 def test_activation_shows_progress_while_up_still_downloading():
@@ -274,6 +421,10 @@ def test_activation_shows_progress_while_up_still_downloading():
             return sp.CompletedProcess(args, 0, stdout=json.dumps(entries), stderr="")
         if args[:2] == ("exec", "-T"):
             return sp.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:3] == ("--profile", "openvas", "up"):
+            return sp.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:3] == ("--profile", "openvas", "exec"):
+            return sp.CompletedProcess(args, 0, stdout="COUNT:3\n", stderr="")
         raise AssertionError(f"comando compose inesperado: {args}")
 
     # delay_ticks=2: en la primera vuelta del loop, wait_task todavia NO

@@ -231,6 +231,21 @@ def _write_env_vars(values: dict[str, str]) -> None:
         fh.write("\n".join(lines) + "\n")
 
 
+def _read_env_dict() -> dict[str, str]:
+    """Lee el .env actual como diccionario -- usado por POST /start para
+    reusar GVM_USER/GVM_PASSWORD ya guardados en vez de generar una
+    password nueva en cada activacion (ver _reload_gvm_clients: ese era
+    el bug de fondo detras de los fallos de autenticacion intermitentes
+    de toda la sesion -- nada propagaba la password nueva a los
+    contenedores ya corriendo)."""
+    values: dict[str, str] = {}
+    for line in _read_env_lines():
+        m = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$", line)
+        if m:
+            values[m.group(1)] = m.group(2).strip()
+    return values
+
+
 async def _ensure_gvm_user(user: str, password: str) -> tuple[bool, str]:
     """Crea el usuario GVM; si ya existe (create-user falla), le resetea
     la password -- mismo fallback de dos pasos que
@@ -251,6 +266,98 @@ async def _ensure_gvm_user(user: str, password: str) -> tuple[bool, str]:
         return True, "password actualizada (el usuario ya existia)"
     detail = (r2.stderr or r.stderr or "error desconocido").strip()
     return False, detail[-1500:]
+
+
+async def _reload_gvm_clients(timeout: int = 120) -> tuple[bool, str]:
+    """Recrea gvm-agent para que arranque con el GVM_USER/GVM_PASSWORD que
+    _write_env_vars acaba de escribir en .env -- a diferencia de
+    scan-service (que se autocura solo, ver
+    backend/services/scan-service/app/main.py::GET /openvas/auto-activate/progress),
+    gvm-agent fija esas credenciales como `environment:` al crear el
+    contenedor (ver docker-compose.yml) y NO las vuelve a leer despues:
+    sin este paso quedaria con la password VIEJA hasta el proximo
+    reinicio manual, que es exactamente el bug de fondo detras de los
+    "Authentication failed" intermitentes de toda la sesion. remote-agent
+    (Agente Docker) no usa credenciales GVM -> no hace falta tocarlo, y
+    scan-service no se toca aca para no cortar el propio polling de
+    progreso que esta usando este endpoint."""
+    r = await asyncio.to_thread(
+        _run_compose, "--profile", "openvas", "up", "-d", "--force-recreate", "gvm-agent",
+        timeout=timeout,
+    )
+    if r.returncode == 0:
+        return True, ""
+    detail = (r.stderr or r.stdout or "error desconocido").strip()
+    return False, detail[-1500:]
+
+
+# Generoso sobre el tiempo que gvmd puede tardar en soltar el lock del feed
+# si justo esta a mitad de su propio sync de SCAP/CVE (visto en vivo en esta
+# sesion) -- preferible esperar de mas a que --rebuild-gvmd-data falle con
+# "Feed locked." y deje todo a medio importar.
+_GVMD_DATA_LOCK_TIMEOUT_SECONDS = 1800
+
+
+async def _rebuild_gvmd_data() -> tuple[bool, str]:
+    """Fuerza a gvmd a (re)importar scan configs/port lists/report formats
+    desde el feed en disco -- sin esto, gvmd puede tener el feed de NVTs
+    sincronizado y las imagenes/socket todos sanos y AUN ASI no tener
+    ningun scan config real (visto en vivo en esta sesion: config_count=0
+    pese a que los archivos del feed ya estaban en disco). Via CLI, no
+    GMP, porque corre ANTES de que haya ningun usuario GMP para consultar.
+    El timeout del subproceso queda apenas arriba de --feed-lock-timeout
+    para que el propio gvmd devuelva su mensaje de "sigue bloqueado" en
+    vez de que Python lo mate primero."""
+    r = await asyncio.to_thread(
+        _run_compose, "exec", "-T", "-u", "gvmd", "gvmd", "gvmd",
+        "--rebuild-gvmd-data=all", f"--feed-lock-timeout={_GVMD_DATA_LOCK_TIMEOUT_SECONDS}",
+        timeout=_GVMD_DATA_LOCK_TIMEOUT_SECONDS + 120,
+    )
+    if r.returncode == 0:
+        return True, "scan configs/port lists/report formats importados desde el feed"
+    detail = (r.stderr or r.stdout or "error desconocido").strip()
+    return False, detail[-1500:]
+
+
+# Cuenta los <config id="..."> de la respuesta GMP de <get_configs/> --
+# ejecutado DENTRO de gvm-agent (ya tiene montado el socket de gvmd y,
+# recien recreado por _reload_gvm_clients, las credenciales frescas como
+# env vars) en vez de desde este contenedor (que no tiene gvm-cli ni el
+# socket). Lee user/password/socket de os.environ, nunca de un argv --
+# mismo criterio de no pasar secretos por linea de comando que el resto
+# del repo. "--config ''" evita que gvm-cli intente leer
+# ~/.config/gvm-tools.conf con HOME=/root heredado (ver
+# remote-agent/agent.py::_ov_query, mismo problema).
+_GET_CONFIG_COUNT_SCRIPT = """
+import os, re, subprocess, sys
+cmd = [
+    'gvm-cli', '--config', '',
+    '--gmp-username', os.environ.get('GVM_USER', ''),
+    '--gmp-password', os.environ.get('GVM_PASSWORD', ''),
+    'socket', '--socketpath', os.environ.get('GVM_SOCKET_PATH', '/run/gvmd/gvmd.sock'),
+    '--xml', '<get_configs/>',
+]
+proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+if proc.returncode != 0:
+    print('ERROR:' + proc.stderr[-800:])
+    sys.exit(1)
+print('COUNT:' + str(len(re.findall(r'<config id=', proc.stdout))))
+"""
+
+
+async def _get_config_count(timeout: int = 30) -> tuple[int, str]:
+    r = await asyncio.to_thread(
+        _run_compose, "--profile", "openvas", "exec", "-T", "-u", "nobody", "gvm-agent",
+        "python3", "-c", _GET_CONFIG_COUNT_SCRIPT,
+        timeout=timeout,
+    )
+    out = (r.stdout or "").strip()
+    if r.returncode != 0 or "ERROR:" in out:
+        return -1, (r.stderr or out or "sin salida").strip()[-800:]
+    m = re.search(r"COUNT:(\d+)", out)
+    if not m:
+        return -1, f"salida inesperada de gvm-cli: {out[-500:]}"
+    return int(m.group(1)), ""
 
 
 def _fail(message: str) -> None:
@@ -327,10 +434,10 @@ async def _run_activation(gvm_user: str, gvm_password: str, gvm_socket_path: str
                 return
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
-        _state.update(phase="creando_usuario", percent=92, detail=f"Creando/actualizando el usuario GVM '{gvm_user}'...")
-        ok, detail = await _ensure_gvm_user(gvm_user, gvm_password)
+        _state.update(phase="creando_usuario", percent=88, detail=f"Creando/actualizando el usuario GVM '{gvm_user}'...")
+        ok, detail_user = await _ensure_gvm_user(gvm_user, gvm_password)
         if not ok:
-            _fail(f"no se pudo crear/actualizar el usuario GVM: {detail}")
+            _fail(f"no se pudo crear/actualizar el usuario GVM: {detail_user}")
             return
 
         _write_env_vars({
@@ -339,10 +446,54 @@ async def _run_activation(gvm_user: str, gvm_password: str, gvm_socket_path: str
             "GVM_PASSWORD": gvm_password,
         })
 
+        # A partir de aca es exactamente lo que este sesion tuvo que hacer
+        # A MANO por PowerShell cada vez que algo se desincronizaba:
+        # recargar los clientes GVM con la credencial nueva, forzar la
+        # importacion de gvmd-data, y recien ahi confiar en que un scan
+        # real tenga con que correr. El boton "Activar OpenVAS" ahora hace
+        # las tres cosas solo, sin que el operador tenga que tocar una
+        # terminal.
+        _state.update(
+            phase="recargando_credenciales", percent=92,
+            detail="Reiniciando el agente GVM para que tome las credenciales nuevas...",
+        )
+        ok, detail_reload = await _reload_gvm_clients()
+        if not ok:
+            _fail(f"no se pudo reiniciar el agente GVM con las credenciales nuevas: {detail_reload}")
+            return
+
+        _state.update(
+            phase="importando_datos", percent=95,
+            detail=(
+                "Importando scan configs/port lists/report formats del feed en gvmd "
+                "(puede tardar varios minutos si el feed todavia esta sincronizando)..."
+            ),
+        )
+        ok, detail_rebuild = await _rebuild_gvmd_data()
+        if not ok:
+            _fail(f"no se pudieron importar los datos de gvmd (scan configs/port lists): {detail_rebuild}")
+            return
+
+        _state.update(
+            phase="verificando", percent=98,
+            detail="Verificando que gvmd tenga scan configs reales antes de dar todo por listo...",
+        )
+        config_count, detail_count = await _get_config_count()
+        if config_count <= 0:
+            extra = f" (detalle: {detail_count})" if detail_count else ""
+            _fail(
+                f"gvmd sigue sin scan configs reales despues de importar el feed{extra} -- revisa a mano con "
+                "'docker compose --profile openvas exec -u gvmd gvmd gvmd --rebuild-gvmd-data=all'"
+            )
+            return
+
         _state.update(
             running=False, provisioned=True, error=None,
             phase="listo", percent=100,
-            detail=f"OpenVAS listo -- {detail}. Credenciales guardadas en .env.",
+            detail=(
+                f"OpenVAS listo -- {detail_user}, {config_count} scan config(s) disponibles. "
+                "Credenciales guardadas en .env."
+            ),
             gvm_user=gvm_user, gvm_password=gvm_password, gvm_socket_path=gvm_socket_path,
         )
     except subprocess.TimeoutExpired as exc:
@@ -361,9 +512,29 @@ async def start(payload: dict):
     async with _lock:
         if _state["running"]:
             return _state
-        gvm_user = (payload.get("gvm_user") or "admin").strip() or "admin"
-        gvm_password = (payload.get("gvm_password") or "").strip() or secrets.token_urlsafe(18)
-        gvm_socket_path = (payload.get("gvm_socket_path") or "").strip() or "/run/gvmd/gvmd.sock"
+        # Reusa lo que ya haya en .env ANTES de caer en "admin"/una password
+        # al azar -- generar una password nueva en cada click (el
+        # comportamiento viejo) es lo que de fondo causaba los
+        # "Authentication failed" intermitentes de toda la sesion: nada
+        # propagaba esa password nueva a gvm-agent/remote-agent, que seguian
+        # corriendo con la vieja. Con esto, apretar "Activar OpenVAS" de
+        # nuevo sobre una instalacion que ya funciona es idempotente.
+        env_values = _read_env_dict()
+        gvm_user = (
+            (payload.get("gvm_user") or "").strip()
+            or env_values.get("GVM_USER", "").strip()
+            or "admin"
+        )
+        gvm_password = (
+            (payload.get("gvm_password") or "").strip()
+            or env_values.get("GVM_PASSWORD", "").strip()
+            or secrets.token_urlsafe(18)
+        )
+        gvm_socket_path = (
+            (payload.get("gvm_socket_path") or "").strip()
+            or env_values.get("GVM_SOCKET_PATH", "").strip()
+            or "/run/gvmd/gvmd.sock"
+        )
         asyncio.create_task(_run_activation(gvm_user, gvm_password, gvm_socket_path))
         # Refleja el arranque al toque -- la corrida real recien va a
         # actualizar _state despues del primer await de adentro.
