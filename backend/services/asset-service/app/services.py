@@ -80,7 +80,21 @@ async def list_groups(db: AsyncSession, organization_id: str) -> list[AssetGroup
 
 
 async def create_group(db: AsyncSession, payload, organization_id: str) -> AssetGroup:
-    group = AssetGroup(**payload.model_dump(), organization_id=organization_id)
+    # BUG DE SEGURIDAD (corregido aca): payload.asset_ids (lo que manda el
+    # cliente) se guardaba tal cual, sin chequear que esos activos sean de
+    # ESTA organizacion -- un admin/soc_manager de la organizacion A podia
+    # crear un grupo que listara ids de activos de la organizacion B (por
+    # ejemplo, enumerando ids secuenciales o filtrados de otro lado), y
+    # GET /asset-groups le devolvia esos ids ajenos tal cual. get_assets_by_ids
+    # ya existia con exactamente este proposito (filtrar por organization_id)
+    # pero nunca se llamaba desde aca. Ahora el grupo solo puede listar
+    # activos que de verdad existan Y sean de esta organizacion -- cualquier
+    # id ajeno o inexistente en el payload se descarta en silencio, mismo
+    # criterio que get_asset() con un id de otro tenant.
+    valid_assets = await get_assets_by_ids(db, payload.asset_ids, organization_id)
+    fields = payload.model_dump()
+    fields["asset_ids"] = [asset.id for asset in valid_assets]
+    group = AssetGroup(**fields, organization_id=organization_id)
     db.add(group)
     await db.flush()
     await db.refresh(group)

@@ -38,6 +38,14 @@ _CACHE_TTL_SECONDS = 3600
 _discovery_cache: dict[str, tuple[float, dict]] = {}
 _jwks_cache: dict[str, tuple[float, dict]] = {}
 
+# Algoritmos asimetricos que de verdad usan los proveedores OIDC serios para
+# firmar id_tokens (ninguno usa HMAC -- un secreto compartido no tiene
+# sentido para un proveedor con miles de clientes). Fijar esta lista aca (en
+# vez de confiar en el 'alg' del HEADER del propio id_token, que es lo que
+# habia antes) es lo que cierra el ataque de confusion de algoritmo: ver el
+# comentario en validate_id_token mas abajo.
+_ALLOWED_ID_TOKEN_ALGORITHMS = {"RS256", "RS384", "RS512", "ES256", "ES384", "ES512"}
+
 
 class OidcError(Exception):
     """Cualquier fallo del flujo OIDC que deba traducirse a un 401/502 para
@@ -116,6 +124,22 @@ async def exchange_code(config: SsoConfig, code: str, redirect_uri: str) -> dict
         raise OidcError(f"el proveedor de identidad rechazo el intercambio de code por tokens: {exc}") from exc
 
 
+def _select_signing_algorithm(jwks_key: dict) -> str | None:
+    """Decide con que algoritmo verificar la firma del id_token a partir de
+    la entrada del JWKS (fuente de confianza, bajada por este servidor via
+    HTTPS), NUNCA del header del id_token (sin verificar, controlado por
+    quien envia el token). Funcion pura, testeable sin red -- ver el
+    comentario de seguridad en validate_id_token.
+
+    Devuelve None si no hay ningun algoritmo asimetrico soportado para esta
+    key (nunca cae a HS*/none, ver _ALLOWED_ID_TOKEN_ALGORITHMS)."""
+    algorithm = jwks_key.get("alg")
+    if algorithm in _ALLOWED_ID_TOKEN_ALGORITHMS:
+        return algorithm
+    fallback = {"RSA": "RS256", "EC": "ES256"}.get(jwks_key.get("kty"))
+    return fallback if fallback in _ALLOWED_ID_TOKEN_ALGORITHMS else None
+
+
 async def validate_id_token(config: SsoConfig, id_token: str, expected_nonce: str) -> dict:
     """Valida firma (via JWKS del proveedor), issuer, audiencia (== nuestro
     client_id) y nonce (anti-replay) del id_token. Devuelve los claims ya
@@ -137,9 +161,35 @@ async def validate_id_token(config: SsoConfig, id_token: str, expected_nonce: st
     if key is None:
         raise OidcError("no se encontro la clave publica (kid) del proveedor para verificar el id_token")
 
+    # BUG DE SEGURIDAD (corregido aca): antes se llamaba a jose_jwt.decode()
+    # con algorithms=[unverified_header.get("alg", "RS256")] -- es decir, la
+    # lista de algoritmos PERMITIDOS se armaba a partir del header del propio
+    # id_token, que todavia no esta verificado en este punto. jose.jws
+    # chequea que el alg del header figure en esa lista antes de construir
+    # la key para verificar; si la lista es exactamente "lo que diga el
+    # header", ese chequeo es un placebo -- CUALQUIER alg que el atacante
+    # ponga pasa. Esto habilita confusion de algoritmo: un atacante arma su
+    # propio id_token con header {"alg": "HS256", "kid": <kid real>}, lo
+    # firma con HMAC-SHA256 usando como "secreto" la clave publica RSA del
+    # proveedor (es PUBLICA, esta en este mismo JWKS) en su representacion
+    # PEM/JWK, y jose_jwt.decode con esa key (construida como RSA pero
+    # forzada a tratarse como clave HMAC porque algorithms=["HS256"]) puede
+    # terminar "verificando" la firma -- login SSO falsificado para
+    # cualquier email, de cualquier organizacion con SSO configurado.
+    #
+    # El algoritmo tiene que venir de una fuente de confianza -- el propio
+    # JWKS del proveedor, que este servidor bajo via HTTPS en discover()/
+    # fetch_jwks(), NUNCA del id_token sin verificar -- y restringirse a
+    # algoritmos asimetricos (ningun proveedor OIDC real firma con HMAC).
+    algorithm = _select_signing_algorithm(key)
+    if algorithm is None:
+        raise OidcError(
+            "la clave publica del proveedor (kid) no declara un algoritmo de firma asimetrico soportado"
+        )
+
     try:
         claims = jose_jwt.decode(
-            id_token, key, algorithms=[unverified_header.get("alg", "RS256")],
+            id_token, key, algorithms=[algorithm],
             audience=config.client_id, issuer=config.issuer,
         )
     except JoseJWTError as exc:

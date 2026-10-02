@@ -9,7 +9,6 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
 from backend.shared.security import create_access_token
-from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
 from app.models import Case, CaseTimelineEntry, CaseStatus, SLA_HOURS_BY_PRIORITY
 
 logger = configure_logging("case-service")
@@ -74,11 +73,14 @@ async def _add_timeline_entry(db: AsyncSession, case_id: str, actor: str, action
     await db.flush()
 
 
-async def create_case(db: AsyncSession, payload, actor: str = "") -> Case:
+async def create_case(db: AsyncSession, payload, organization_id: str, actor: str = "") -> Case:
+    """organization_id es obligatorio (no se lee del payload) a proposito --
+    ver el comentario de seguridad en schemas.CaseCreate. Lo resuelve
+    SIEMPRE app/main.py::create_case a partir del JWT del caller
+    (org_id_from_claims), nunca del body que manda el cliente."""
     sla_due_at = _now() + timedelta(hours=SLA_HOURS_BY_PRIORITY[payload.priority])
     fields = payload.model_dump()
-    fields["organization_id"] = fields.get("organization_id") or DEFAULT_ORGANIZATION_ID
-    case = Case(**fields, sla_due_at=sla_due_at)
+    case = Case(**fields, organization_id=organization_id, sla_due_at=sla_due_at)
     db.add(case)
     await db.flush()
     await _add_timeline_entry(db, case.id, actor or payload.source, "case.created", f"Prioridad: {payload.priority.value}")

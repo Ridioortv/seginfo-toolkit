@@ -11,11 +11,21 @@ class CaseCreate(BaseModel):
     assignee: str = ""
     alert_id: str | None = None
     source: str = "manual"
-    # Opcional -- este endpoint (POST /cases) no exige JWT a proposito (ver
-    # docstring en main.py: soar-service y otros servicios internos tambien
-    # crean casos aca). Si el caller no lo manda, se asume la organizacion
-    # default (ver backend/shared/tenancy.py).
-    organization_id: str | None = None
+    # BUG DE SEGURIDAD (corregido aca): este campo existia antes y el
+    # endpoint (POST /cases) confiaba en el organization_id que mandaba el
+    # propio caller, sin exigir ningun JWT -- cualquiera en internet podia
+    # inyectar casos falsos en la cola de SOC de CUALQUIER organizacion con
+    # solo adivinar/enumerar un organization_id ajeno (ver infra/k8s/base/
+    # ingress.yaml: /api/cases se expone externamente sin distincion de
+    # metodo). Ya no es un campo del payload publico: app/main.py::create_case
+    # ahora exige un JWT (igual que el resto de los endpoints de este
+    # servicio) y resuelve el organization_id SIEMPRE de ese JWT, nunca del
+    # body. soar-service (ver app/actions/create_case.py ahi) sigue
+    # funcionando igual si manda este campo -- pydantic simplemente lo
+    # ignora al no estar declarado, y si el POST sin JWT ahora le devuelve
+    # 401 en vez de 2xx, su propio fallback existente guarda la solicitud
+    # como PendingCase, que se importa despues por el camino
+    # service-to-service autenticado (ver import_pending_cases_from_soar).
 
 
 class CaseUpdate(BaseModel):

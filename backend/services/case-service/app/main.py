@@ -79,12 +79,29 @@ async def health():
 
 
 @app.post("/cases", response_model=CaseOut, status_code=status.HTTP_201_CREATED)
-async def create_case(payload: CaseCreate, db: AsyncSession = Depends(get_db)):
-    """Sin RBAC estricto en la creacion: soar-service y otros servicios
-    internos tambien crean casos (ver app/actions/create_case.py de
-    soar-service, que intenta este endpoint antes de encolar como
-    PendingCase)."""
-    case = await services.create_case(db, payload)
+async def create_case(
+    payload: CaseCreate,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+):
+    """BUG DE SEGURIDAD (corregido aca): este endpoint no exigia ningun JWT y
+    confiaba en un organization_id que mandaba el propio caller en el body
+    -- /api/cases se expone externamente por el ingress sin distincion de
+    metodo (ver infra/k8s/base/ingress.yaml), asi que CUALQUIERA en
+    internet, sin ninguna credencial, podia inyectar casos falsos
+    (titulo/descripcion arbitrarios) en la cola de SOC de CUALQUIER
+    organizacion con solo adivinar o enumerar un organization_id ajeno.
+    Ahora exige un JWT valido (igual que el resto de los endpoints de este
+    servicio) y el organization_id SIEMPRE se resuelve de ese JWT via
+    org_id_from_claims, nunca del body (ver schemas.CaseCreate).
+
+    soar-service sigue funcionando (ver app/actions/create_case.py ahi):
+    hoy llama este endpoint sin Authorization, asi que ahora va a recibir
+    401 en vez de 2xx -- pero esa accion ya tiene un fallback a PendingCase
+    para cualquier respuesta que no sea 2xx, que case-service importa
+    despues por el camino service-to-service autenticado (ver
+    services.import_pending_cases_from_soar, que SI emite su propio JWT)."""
+    case = await services.create_case(db, payload, org_id_from_claims(claims), claims.get("sub", ""))
     await db.commit()
     cases_created_total.labels(priority=payload.priority.value, source=payload.source).inc()
     return case
