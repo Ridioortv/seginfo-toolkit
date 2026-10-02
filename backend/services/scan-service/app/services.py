@@ -7,12 +7,14 @@ import json
 import os
 import secrets
 import hashlib
+import hmac
 from datetime import datetime, timezone, timedelta
 import httpx
 from sqlalchemy import select, or_, and_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
-from app.models import ScanJob, ScanStatus, ScanSchedule, ScanAgent, AgentScanJob, ScannerType
+from backend.shared.security import create_access_token
+from app.models import ScanJob, ScanStatus, ScanSchedule, ScanAgent, AgentScanJob, ScannerType, GvmOwnedResource
 from app.scanners import get_driver, DRIVERS
 
 logger = configure_logging("scan-service")
@@ -664,11 +666,23 @@ async def _forward_findings_to_vuln_service(job: ScanJob) -> None:
         "asset_id": job.asset_id,
         "scanner_type": job.scanner_type.value,
         "findings": job.findings,
-        "organization_id": job.organization_id,
     }
+    # POST /vulnerabilities/ingest exige un JWT valido (ver vuln-service/
+    # app/main.py::ingest) y usa el org_id del TOKEN, nunca un campo del
+    # body -- antes este endpoint no tenia ninguna autenticacion y
+    # confiaba en un "organization_id" que mandaba el propio body, asi que
+    # cualquiera que pudiera llegar al puerto publicado de vuln-service
+    # (ver docker-compose.yml, "8004:8000") podia inyectar hallazgos falsos
+    # en CUALQUIER organizacion sin ni siquiera un JWT. Mismo patron que ya
+    # usa vuln-service para llamar a asset-service (ver
+    # app/services.py::_get_asset_criticality).
+    token = create_access_token("system:scan-service", "admin", org_id=job.organization_id)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(f"{VULN_SERVICE_URL}/vulnerabilities/ingest", json=payload)
+            await client.post(
+                f"{VULN_SERVICE_URL}/vulnerabilities/ingest", json=payload,
+                headers={"Authorization": f"Bearer {token}"},
+            )
     except httpx.HTTPError as exc:
         logger.warning("no se pudo reenviar hallazgos a vuln-service", extra={"job_id": job.id, "error": str(exc)})
 
@@ -723,8 +737,13 @@ def agent_key_matches(agent: ScanAgent, api_key: str) -> bool:
     agente al LANZAR un escaneo remoto desde la UI, ademas del JWT del
     usuario: asi un escaneo remoto solo se puede crear si quien lo lanza
     conoce tambien la key del agente que lo va a ejecutar. Comparacion via
-    el hash ya guardado -- la key en texto plano nunca se persiste."""
-    return bool(api_key) and agent.key_hash == _hash_agent_key(api_key)
+    el hash ya guardado -- la key en texto plano nunca se persiste.
+
+    hmac.compare_digest en vez de == -- por defensa en profundidad: aunque
+    lo que se compara aca es un digest SHA256 (no el secreto crudo), un ==
+    de Python corta en el primer byte distinto, y seguimos preguntandonos
+    "por que arriesgarse" cuando el costo de evitarlo es cero."""
+    return bool(api_key) and hmac.compare_digest(agent.key_hash, _hash_agent_key(api_key))
 
 
 def is_protected_agent(agent) -> bool:
@@ -759,7 +778,7 @@ def resolve_bootstrap_api_key(agent, bootstrap_agents_raw: str) -> str | None:
         key = (entry or {}).get("key")
         if not key:
             continue
-        if _hash_agent_key(key) == agent.key_hash:
+        if hmac.compare_digest(_hash_agent_key(key), agent.key_hash):
             return key
     return None
 
@@ -974,7 +993,19 @@ def agent_can_claim_job(
 async def poll_agent_jobs(db: AsyncSession, agent: ScanAgent, max_jobs: int = 5) -> list[AgentScanJob]:
     """Le entrega al agente sus jobs 'pending' y los pasa a 'assigned' en el
     mismo paso, para que un segundo poll (del mismo agente reiniciado, o de
-    una instancia duplicada por error) no se lleve el mismo job dos veces."""
+    una instancia duplicada por error) no se lleve el mismo job dos veces.
+
+    SELECT ... FOR UPDATE SKIP LOCKED (ver los .with_for_update() mas abajo)
+    es necesario ademas del chequeo en Python: sin el, dos polls concurrentes
+    de verdad (dos procesos de agente con la misma api key, o dos workers de
+    este mismo servicio si algun dia corre con mas de un proceso) podian
+    hacer ambos el SELECT de las mismas filas 'pending' ANTES de que
+    cualquiera de los dos llegara a marcarlas 'assigned' (READ COMMITTED no
+    evita esto solo), y los dos se llevaban el mismo job -- un escaneo real
+    corriendo dos veces en paralelo contra el mismo target. SKIP LOCKED hace
+    que el segundo poll simplemente no vea las filas que el primero ya tiene
+    bloqueadas (en vez de esperarlas y despues tambien reclamarlas), asi que
+    cada job solo lo toma una transaccion."""
     agent.last_seen_at = _now()
     now = _now()
     is_bootstrap = agent.created_by == "bootstrap"
@@ -1000,7 +1031,10 @@ async def poll_agent_jobs(db: AsyncSession, agent: ScanAgent, max_jobs: int = 5)
         query = select(AgentScanJob).where(
             AgentScanJob.agent_id == agent.id, AgentScanJob.status == "pending"
         )
-    result = await db.execute(query.order_by(AgentScanJob.created_at.asc()))
+    # .with_for_update(skip_locked=True): ver el docstring de arriba -- sin
+    # esto, dos polls concurrentes (misma api key en dos procesos, o dos
+    # workers) podian llevarse el mismo job 'pending' dos veces.
+    result = await db.execute(query.order_by(AgentScanJob.created_at.asc()).with_for_update(skip_locked=True))
     candidates = list(result.scalars().all())
     if is_bootstrap:
         candidates = [
@@ -1075,11 +1109,16 @@ async def _forward_agent_findings_to_vuln_service(job: AgentScanJob) -> None:
         "asset_id": None,
         "scanner_type": job.scanner_type,
         "findings": job.findings,
-        "organization_id": job.organization_id,
     }
+    # Ver _forward_findings_to_vuln_service arriba: mismo JWT de
+    # servicio-a-servicio, nunca un organization_id en el body.
+    token = create_access_token("system:scan-service", "admin", org_id=job.organization_id)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(f"{VULN_SERVICE_URL}/vulnerabilities/ingest", json=payload)
+            await client.post(
+                f"{VULN_SERVICE_URL}/vulnerabilities/ingest", json=payload,
+                headers={"Authorization": f"Bearer {token}"},
+            )
     except httpx.HTTPError as exc:
         logger.warning(
             "no se pudo reenviar hallazgos de agente remoto a vuln-service",
@@ -1101,3 +1140,97 @@ async def _forward_agent_findings_to_siem_service(job: AgentScanJob) -> None:
             "no se pudo reenviar hallazgos de agente remoto a siem-service",
             extra={"job_id": job.id, "error": str(exc)},
         )
+
+
+# --- Aislamiento multi-tenant de recursos GVM (dashboard de OpenVAS) ------
+# Ver GvmOwnedResource en app/models.py para el por que: gvmd/ospd-openvas
+# no tienen ningun concepto de organizacion, asi que sin esto cualquier
+# usuario autenticado de CUALQUIER organizacion podia listar/leer/borrar
+# las credenciales y targets GVM de TODAS las demas organizaciones del
+# mismo deployment.
+
+async def record_gvm_resource_ownership(
+    db: AsyncSession, organization_id: str, resource_type: str, gvm_id: str
+) -> None:
+    db.add(GvmOwnedResource(organization_id=organization_id, resource_type=resource_type, gvm_id=gvm_id))
+    await db.flush()
+
+
+async def forget_gvm_resource_ownership(db: AsyncSession, resource_type: str, gvm_id: str) -> None:
+    result = await db.execute(
+        select(GvmOwnedResource).where(
+            GvmOwnedResource.resource_type == resource_type, GvmOwnedResource.gvm_id == gvm_id,
+        )
+    )
+    for row in result.scalars().all():
+        await db.delete(row)
+    await db.flush()
+
+
+async def _owner_org_map(db: AsyncSession, resource_type: str) -> dict[str, str]:
+    result = await db.execute(
+        select(GvmOwnedResource.gvm_id, GvmOwnedResource.organization_id).where(
+            GvmOwnedResource.resource_type == resource_type
+        )
+    )
+    return dict(result.all())
+
+
+def _resolve_owner(owners: dict[str, str], gvm_id: str) -> str:
+    """Logica PURA (sin DB, testeada directo) que decide a que
+    organizacion pertenece un recurso GVM dado el mapa {gvm_id: org_id} ya
+    cargado: si nunca se registro (creado antes de este fix, o por fuera
+    de la UI con gvm-cli/gvm-tools a mano) cae a DEFAULT_ORGANIZATION_ID --
+    mismo criterio de backfill que ya usa el resto del servicio para
+    columnas organization_id nuevas (ver app/main.py::lifespan)."""
+    from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
+    return owners.get(gvm_id, DEFAULT_ORGANIZATION_ID)
+
+
+def _filter_by_org(owners: dict[str, str], items: list[dict], organization_id: str) -> list[dict]:
+    """Logica PURA (sin DB, testeada directo): filtra una lista de dicts
+    con clave "id" (tal como los devuelve gvm_manage.list_credentials/
+    list_targets) para dejar solo los que pertenecen a `organization_id`,
+    dado el mapa {gvm_id: org_id} ya cargado -- ver _resolve_owner para el
+    fallback de los no registrados."""
+    return [item for item in items if _resolve_owner(owners, item["id"]) == organization_id]
+
+
+async def resolve_gvm_resource_org(db: AsyncSession, resource_type: str, gvm_id: str) -> str:
+    """Organizacion duena de un recurso GVM (credential/target) ya
+    existente en gvmd -- ver _resolve_owner para la regla."""
+    owners = await _owner_org_map(db, resource_type)
+    return _resolve_owner(owners, gvm_id)
+
+
+async def filter_gvm_resources_by_org(
+    db: AsyncSession, resource_type: str, items: list[dict], organization_id: str
+) -> list[dict]:
+    """Ver _filter_by_org para la regla -- esto solo le agrega el fetch de
+    `owners` desde la DB."""
+    owners = await _owner_org_map(db, resource_type)
+    return _filter_by_org(owners, items, organization_id)
+
+
+async def gvm_task_org_map(db: AsyncSession) -> dict[str, str]:
+    """{gvm_task_id: organization_id} para todos los ScanJob de tipo
+    openvas que llegaron a correr un task GVM real (ver
+    execute_scan_job, que guarda options['gvm_task_id'] -- ver
+    app/scanners/openvas.py::OpenVasDriver.run / _tag). Se usa para
+    filtrar/validar list_openvas_tasks, delete_openvas_task y los
+    endpoints de reportes por organizacion, igual que
+    filter_gvm_resources_by_org para credenciales/targets."""
+    result = await db.execute(
+        select(ScanJob.organization_id, ScanJob.options).where(ScanJob.scanner_type == ScannerType.openvas)
+    )
+    mapping: dict[str, str] = {}
+    for organization_id, options in result.all():
+        task_id = (options or {}).get("gvm_task_id")
+        if task_id and organization_id:
+            mapping[task_id] = organization_id
+    return mapping
+
+
+async def resolve_gvm_task_org(db: AsyncSession, task_id: str) -> str:
+    mapping = await gvm_task_org_map(db)
+    return _resolve_owner(mapping, task_id)

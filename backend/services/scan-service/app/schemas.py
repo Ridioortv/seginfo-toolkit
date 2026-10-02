@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 from app.models import ScannerType, ScanStatus
-from app.target_validation import validate_target
+from app.target_validation import validate_target, reject_dangerous_network_target
 
 ScanFrequency = Literal["daily", "weekly"]
 
@@ -19,6 +19,18 @@ class ScanJobCreate(BaseModel):
     @classmethod
     def _validate_target(cls, v: str) -> str:
         return validate_target(v)
+
+    @model_validator(mode="after")
+    def _reject_dangerous_network_target(self) -> "ScanJobCreate":
+        # trivy escanea una imagen/filesystem, no un host de red -- un
+        # target "postgres:16" ahi es una referencia de imagen legitima y
+        # comunisima, no el nombre del contenedor postgres de la plataforma
+        # (ver target_validation.reject_dangerous_network_target). El resto
+        # (nmap/nuclei/openvas) SI corre dentro de la red docker de la
+        # plataforma, asi que su target se valida contra ese denylist.
+        if self.scanner_type != ScannerType.trivy:
+            reject_dangerous_network_target(self.target)
+        return self
 
 
 class Finding(BaseModel):
@@ -67,6 +79,17 @@ class ScanScheduleCreate(BaseModel):
     def _agent_needs_key(self) -> "ScanScheduleCreate":
         if self.agent_id and not self.agent_api_key:
             raise ValueError("agent_api_key es requerido cuando se especifica agent_id")
+        return self
+
+    @model_validator(mode="after")
+    def _reject_dangerous_network_target(self) -> "ScanScheduleCreate":
+        # Mismo criterio que ScanJobCreate: nunca para trivy (referencia de
+        # imagen, no host). Ademas, nunca cuando agent_id esta seteado --
+        # ese caso lo ejecuta un agente remoto FUERA de la red docker de la
+        # plataforma (en la LAN real del cliente), asi que el denylist de
+        # nombres de servicio internos no aplica (ver AgentScanJobCreate).
+        if self.scanner_type != ScannerType.trivy and not self.agent_id:
+            reject_dangerous_network_target(self.target)
         return self
 
 
@@ -324,7 +347,13 @@ class GvmTargetCreate(BaseModel):
     @field_validator("hosts")
     @classmethod
     def _validate_hosts(cls, v: str) -> str:
-        return validate_target(v)
+        v = validate_target(v)
+        # Siempre target de red (gvmd/ospd-openvas tambien corren dentro de
+        # la red docker de la plataforma) -- a diferencia de ScanJobCreate,
+        # aca no hay scanner_type que pueda ser trivy, asi que se aplica
+        # sin condicion.
+        reject_dangerous_network_target(v)
+        return v
 
 
 class GvmTargetOut(BaseModel):

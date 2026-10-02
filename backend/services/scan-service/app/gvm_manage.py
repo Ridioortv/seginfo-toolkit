@@ -20,6 +20,7 @@ from app.scanners.openvas import (
     _build_create_target_xml,
     _parse_response_id,
     _response_status_ok,
+    _xml_attr,
     gvm_query,
 )
 
@@ -203,7 +204,7 @@ async def create_credential(
 
 
 async def delete_credential(socket_path: str, user: str, password: str, credential_id: str) -> tuple[bool, str]:
-    rc, out, err = await gvm_query(socket_path, user, password, f"<delete_credential credential_id='{credential_id}'/>")
+    rc, out, err = await gvm_query(socket_path, user, password, f"<delete_credential credential_id='{_xml_attr(credential_id)}'/>")
     if rc != 0 or not _response_status_ok(out):
         return False, (err or out)[:1000]
     return True, ""
@@ -231,7 +232,7 @@ async def create_target(
 
 
 async def delete_target(socket_path: str, user: str, password: str, target_id: str) -> tuple[bool, str]:
-    rc, out, err = await gvm_query(socket_path, user, password, f"<delete_target target_id='{target_id}'/>")
+    rc, out, err = await gvm_query(socket_path, user, password, f"<delete_target target_id='{_xml_attr(target_id)}'/>")
     if rc != 0 or not _response_status_ok(out):
         return False, (err or out)[:1000]
     return True, ""
@@ -252,7 +253,7 @@ async def delete_task(socket_path: str, user: str, password: str, task_id: str) 
     para el dashboard es indistinguible de un borrado definitivo. El
     reporte asociado (last_report_id) queda en la papelera junto con el
     task, no hace falta borrarlo aparte."""
-    rc, out, err = await gvm_query(socket_path, user, password, f"<delete_task task_id='{task_id}'/>")
+    rc, out, err = await gvm_query(socket_path, user, password, f"<delete_task task_id='{_xml_attr(task_id)}'/>")
     if rc != 0 or not _response_status_ok(out):
         return False, (err or out)[:1000]
     return True, ""
@@ -263,7 +264,7 @@ async def get_report_xml(socket_path: str, user: str, password: str, report_id: 
     corrida, no solo los findings resumidos que ya guarda ScanJob) -- para
     "ver el reporte completo" en el dashboard sin exportar ningun archivo."""
     rc, out, err = await gvm_query(
-        socket_path, user, password, f"<get_reports report_id='{report_id}' details='1'/>", timeout=120,
+        socket_path, user, password, f"<get_reports report_id='{_xml_attr(report_id)}' details='1'/>", timeout=120,
     )
     if rc != 0:
         return False, "", (err or out)[:2000]
@@ -290,7 +291,7 @@ async def export_report(
 
     rc, out, err = await gvm_query(
         socket_path, user, password,
-        f"<get_reports report_id='{report_id}' format_id='{format_id}' details='1'/>",
+        f"<get_reports report_id='{_xml_attr(report_id)}' format_id='{_xml_attr(format_id)}' details='1'/>",
         timeout=120,
     )
     if rc != 0:

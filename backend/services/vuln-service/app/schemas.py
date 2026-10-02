@@ -23,12 +23,15 @@ class IngestRequest(BaseModel):
     scan_job_id: str | None = None
     asset_id: str | None = None
     scanner_type: str = ""
-    # Opcional (no viene de un JWT -- este endpoint es servicio-a-servicio y
-    # no requiere uno, ver main.py::ingest) para no romper a un caller viejo
-    # que todavia no lo manda; si falta, ingest_findings lo trata como la
-    # organizacion default (ver backend/shared/tenancy.py).
-    organization_id: str | None = None
     findings: list[FindingIn] = Field(default_factory=list)
+    # NO hay campo organization_id aca a proposito: ese dato viene del JWT
+    # de servicio-a-servicio que ahora exige main.py::ingest (org_id_from_
+    # claims), nunca del body -- antes este endpoint no requeria ningun
+    # JWT y confiaba en un organization_id que mandaba el propio caller,
+    # asi que cualquiera que llegara al puerto publicado de este servicio
+    # (ver docker-compose.yml) podia inyectar hallazgos falsos en
+    # CUALQUIER organizacion. Si un body viejo todavia manda ese campo,
+    # Pydantic lo ignora (comportamiento default, no es un error).
 
 
 class IngestResponse(BaseModel):

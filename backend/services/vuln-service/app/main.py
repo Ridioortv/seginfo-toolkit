@@ -54,10 +54,22 @@ async def health():
 
 
 @app.post("/vulnerabilities/ingest", response_model=IngestResponse, status_code=status.HTTP_201_CREATED)
-async def ingest(payload: IngestRequest, db: AsyncSession = Depends(get_db)):
-    """Llamado por scan-service al terminar un job (comunicacion
-    servicio-a-servicio; no requiere el JWT interactivo de un usuario)."""
-    created, updated = await services.ingest_findings(db, payload)
+async def ingest(
+    payload: IngestRequest,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+):
+    """Llamado por scan-service al terminar un job -- con un JWT de
+    servicio-a-servicio de corta vida (ver scan-service/app/services.py::
+    _forward_findings_to_vuln_service, mismo patron que ya usa este mismo
+    servicio para llamar a asset-service en _get_asset_criticality), NUNCA
+    con el organization_id que venia antes en el body sin ninguna
+    autenticacion: ese body viejo dejaba que cualquiera con acceso de red
+    a este puerto (publicado en docker-compose.yml) inyectara hallazgos
+    falsos en CUALQUIER organizacion. get_current_claims tambien acepta el
+    JWT interactivo de un usuario -- en ese caso la ingesta queda
+    igualmente limitada a SU propia organizacion, nunca a una ajena."""
+    created, updated = await services.ingest_findings(db, payload, org_id_from_claims(claims))
     await db.commit()
     vulns_ingested_total.labels(scanner_type=payload.scanner_type or "desconocido").inc(len(payload.findings))
     logger.info("hallazgos ingeridos", extra={"creados": created, "actualizados": updated})

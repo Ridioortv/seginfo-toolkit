@@ -295,3 +295,80 @@ def test_export_report_format_not_installed_in_gvmd():
         _restore_gvm_query(original)
     assert ok is False
     assert "no tiene instalado" in err
+
+
+# --- Regression: credential_id/target_id/task_id/report_id vienen DIRECTO
+# de un path param de la URL (DELETE /openvas/credentials/{id}, etc, ver
+# main.py) sin ninguna validacion de formato -- antes se interpolaban sin
+# escapar en un atributo XML delimitado por comillas simples, asi que una
+# comilla simple en el id cortaba el atributo e inyectaba un comando GMP
+# adicional (ver test_gvm_xml_attr_injection.py para el mismo bug del lado
+# de app/scanners/openvas.py). Estos tests confirman que lo que
+# efectivamente se manda a gvmd via gvm_query queda escapado.
+
+def test_delete_credential_escapes_malicious_id():
+    payload = "c1'/><delete_task task_id='victim'/><delete_credential credential_id='"
+    seen_xml = {}
+
+    async def fake(socket_path, user, password, xml, timeout=60):
+        seen_xml["xml"] = xml
+        return 0, "<delete_credential_response status='200'/>", ""
+
+    original = _patch_gvm_query(fake)
+    try:
+        asyncio.run(gm.delete_credential("/sock", "admin", "pw", payload))
+    finally:
+        _restore_gvm_query(original)
+    assert "<delete_task" not in seen_xml["xml"]
+    assert "&apos;" in seen_xml["xml"]
+
+
+def test_delete_target_escapes_malicious_id():
+    payload = "t1'/><get_credentials/><delete_target target_id='"
+    seen_xml = {}
+
+    async def fake(socket_path, user, password, xml, timeout=60):
+        seen_xml["xml"] = xml
+        return 0, "<delete_target_response status='200'/>", ""
+
+    original = _patch_gvm_query(fake)
+    try:
+        asyncio.run(gm.delete_target("/sock", "admin", "pw", payload))
+    finally:
+        _restore_gvm_query(original)
+    assert "<get_credentials" not in seen_xml["xml"]
+    assert "&apos;" in seen_xml["xml"]
+
+
+def test_delete_task_escapes_malicious_id():
+    payload = "tk1'/><delete_target target_id='victim'/><delete_task task_id='"
+    seen_xml = {}
+
+    async def fake(socket_path, user, password, xml, timeout=60):
+        seen_xml["xml"] = xml
+        return 0, "<delete_task_response status='200'/>", ""
+
+    original = _patch_gvm_query(fake)
+    try:
+        asyncio.run(gm.delete_task("/sock", "admin", "pw", payload))
+    finally:
+        _restore_gvm_query(original)
+    assert "<delete_target" not in seen_xml["xml"]
+    assert "&apos;" in seen_xml["xml"]
+
+
+def test_get_report_xml_escapes_malicious_report_id():
+    payload = "rep1'/><delete_task task_id='victim'/><get_reports report_id='"
+    seen_xml = {}
+
+    async def fake(socket_path, user, password, xml, timeout=60):
+        seen_xml["xml"] = xml
+        return 0, "<get_reports_response status='200'></get_reports_response>", ""
+
+    original = _patch_gvm_query(fake)
+    try:
+        asyncio.run(gm.get_report_xml("/sock", "admin", "pw", payload))
+    finally:
+        _restore_gvm_query(original)
+    assert "<delete_task" not in seen_xml["xml"]
+    assert "&apos;" in seen_xml["xml"]

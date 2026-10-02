@@ -156,3 +156,35 @@ class AgentScanJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class GvmOwnedResource(Base):
+    """Rastrea a que organizacion pertenece cada credencial/target GVM
+    creado desde el dashboard de OpenVAS (app/gvm_manage.py + endpoints
+    /openvas/credentials, /openvas/targets en main.py).
+
+    gvmd/ospd-openvas no tienen NINGUN concepto de organizacion -- es un
+    unico motor compartido por todo el deployment (se autentica con un
+    solo GVM_USER/GVM_PASSWORD para todo scan-service, ver
+    app/scanners/openvas.py). Sin esta tabla, list/get/delete de
+    credenciales y targets GVM no tenian NINGUN filtro de organizacion
+    (a diferencia de ScanJob/ScanSchedule/ScanAgent/AgentScanJob, que si
+    filtran por organization_id) -- cualquier usuario autenticado de
+    CUALQUIER organizacion podia listar, leer y borrar las credenciales
+    (incluye el login/password guardado para escaneo autenticado) y
+    targets GVM de TODAS las demas organizaciones del mismo deployment.
+    Ver services.py (record_gvm_resource_ownership / resolve_gvm_resource_org
+    / list_owned_gvm_resource_ids) y main.py (donde se usan) para el
+    arreglo completo -- incluye tambien a los tasks/reportes GVM, cuya
+    organizacion se resuelve en cambio via ScanJob.options['gvm_task_id']
+    (ya se crean con organization_id, ver services.execute_scan_job)."""
+
+    __tablename__ = "gvm_owned_resources"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    # "credential" | "target" -- nunca "task"/"report" (esos usan ScanJob,
+    # ver docstring de arriba).
+    resource_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    gvm_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

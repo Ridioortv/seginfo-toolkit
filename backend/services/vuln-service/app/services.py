@@ -52,14 +52,19 @@ async def _get_asset_criticality(asset_id: str | None, organization_id: str) -> 
     return "medium"
 
 
-async def ingest_findings(db: AsyncSession, payload) -> tuple[int, int]:
+async def ingest_findings(db: AsyncSession, payload, organization_id: str) -> tuple[int, int]:
     """Crea o actualiza registros de Vulnerability a partir de hallazgos de
     scan-service. Deduplica por (asset_id, cve_id o titulo) para no crear un
     registro nuevo por cada corrida de escaneo sobre el mismo activo, SIEMPRE
-    dentro de la misma organizacion (dos tenants pueden tener assets con el
-    mismo id solo si comparten... en realidad nunca, los ids son uuid, pero
-    el filtro de organization_id se mantiene por defensa en profundidad)."""
-    organization_id = payload.organization_id or DEFAULT_ORGANIZATION_ID
+    dentro de la misma organizacion.
+
+    `organization_id` lo resuelve el caller (main.py::ingest) desde el JWT
+    YA VALIDADO de quien hace la llamada (org_id_from_claims) -- nunca
+    desde un campo del body. Antes este endpoint aceptaba un
+    "organization_id" en el propio payload sin ningun JWT que lo
+    respaldara, asi que cualquiera que llegara a este puerto (publicado en
+    docker-compose.yml) podia inyectar hallazgos falsos en CUALQUIER
+    organizacion con solo adivinar/conocer su id."""
     created, updated = 0, 0
     asset_criticality = await _get_asset_criticality(payload.asset_id, organization_id)
 

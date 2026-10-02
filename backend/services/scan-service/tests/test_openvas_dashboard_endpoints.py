@@ -1,10 +1,21 @@
 """Tests HTTP (FastAPI TestClient) de los endpoints /openvas/* del
 dashboard (configs/credenciales/targets/tasks/reportes) -- sin DB real
-(las rutas de este archivo no tocan la base, solo hablan con gvmd via
-app/gvm_manage.py) y sin JWT real: se overridea get_current_claims con
-dependency_overrides (mismo mecanismo que usa FastAPI para testing) y se
-mockean las funciones de app.gvm_manage, igual que test_gvm_manage.py
-mockea gvm_query un nivel mas abajo."""
+(las rutas de este archivo hablan con gvmd via app/gvm_manage.py, siempre
+mockeado aca, igual que test_gvm_manage.py mockea gvm_query un nivel mas
+abajo) y sin JWT real: se overridea get_current_claims con
+dependency_overrides (mismo mecanismo que usa FastAPI para testing).
+
+Tambien se overridea get_db (sin Postgres real en este archivo) y se
+mockean las funciones de aislamiento multi-tenant de app.services
+(record_gvm_resource_ownership / filter_gvm_resources_by_org / etc, ver su
+docstring en app/services.py) con defaults pass-through de un solo org
+("org1") -- la logica REAL de esas funciones (que es la que de verdad
+importa para la seguridad: que organizacion le gana a cual) se prueba
+aparte, sin mocks, en test_gvm_tenancy_helpers.py. Los tests
+"..._hides_other_org_..." / "..._denied_for_other_org" de mas abajo
+verifican que main.py SI aplica el resultado de esas funciones (no solo
+que las llama) simulando, via override puntual, un recurso que pertenece
+a OTRA organizacion."""
 import os
 
 import pytest
@@ -12,6 +23,21 @@ from fastapi.testclient import TestClient
 
 import app.gvm_manage as gm
 import app.main as m
+import app.services as svc
+
+
+class _FakeDbSession:
+    """Placeholder para Depends(get_db) en estos tests -- las fakes de
+    app.services (ver _default_ownership_fakes) nunca tocan `db` de
+    verdad, pero main.py si llama a db.commit() despues, asi que alcanza
+    con que exista como no-op."""
+
+    async def commit(self):
+        pass
+
+
+async def _fake_get_db():
+    yield _FakeDbSession()
 
 
 @pytest.fixture
@@ -20,12 +46,14 @@ def client():
         return {"sub": "tester", "org_id": "org1", "role": "admin"}
 
     m.app.dependency_overrides[m.get_current_claims] = fake_claims
+    m.app.dependency_overrides[m.get_db] = _fake_get_db
     os.environ["GVM_USER"] = "admin"
     os.environ["GVM_PASSWORD"] = "pw"
     try:
         yield TestClient(m.app)
     finally:
         m.app.dependency_overrides.pop(m.get_current_claims, None)
+        m.app.dependency_overrides.pop(m.get_db, None)
         os.environ.pop("GVM_USER", None)
         os.environ.pop("GVM_PASSWORD", None)
         os.environ.pop("GVM_SOCKET_PATH", None)
@@ -37,6 +65,49 @@ def patch_gvm_manage(monkeypatch):
         for name, fn in fakes.items():
             monkeypatch.setattr(gm, name, fn)
     return _patch
+
+
+@pytest.fixture
+def patch_services(monkeypatch):
+    def _patch(**fakes):
+        for name, fn in fakes.items():
+            monkeypatch.setattr(svc, name, fn)
+    return _patch
+
+
+@pytest.fixture(autouse=True)
+def _default_ownership_fakes(patch_services):
+    """Defaults pass-through: en estos tests, con un solo org ("org1",
+    ver fake_claims arriba), el aislamiento multi-tenant de recursos GVM
+    no debe cambiar nada observable salvo que algun test override
+    puntualmente una de estas fakes para simular un recurso de otra
+    organizacion."""
+    async def _record(db, organization_id, resource_type, gvm_id):
+        pass
+
+    async def _forget(db, resource_type, gvm_id):
+        pass
+
+    async def _filter_passthrough(db, resource_type, items, organization_id):
+        return items
+
+    async def _resolve_same_org(db, resource_type, gvm_id):
+        return "org1"
+
+    async def _task_org_map(db):
+        return {"tk1": "org1"}
+
+    async def _resolve_task_org(db, task_id):
+        return "org1"
+
+    patch_services(
+        record_gvm_resource_ownership=_record,
+        forget_gvm_resource_ownership=_forget,
+        filter_gvm_resources_by_org=_filter_passthrough,
+        resolve_gvm_resource_org=_resolve_same_org,
+        gvm_task_org_map=_task_org_map,
+        resolve_gvm_task_org=_resolve_task_org,
+    )
 
 
 def test_requires_openvas_activated_first(client):
@@ -144,6 +215,12 @@ def test_list_tasks(client, patch_gvm_manage):
 
 
 def test_get_report_and_export(client, patch_gvm_manage):
+    async def fake_list_tasks(socket_path, user, password):
+        return True, [{
+            "id": "tk1", "name": "sentinelops-x-1", "status": "Done",
+            "progress": 100, "target_id": "t1", "last_report_id": "rep1",
+        }], ""
+
     async def fake_get_report_xml(socket_path, user, password, report_id):
         assert report_id == "rep1"
         return True, "<report/>", ""
@@ -152,7 +229,9 @@ def test_get_report_and_export(client, patch_gvm_manage):
         assert fmt == "pdf"
         return True, b"PDFDATA", "sentinelops-report-rep1.pdf", ""
 
-    patch_gvm_manage(get_report_xml=fake_get_report_xml, export_report=fake_export_report)
+    patch_gvm_manage(
+        list_tasks=fake_list_tasks, get_report_xml=fake_get_report_xml, export_report=fake_export_report,
+    )
 
     r = client.get("/openvas/reports/rep1")
     assert r.status_code == 200
@@ -166,9 +245,119 @@ def test_get_report_and_export(client, patch_gvm_manage):
 
 
 def test_export_report_gvm_failure_is_502(client, patch_gvm_manage):
+    async def fake_list_tasks(socket_path, user, password):
+        return True, [], ""
+
     async def fake_export_report(socket_path, user, password, report_id, fmt):
         return False, None, None, "formato no soportado"
 
-    patch_gvm_manage(export_report=fake_export_report)
+    patch_gvm_manage(list_tasks=fake_list_tasks, export_report=fake_export_report)
     r = client.get("/openvas/reports/rep1/export?format=docx")
     assert r.status_code == 502
+
+
+# --- Aislamiento multi-tenant: main.py SI aplica lo que dice app.services -
+
+def test_credentials_list_hides_resource_owned_by_other_org(client, patch_gvm_manage, patch_services):
+    async def fake_list_credentials(socket_path, user, password):
+        return True, [{"id": "foreign-cred", "name": "root-ssh", "login": "root", "type": "up"}], ""
+
+    async def fake_filter_hides_foreign(db, resource_type, items, organization_id):
+        assert resource_type == "credential"
+        return [i for i in items if i["id"] != "foreign-cred"]
+
+    patch_gvm_manage(list_credentials=fake_list_credentials)
+    patch_services(filter_gvm_resources_by_org=fake_filter_hides_foreign)
+
+    r = client.get("/openvas/credentials")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_delete_credential_denied_for_other_org(client, patch_gvm_manage, patch_services):
+    delete_called = {"value": False}
+
+    async def fake_delete_credential(socket_path, user, password, credential_id):
+        delete_called["value"] = True
+        return True, ""
+
+    async def fake_resolve_other_org(db, resource_type, gvm_id):
+        return "org-ajeno"
+
+    patch_gvm_manage(delete_credential=fake_delete_credential)
+    patch_services(resolve_gvm_resource_org=fake_resolve_other_org)
+
+    r = client.delete("/openvas/credentials/foreign-cred")
+    assert r.status_code == 404
+    assert delete_called["value"] is False  # nunca se le pidio el borrado real a gvmd
+
+
+def test_delete_target_denied_for_other_org(client, patch_gvm_manage, patch_services):
+    delete_called = {"value": False}
+
+    async def fake_delete_target(socket_path, user, password, target_id):
+        delete_called["value"] = True
+        return True, ""
+
+    async def fake_resolve_other_org(db, resource_type, gvm_id):
+        return "org-ajeno"
+
+    patch_gvm_manage(delete_target=fake_delete_target)
+    patch_services(resolve_gvm_resource_org=fake_resolve_other_org)
+
+    r = client.delete("/openvas/targets/foreign-target")
+    assert r.status_code == 404
+    assert delete_called["value"] is False
+
+
+def test_list_tasks_hides_task_owned_by_other_org(client, patch_gvm_manage, patch_services):
+    async def fake_list_tasks(socket_path, user, password):
+        return True, [{
+            "id": "foreign-task", "name": "sentinelops-x-1", "status": "Done",
+            "progress": 100, "target_id": "t1", "last_report_id": "rep-foreign",
+        }], ""
+
+    async def fake_task_org_map(db):
+        return {"foreign-task": "org-ajeno"}
+
+    patch_gvm_manage(list_tasks=fake_list_tasks)
+    patch_services(gvm_task_org_map=fake_task_org_map)
+
+    r = client.get("/openvas/tasks")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_delete_task_denied_for_other_org(client, patch_gvm_manage, patch_services):
+    delete_called = {"value": False}
+
+    async def fake_delete_task(socket_path, user, password, task_id):
+        delete_called["value"] = True
+        return True, ""
+
+    async def fake_resolve_task_other_org(db, task_id):
+        return "org-ajeno"
+
+    patch_gvm_manage(delete_task=fake_delete_task)
+    patch_services(resolve_gvm_task_org=fake_resolve_task_other_org)
+
+    r = client.delete("/openvas/tasks/foreign-task")
+    assert r.status_code == 404
+    assert delete_called["value"] is False
+
+
+def test_get_report_denied_when_owning_task_is_other_org(client, patch_gvm_manage, patch_services):
+    async def fake_list_tasks(socket_path, user, password):
+        return True, [{
+            "id": "foreign-task", "name": "sentinelops-x-1", "status": "Done",
+            "progress": 100, "target_id": "t1", "last_report_id": "rep-foreign",
+        }], ""
+
+    async def fake_resolve_task_other_org(db, task_id):
+        return "org-ajeno"
+
+    patch_gvm_manage(list_tasks=fake_list_tasks)
+    patch_services(resolve_gvm_task_org=fake_resolve_task_other_org)
+
+    r = client.get("/openvas/reports/rep-foreign")
+    assert r.status_code == 404

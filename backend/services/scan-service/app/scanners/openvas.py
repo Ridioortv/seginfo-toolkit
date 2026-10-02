@@ -33,6 +33,26 @@ import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as _xml_escape
 from app.scanners.base import ScannerDriver, ScanResult
 
+
+def _xml_attr(value: str) -> str:
+    """Escapa `value` para insertarlo en un atributo XML delimitado por
+    comillas SIMPLES (`id='...'`, el estilo que usa todo este archivo) --
+    a diferencia de _xml_escape (pensado para texto plano entre tags, ej.
+    <name>...</name>, donde una comilla simple no rompe nada), un atributo
+    asi SI necesita escapar la comilla simple: sin esto, cualquiera de los
+    ids que llegan aca sin validar contra un formato fijo (overrides de
+    ScanJobCreate/ScanScheduleCreate.options como gvm_config_id/
+    gvm_scanner_id/gvm_port_list_id/gvm_target_id/gvm_ssh_credential_id/
+    gvm_smb_credential_id -- ver OpenVasDriver.run mas abajo -- y, en
+    app/gvm_manage.py, credential_id/target_id/task_id/report_id tomados
+    directo de un path param de la URL) podia cortar el atributo con una
+    comilla simple e inyectar CUALQUIER comando GMP adicional en la misma
+    sesion ya autenticada contra gvmd (crear/borrar usuarios, leer
+    reportes de otra organizacion, lo que sea que GMP permita) -- un bug
+    real encontrado al trazar de punta a punta de donde viene cada string
+    que termina interpolado en un atributo de esta forma."""
+    return _xml_escape(value, {"'": "&apos;"})
+
 _SEVERITY_THRESHOLDS = (
     (9.0, "critical"),
     (7.0, "high"),
@@ -246,21 +266,21 @@ def _build_create_target_xml(
     (poder escanear LAN desde el mismo Docker Desktop del operador)."""
     extra = f"<alive_tests>{_xml_escape(alive_tests)}</alive_tests>" if alive_tests else ""
     if ssh_credential_id:
-        extra += f"<ssh_lsc_credential id='{ssh_credential_id}'/>"
+        extra += f"<ssh_lsc_credential id='{_xml_attr(ssh_credential_id)}'/>"
     if smb_credential_id:
-        extra += f"<smb_lsc_credential id='{smb_credential_id}'/>"
+        extra += f"<smb_lsc_credential id='{_xml_attr(smb_credential_id)}'/>"
     return (
         f"<create_target><name>{_xml_escape(name)}</name>"
         f"<hosts>{_xml_escape(hosts)}</hosts>"
-        f"<port_list id='{port_list_id}'/>{extra}</create_target>"
+        f"<port_list id='{_xml_attr(port_list_id)}'/>{extra}</create_target>"
     )
 
 
 def _build_create_task_xml(name: str, target_id: str, config_id: str, scanner_id: str) -> str:
     return (
         f"<create_task><name>{_xml_escape(name)}</name>"
-        f"<target id='{target_id}'/><config id='{config_id}'/>"
-        f"<scanner id='{scanner_id}'/></create_task>"
+        f"<target id='{_xml_attr(target_id)}'/><config id='{_xml_attr(config_id)}'/>"
+        f"<scanner id='{_xml_attr(scanner_id)}'/></create_task>"
     )
 
 
@@ -494,7 +514,7 @@ class OpenVasDriver(ScannerDriver):
             if not task_id:
                 return ScanResult(raw_output=out, error="create_task no devolvio un id de task")
 
-            rc, out, err = await q(f"<start_task task_id='{task_id}'/>")
+            rc, out, err = await q(f"<start_task task_id='{_xml_attr(task_id)}'/>")
             if rc != 0:
                 return _tag(ScanResult(raw_output=out, error=f"no se pudo iniciar el task GVM: {err[:1000]}"))
 
@@ -503,7 +523,7 @@ class OpenVasDriver(ScannerDriver):
             last_status, last_progress = "Requested", 0
             while time.monotonic() < deadline:
                 await asyncio.sleep(_DEFAULT_POLL_INTERVAL)
-                rc, out, err = await q(f"<get_tasks task_id='{task_id}'/>")
+                rc, out, err = await q(f"<get_tasks task_id='{_xml_attr(task_id)}'/>")
                 if rc != 0:
                     continue  # error transitorio consultando estado -- reintenta en el proximo ciclo
                 parsed = _parse_task_status(out)
@@ -526,7 +546,7 @@ class OpenVasDriver(ScannerDriver):
                 return _tag(ScanResult(raw_output="", error=f"el escaneo GVM termino en estado '{last_status}', no 'Done'"))
 
             # -- 5. get_results -----------------------------------------------
-            rc, out, err = await q(f"<get_results task_id='{task_id}' filter='rows=1000'/>", timeout=120)
+            rc, out, err = await q(f"<get_results task_id='{_xml_attr(task_id)}' filter='rows=1000'/>", timeout=120)
             if rc != 0:
                 return _tag(ScanResult(raw_output=out, error=f"no se pudieron obtener los resultados: {err[:1000]}"))
 
@@ -544,7 +564,7 @@ class OpenVasDriver(ScannerDriver):
             # solo se ignora.
             if task_id:
                 try:
-                    await q(f"<stop_task task_id='{task_id}'/>", timeout=15)
+                    await q(f"<stop_task task_id='{_xml_attr(task_id)}'/>", timeout=15)
                 except Exception:  # noqa: BLE001 -- best-effort
                     pass
             raise

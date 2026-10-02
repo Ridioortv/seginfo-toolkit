@@ -394,12 +394,29 @@ async def list_openvas_report_formats(claims: dict = Depends(get_current_claims)
     return formats
 
 
+# Las credenciales/targets/tasks/reportes GVM mas abajo son el UNICO grupo
+# de endpoints de este servicio que, antes de este fix, no filtraba NADA
+# por organizacion: gvmd/ospd-openvas no tienen ningun concepto de
+# organizacion propio (es un unico motor GMP compartido por todo el
+# deployment, autenticado con un solo GVM_USER/GVM_PASSWORD), asi que sin
+# este chequeo cualquier usuario autenticado de CUALQUIER organizacion
+# podia listar/leer/borrar las credenciales (incluye login/password de
+# escaneo autenticado) y targets/tasks/reportes GVM de TODAS las demas
+# organizaciones del mismo deployment -- a diferencia de /scans,
+# /scan-schedules y /agent-scans, que si filtraban por organization_id
+# desde el principio. Ver app/models.py::GvmOwnedResource y las funciones
+# correspondientes en app/services.py para el detalle.
+
+
 @app.get("/openvas/credentials", response_model=list[GvmCredentialOut])
-async def list_openvas_credentials(claims: dict = Depends(get_current_claims)):
+async def list_openvas_credentials(
+    claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db),
+):
     socket_path, user, password = _require_gvm_credentials()
     ok, creds, err = await gvm_manage.list_credentials(socket_path, user, password)
     if not ok:
         raise HTTPException(status_code=502, detail=f"no se pudieron listar las credenciales: {err}")
+    creds = await services.filter_gvm_resources_by_org(db, "credential", creds, org_id_from_claims(claims))
     return [
         GvmCredentialOut(id=c["id"], name=c["name"], login=c.get("login", ""), credential_type=c.get("type", ""))
         for c in creds
@@ -417,6 +434,7 @@ async def create_openvas_credential(
     # pudo crear la credencial" en el dashboard) justo al crear
     # credenciales de escaneo autenticado.
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
 ):
     socket_path, user, password = _require_gvm_credentials()
     ok, credential_id, err = await gvm_manage.create_credential(
@@ -424,6 +442,8 @@ async def create_openvas_credential(
     )
     if not ok:
         raise HTTPException(status_code=502, detail=f"no se pudo crear la credencial: {err}")
+    await services.record_gvm_resource_ownership(db, org_id_from_claims(claims), "credential", credential_id)
+    await db.commit()
     logger.info("credencial GVM creada", extra={"actor": claims.get("sub"), "credential_id": credential_id})
     return GvmCredentialOut(id=credential_id, name=payload.name, login=payload.login, credential_type="up")
 
@@ -432,27 +452,35 @@ async def create_openvas_credential(
 async def delete_openvas_credential(
     credential_id: str,
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
 ):
+    if await services.resolve_gvm_resource_org(db, "credential", credential_id) != org_id_from_claims(claims):
+        raise HTTPException(status_code=404, detail="Credencial no encontrada")
     socket_path, user, password = _require_gvm_credentials()
     ok, err = await gvm_manage.delete_credential(socket_path, user, password, credential_id)
     if not ok:
         raise HTTPException(status_code=502, detail=f"no se pudo borrar la credencial: {err}")
+    await services.forget_gvm_resource_ownership(db, "credential", credential_id)
+    await db.commit()
     logger.info("credencial GVM borrada", extra={"actor": claims.get("sub"), "credential_id": credential_id})
 
 
 @app.get("/openvas/targets", response_model=list[GvmTargetOut])
-async def list_openvas_targets(claims: dict = Depends(get_current_claims)):
+async def list_openvas_targets(
+    claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db),
+):
     socket_path, user, password = _require_gvm_credentials()
     ok, targets, err = await gvm_manage.list_targets(socket_path, user, password)
     if not ok:
         raise HTTPException(status_code=502, detail=f"no se pudieron listar los targets: {err}")
-    return targets
+    return await services.filter_gvm_resources_by_org(db, "target", targets, org_id_from_claims(claims))
 
 
 @app.post("/openvas/targets", response_model=GvmTargetOut, status_code=status.HTTP_201_CREATED)
 async def create_openvas_target(
     payload: GvmTargetCreate,
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
 ):
     socket_path, user, password = _require_gvm_credentials()
     ok, target_id, err = await gvm_manage.create_target(
@@ -461,6 +489,8 @@ async def create_openvas_target(
     )
     if not ok:
         raise HTTPException(status_code=502, detail=f"no se pudo crear el target: {err}")
+    await services.record_gvm_resource_ownership(db, org_id_from_claims(claims), "target", target_id)
+    await db.commit()
     logger.info("target GVM creado", extra={"actor": claims.get("sub"), "target_id": target_id})
     return GvmTargetOut(
         id=target_id, name=payload.name, hosts=payload.hosts, port_list_id=payload.port_list_id,
@@ -472,21 +502,35 @@ async def create_openvas_target(
 async def delete_openvas_target(
     target_id: str,
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
 ):
+    if await services.resolve_gvm_resource_org(db, "target", target_id) != org_id_from_claims(claims):
+        raise HTTPException(status_code=404, detail="Target no encontrado")
     socket_path, user, password = _require_gvm_credentials()
     ok, err = await gvm_manage.delete_target(socket_path, user, password, target_id)
     if not ok:
         raise HTTPException(status_code=502, detail=f"no se pudo borrar el target: {err}")
+    await services.forget_gvm_resource_ownership(db, "target", target_id)
+    await db.commit()
     logger.info("target GVM borrado", extra={"actor": claims.get("sub"), "target_id": target_id})
 
 
 @app.get("/openvas/tasks", response_model=list[GvmTaskOut])
-async def list_openvas_tasks(claims: dict = Depends(get_current_claims)):
+async def list_openvas_tasks(
+    claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db),
+):
     socket_path, user, password = _require_gvm_credentials()
     ok, tasks, err = await gvm_manage.list_tasks(socket_path, user, password)
     if not ok:
         raise HTTPException(status_code=502, detail=f"no se pudieron listar los analisis: {err}")
-    return tasks
+    # Organizacion de un task GVM = la del ScanJob que lo creo (ver
+    # services.gvm_task_org_map); uno sin ScanJob asociado conocido
+    # (creado antes de este fix, o a mano con gvm-cli) cae a
+    # DEFAULT_ORGANIZATION_ID, mismo criterio de backfill que el resto del
+    # servicio.
+    org_map = await services.gvm_task_org_map(db)
+    organization_id = org_id_from_claims(claims)
+    return [t for t in tasks if org_map.get(t["id"], DEFAULT_ORGANIZATION_ID) == organization_id]
 
 
 @app.delete("/openvas/tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -496,7 +540,10 @@ async def delete_openvas_task(
     # pedido explicito del usuario de poder borrar analisis/reportes uno
     # por uno desde "Analisis y reportes".
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
 ):
+    if await services.resolve_gvm_task_org(db, task_id) != org_id_from_claims(claims):
+        raise HTTPException(status_code=404, detail="Analisis no encontrado")
     socket_path, user, password = _require_gvm_credentials()
     ok, err = await gvm_manage.delete_task(socket_path, user, password, task_id)
     if not ok:
@@ -504,12 +551,32 @@ async def delete_openvas_task(
     logger.info("task GVM borrado", extra={"actor": claims.get("sub"), "task_id": task_id})
 
 
+async def _require_own_org_report(db: AsyncSession, socket_path: str, user: str, password: str, report_id: str, organization_id: str) -> None:
+    """Un report_id no es un task_id -- hay que encontrar, entre los tasks
+    de gvmd, cual tiene este report como last_report_id, y validar la
+    organizacion de ESE task (ver services.resolve_gvm_task_org). Si
+    ningun task conocido tiene este report (ya borrado, o nunca existio),
+    se deja pasar el 404/502 real que va a devolver gvm_manage despues --
+    no hay nada que validar."""
+    ok, tasks, _err = await gvm_manage.list_tasks(socket_path, user, password)
+    if not ok:
+        return
+    task = next((t for t in tasks if t.get("last_report_id") == report_id), None)
+    if task is None:
+        return
+    if await services.resolve_gvm_task_org(db, task["id"]) != organization_id:
+        raise HTTPException(status_code=404, detail="Reporte no encontrado")
+
+
 @app.get("/openvas/reports/{report_id}")
-async def get_openvas_report(report_id: str, claims: dict = Depends(get_current_claims)):
+async def get_openvas_report(
+    report_id: str, claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db),
+):
     """Reporte NATIVO completo de gvmd (todos los hosts/resultados/metadata
     de la corrida) -- para "ver el reporte completo" en el dashboard, a
     diferencia de los findings ya resumidos que guarda cada ScanJob."""
     socket_path, user, password = _require_gvm_credentials()
+    await _require_own_org_report(db, socket_path, user, password, report_id, org_id_from_claims(claims))
     ok, raw_xml, err = await gvm_manage.get_report_xml(socket_path, user, password, report_id)
     if not ok:
         raise HTTPException(status_code=502, detail=f"no se pudo obtener el reporte: {err}")
@@ -521,8 +588,10 @@ async def export_openvas_report(
     report_id: str,
     format: str = "pdf",
     claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
 ):
     socket_path, user, password = _require_gvm_credentials()
+    await _require_own_org_report(db, socket_path, user, password, report_id, org_id_from_claims(claims))
     ok, content, filename, err = await gvm_manage.export_report(socket_path, user, password, report_id, format)
     if not ok:
         raise HTTPException(status_code=502, detail=f"no se pudo exportar el reporte: {err}")
