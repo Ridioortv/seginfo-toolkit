@@ -5,7 +5,6 @@ const NAV_ITEMS = [
   { to: "/", label: "Dashboard" },
   { to: "/assets", label: "Activos" },
   { to: "/scans", label: "Escaneos" },
-  { to: "/openvas", label: "OpenVAS avanzado" },
   { to: "/vulnerabilities", label: "Vulnerabilidades" },
   { to: "/siem", label: "SIEM" },
   { to: "/soar", label: "SOAR" },

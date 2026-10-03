@@ -337,9 +337,9 @@ body {
 .badge-success { background: rgba(51, 209, 122, 0.15); color: var(--success); }
 .badge-neutral { background: rgba(139, 152, 169, 0.15); color: var(--text-secondary); }
 
-/* Barra de progreso indeterminada para escaneos en curso (nmap/trivy/
-   nuclei/openvas, locales o via agente) -- no hay % real, asi que es un
-   bloque que se desliza para mostrar "esta corriendo" vs "se colgo". */
+/* Barra de progreso indeterminada para escaneos en curso (trivy/nuclei,
+   locales o via agente) -- no hay % real, asi que es un bloque que se
+   desliza para mostrar "esta corriendo" vs "se colgo". */
 .progress-wrap { margin-top: 4px; max-width: 220px; }
 
 .progress-track {

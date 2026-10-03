@@ -18,10 +18,10 @@ function formatElapsed(ms: number): string {
 
 // Barra de progreso indeterminada (no hay % real posible: ni el agente ni
 // los scanners externos reportan avance parcial) para escaneos que
-// todavia estan en curso (nmap/trivy/nuclei/openvas, locales o via
-// agente). Sirve para distinguir "esta corriendo" de "se colgo" a simple
-// vista, y el tiempo transcurrido (que tiquea solo, independiente del
-// refetch de la tabla) confirma que la pagina sigue viva.
+// todavia estan en curso (trivy/nuclei, locales o via agente). Sirve
+// para distinguir "esta corriendo" de "se colgo" a simple vista, y el
+// tiempo transcurrido (que tiquea solo, independiente del refetch de la
+// tabla) confirma que la pagina sigue viva.
 export function RunningIndicator({ since, label }: { since: string | null; label?: string }) {
   const [now, setNow] = useState(() => Date.now());
 

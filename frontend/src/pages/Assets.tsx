@@ -75,7 +75,7 @@ export default function Assets() {
       return (
         await scanApi.post<ScanJobOut>("/scans", {
           name: `Escaneo de ${asset.hostname || asset.ip_address}`,
-          scanner_type: "nmap",
+          scanner_type: "nuclei",
           target,
           asset_id: asset.id,
           options: { network_scope: "custom" },

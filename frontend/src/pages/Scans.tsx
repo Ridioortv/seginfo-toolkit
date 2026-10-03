@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { scanApi, vulnApi } from "../services/api";
@@ -9,9 +9,6 @@ import type {
   ScanAgentCreated,
   AgentScanJobOut,
   VulnerabilityOut,
-  OpenvasStatusOut,
-  OpenvasProgressOut,
-  OpenvasAutoActivateRequest,
 } from "../types";
 import PageHeader from "../components/PageHeader";
 import { SeverityBadge, StatusBadge } from "../components/Badge";
@@ -28,21 +25,7 @@ function scheduleWhen(s: ScanScheduleOut): string {
   return `Todos los dias a las ${time}`;
 }
 
-// Password GVM lista para copiar/usar sin escribir nada (ver panel "Activar
-// OpenVAS" -- opcion "con contraseña elegida"). Mismo formato que
-// secrets.token_urlsafe del orquestador (base64url sin padding).
-function generateGvmPassword(): string {
-  const bytes = new Uint8Array(18);
-  crypto.getRandomValues(bytes);
-  let binary = "";
-  bytes.forEach((b) => {
-    binary += String.fromCharCode(b);
-  });
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-type ScannerType = "nmap" | "trivy" | "nuclei" | "openvas";
-type NmapMode = "fast" | "full";
+type ScannerType = "trivy" | "nuclei";
 type NetworkScope = "lan" | "man" | "wan" | "custom";
 
 const SCOPE_LABELS: Record<NetworkScope, string> = {
@@ -71,13 +54,13 @@ function packageLine(v: VulnerabilityOut): string | null {
 // Misma idea que _is_private_ip_target en remote-agent/agent.py (y el
 // chequeo AGENT_BEHIND_DOCKER_NAT que lo usa): un agente que corre DENTRO
 // de Docker Desktop (tipicamente "Agente Docker") no puede llegar con
-// nuclei/trivy/openvas a una IP de LAN (nmap si tiene un fallback propio).
-// Esto NO bloquea el envio -- el agente ya rechaza ese job al toque con un
-// mensaje claro -- es solo un aviso ANTES de lanzar, para no tener que
-// esperar el poll del agente y leer el error recien ahi. Deteccion simple
-// (RFC1918 + loopback + link-local), solo IPv4 literal: un hostname (ej.
-// intranet.miempresa.local) se deja pasar sin avisar, igual que del lado
-// del agente.
+// nuclei/trivy a una IP de LAN -- ninguno de los 2 tiene forma de
+// atravesar su NAT. Esto NO bloquea el envio -- el agente ya rechaza ese
+// job al toque con un mensaje claro -- es solo un aviso ANTES de lanzar,
+// para no tener que esperar el poll del agente y leer el error recien
+// ahi. Deteccion simple (RFC1918 + loopback + link-local), solo IPv4
+// literal: un hostname (ej. intranet.miempresa.local) se deja pasar sin
+// avisar, igual que del lado del agente.
 function isLikelyPrivateIpTarget(target: string): boolean {
   const host = target.trim().split("/")[0];
   const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
@@ -183,8 +166,6 @@ function ScanResultsPanel({
 export default function Scans() {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
-  const [quickScannerType, setQuickScannerType] = useState<ScannerType>("nmap");
-  const [nmapMode, setNmapMode] = useState<NmapMode>("full");
   const [targetsText, setTargetsText] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<{ ok: number; failed: number } | null>(null);
@@ -192,7 +173,7 @@ export default function Scans() {
   const [uploadName, setUploadName] = useState("");
 
   const [schedName, setSchedName] = useState("");
-  const [schedScannerType, setSchedScannerType] = useState<ScannerType>("nmap");
+  const [schedScannerType, setSchedScannerType] = useState<ScannerType>("nuclei");
   const [schedTarget, setSchedTarget] = useState("");
   const [schedFrequency, setSchedFrequency] = useState<"daily" | "weekly">("daily");
   const [schedDayOfWeek, setSchedDayOfWeek] = useState(0);
@@ -207,45 +188,12 @@ export default function Scans() {
   const [agentName, setAgentName] = useState("");
   const [justCreatedKey, setJustCreatedKey] = useState<{ agentName: string; apiKey: string } | null>(null);
   const [agentJobAgentId, setAgentJobAgentId] = useState("");
-  const [agentJobScannerType, setAgentJobScannerType] = useState<ScannerType>("nmap");
+  const [agentJobScannerType, setAgentJobScannerType] = useState<ScannerType>("nuclei");
   const [agentJobName, setAgentJobName] = useState("");
   const [agentJobTarget, setAgentJobTarget] = useState("");
   // Api key del agente elegido: se pide al lanzar (ademas del login) y el
   // backend la valida contra ese agente antes de crear el job.
   const [agentJobApiKey, setAgentJobApiKey] = useState("");
-
-  // Panel de activacion de OpenVAS (ver GET/POST /openvas/*) -- pide
-  // usuario/contraseña/socket de GVM y prueba la conexion antes de darlo
-  // por activo.
-  const [openvasPanelOpen, setOpenvasPanelOpen] = useState(false);
-  const [ovUser, setOvUser] = useState("admin");
-  const [ovPassword, setOvPassword] = useState("");
-  const [ovSocket, setOvSocket] = useState("");
-  // Activacion automatica de OpenVAS (boton "Probar y activar" -> POST
-  // /openvas/auto-activate, ver mas abajo). autoActivating controla el
-  // polling de progreso; autoActivateResult guarda las credenciales a
-  // mostrar una vez listo (se limpia solo al cerrar el panel).
-  const [autoActivating, setAutoActivating] = useState(false);
-  // Que boton disparo la activacion en curso ("direct" = "Arrancar
-  // OpenVAS", "custom" = "Probar y activar" con contraseña elegida) --
-  // asi la barra de progreso aparece dentro de ESE mismo cuadro, no en uno
-  // generico separado.
-  const [autoActivateResult, setAutoActivateResult] = useState<{ gvm_user: string; gvm_password: string } | null>(
-    null,
-  );
-  // Nombre del campo copiado hace poco (para el "Copiado!" transitorio de
-  // los botones "Copiar" de usuario/contraseña GVM).
-  const [copiedField, setCopiedField] = useState<string | null>(null);
-  const copyToClipboard = async (text: string, field: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedField(field);
-      setTimeout(() => setCopiedField((f) => (f === field ? null : f)), 1500);
-    } catch {
-      // Sin permiso/soporte de clipboard -- no rompas la UI por esto, el
-      // valor sigue visible y seleccionable a mano (userSelect: "all").
-    }
-  };
 
   // Errores de acciones sobre filas ya existentes (togglear/borrar) --
   // separado de formError/createX.isError, que son solo para los
@@ -325,153 +273,6 @@ export default function Scans() {
     queryFn: async () => (await scanApi.get<AgentScanJobOut[]>("/agent-scans")).data,
     refetchInterval: 10_000, // los jobs de agente avanzan por polling del lado del agente, no en el momento
   });
-
-  // Estado real de OpenVAS: a diferencia de /scanners/status (que solo
-  // mira si gvm-cli esta instalado), esto prueba la conexion GMP con las
-  // credenciales actuales. Poll cada 15s para que aparezca solo como
-  // opcion en "Escaneos remotos" apenas se activa (o se caiga si el
-  // stack GVM se apaga), sin tener que recargar la pagina.
-  const openvasStatus = useQuery({
-    queryKey: ["openvas-status"],
-    queryFn: async () => (await scanApi.get<OpenvasStatusOut>("/openvas/status")).data,
-    refetchInterval: 15_000,
-    retry: false,
-  });
-  const openvasReady = openvasStatus.data?.ready ?? false;
-
-  const activateOpenvas = useMutation({
-    mutationFn: async () =>
-      (
-        await scanApi.post<OpenvasStatusOut>("/openvas/activate", {
-          gvm_user: ovUser,
-          gvm_password: ovPassword,
-          gvm_socket_path: ovSocket,
-        })
-      ).data,
-    onSuccess: (data) => {
-      queryClient.setQueryData(["openvas-status"], data);
-      if (data.ready) {
-        setOpenvasPanelOpen(false);
-        setOvPassword("");
-      }
-    },
-  });
-
-  // Levanta OpenVAS de punta a punta (contenedores + feeds + usuario GVM)
-  // via el sidecar openvas-orchestrator, sin que el operador toque
-  // PowerShell -- ver POST /openvas/auto-activate en main.py.
-  // Acepta overrides opcionales para el boton "Arrancar OpenVAS" (que
-  // siempre manda admin + password vacio para que la genere el
-  // orquestador, sin importar lo que haya en los campos de "con
-  // contraseña elegida"); sin overrides, usa los campos tal cual estan.
-  const autoActivateOpenvas = useMutation({
-    mutationFn: async (overrides?: Partial<OpenvasAutoActivateRequest>) =>
-      (
-        await scanApi.post<OpenvasProgressOut>("/openvas/auto-activate", {
-          gvm_user: ovUser.trim() || "admin",
-          gvm_password: ovPassword,
-          gvm_socket_path: ovSocket,
-          ...overrides,
-        })
-      ).data,
-    onSuccess: (data) => {
-      setAutoActivateResult(null);
-      setAutoActivating(true);
-      queryClient.setQueryData(["openvas-progress"], data);
-    },
-  });
-
-  // Polling del progreso de la activacion automatica -- ver GET
-  // /openvas/auto-activate/progress. Habilitado tambien cuando el panel
-  // esta abierto y OpenVAS todavia no esta listo (no solo cuando
-  // "autoActivating" es true localmente): el estado real vive del lado
-  // del orquestador, asi que si el usuario recargo la pagina o volvio
-  // despues de un rato mientras una activacion seguia en curso, esto la
-  // "resucita" en vez de mostrar el boton como si nada estuviera pasando.
-  const openvasProgress = useQuery({
-    queryKey: ["openvas-progress"],
-    queryFn: async () => (await scanApi.get<OpenvasProgressOut>("/openvas/auto-activate/progress")).data,
-    enabled: autoActivating || (openvasPanelOpen && !openvasReady),
-    refetchInterval: 3000,
-    retry: false,
-  });
-
-  useEffect(() => {
-    const data = openvasProgress.data;
-    if (!data) return;
-    if (data.ready) {
-      setAutoActivating(false);
-      setAutoActivateResult({ gvm_user: data.gvm_user ?? ovUser, gvm_password: data.gvm_password ?? "" });
-      queryClient.setQueryData(["openvas-status"], { configured: true, ready: true, detail: data.detail });
-    } else if (data.error) {
-      setAutoActivating(false);
-    } else if (data.running) {
-      // Una activacion sigue en curso del lado del orquestador (la haya
-      // arrancado esta pestaña o no) -- reflejarlo aca para que la barra
-      // de progreso aparezca sola en vez de mostrar el boton de arranque
-      // como si no estuviera pasando nada.
-      setAutoActivating(true);
-    } else {
-      setAutoActivating(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openvasProgress.data]);
-
-  // Al abrir el panel, precarga una contraseña GVM lista para copiar/usar
-  // en la opcion "con contraseña elegida" -- asi el campo nunca aparece
-  // vacio pidiendo que se le tipee algo (ver generateGvmPassword arriba).
-  useEffect(() => {
-    if (openvasPanelOpen && !openvasReady && !autoActivating && !autoActivateResult && !ovPassword) {
-      setOvPassword(generateGvmPassword());
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openvasPanelOpen]);
-
-  // Barra de progreso con porcentaje, reutilizada dentro del cuadro de
-  // CUALQUIERA de las dos opciones de activacion (ver mas abajo) -- asi el
-  // usuario ve de entrada que algo esta pasando, incluso en el instante
-  // entre el click y que responda el orquestador (fase "Conectando...").
-  const openvasProgressBar = () => {
-    const pending = autoActivateOpenvas.isPending && !autoActivating;
-    const percent = openvasProgress.data?.percent ?? (pending ? 1 : 3);
-    const detail = openvasProgress.data?.detail || (pending ? "Conectando con el orquestador de OpenVAS..." : "Iniciando...");
-    return (
-      <>
-        <div
-          style={{
-            background: "var(--bg-2, #eee)",
-            borderRadius: 6,
-            overflow: "hidden",
-            height: 18,
-            marginTop: 8,
-          }}
-        >
-          <div
-            style={{
-              width: `${Math.min(100, Math.max(3, percent))}%`,
-              background: "var(--accent, #2f7dd9)",
-              height: "100%",
-              transition: "width 0.4s ease",
-            }}
-          />
-        </div>
-        <p className="empty-hint" style={{ marginTop: 6 }}>
-          {percent}% -- {detail}
-        </p>
-        {autoActivating && (
-          <p className="empty-hint">
-            Podes navegar a otra pantalla, sigue corriendo solo en el servidor.
-          </p>
-        )}
-        {openvasProgress.isError && (
-          <p className="error-text">
-            No se pudo consultar el progreso.{" "}
-            <span className="error-detail">{connectionErrorDetail(openvasProgress.error)}</span>
-          </p>
-        )}
-      </>
-    );
-  };
 
   const createAgent = useMutation({
     mutationFn: async () => (await scanApi.post<ScanAgentCreated>("/agents", { name: agentName })).data,
@@ -588,20 +389,17 @@ export default function Scans() {
       if (targets.length === 0) {
         throw new Error("Ingresa al menos una IP, rango CIDR o hostname.");
       }
-      const isOpenvas = quickScannerType === "openvas";
       const results = await Promise.allSettled(
         targets.map((target) =>
           scanApi.post("/scans", {
-            name: name || (isOpenvas ? "Escaneo OpenVAS" : "Escaneo WAN (nmap)"),
-            scanner_type: quickScannerType,
+            name: name || "Escaneo WAN (nuclei)",
+            scanner_type: "nuclei",
             target,
-            // Sin agente, options.network_scope/mode solo los usa el driver
-            // de nmap (ver app/scanners/nmap.py) -- openvas los ignora: su
-            // propio default (alive_tests="Consider Alive", ver
-            // app/scanners/openvas.py::_build_create_target_xml) es lo que
-            // permite que este panel tambien alcance la LAN real para ese
-            // scanner, a diferencia de nmap aca (que sigue siendo solo WAN).
-            options: isOpenvas ? {} : { network_scope: "wan", mode: nmapMode },
+            // Sin agente, este panel solo alcanza WAN/internet -- el
+            // aislamiento de red de Docker Desktop no deja que nuclei
+            // llegue a la LAN real desde scan-service (ver "Escaneos
+            // remotos" mas abajo, con un agente, para LAN).
+            options: { network_scope: "wan" },
           })
         )
       );
@@ -626,68 +424,30 @@ export default function Scans() {
     <div>
       <PageHeader
         title="Escaneos"
-        subtitle="Orquestacion de escaneres defensivos (Nmap/Trivy/Nuclei/OpenVAS) -- deteccion, nunca explotacion"
+        subtitle="Orquestacion de escaneres defensivos (Trivy/Nuclei) -- deteccion, nunca explotacion"
       />
 
       <div className="panel">
         <h2>Nuevo escaneo</h2>
         <p className="empty-hint">
-          {quickScannerType === "openvas" ? (
-            <>
-              OpenVAS corre DENTRO del contenedor de scan-service, igual que un escaneo sin agente de "Escaneos
-              programados" -- a diferencia de nmap (abajo), que por el aislamiento de red de Docker Desktop solo
-              alcanza WAN/internet desde aca, OpenVAS tambien puede llegar a tu LAN real (192.168.x.x, etc.): no
-              depende de ping/ARP para decidir si un host esta vivo, asi que esa parte del aislamiento de Docker no
-              lo bloquea. Un escaneo por linea de destino.
-            </>
-          ) : (
-            <>
-              Nmap contra internet (WAN) -- la unica combinacion de este panel que corre de forma confiable desde
-              dentro de Docker, sin que la NAT del contenedor la bloquee. Un escaneo por linea de destino: IP
-              suelta, rango CIDR (ej. 203.0.113.0/24) o hostname/dominio publico. Para tu red local (LAN) con nmap
-              usa <strong>"Escaneos remotos"</strong> mas abajo, con un agente.
-            </>
-          )}
+          Nuclei (deteccion por plantillas) contra internet (WAN) -- la unica combinacion de este panel que corre
+          de forma confiable desde dentro de Docker, sin que la NAT del contenedor la bloquee. Un escaneo por
+          linea de destino: IP suelta, hostname o dominio publico (URL). Para tu red local (LAN) usa{" "}
+          <strong>"Escaneos remotos"</strong> mas abajo, con un agente.
         </p>
 
         <div className="inline-form">
           <input placeholder="Nombre (opcional)" value={name} onChange={(e) => setName(e.target.value)} />
-          <select
-            value={quickScannerType}
-            onChange={(e) => setQuickScannerType(e.target.value as ScannerType)}
-            title="openvas corre contra LAN e internet; nmap en este panel solo contra WAN/internet (ver 'Escaneos remotos' para nmap de LAN)."
-          >
-            <option value="nmap">nmap</option>
-            {openvasReady && <option value="openvas">openvas (activo)</option>}
-          </select>
-          {quickScannerType === "nmap" && (
-            <select
-              value={nmapMode}
-              onChange={(e) => setNmapMode(e.target.value as NmapMode)}
-              title="Rapido: sin scripts NSE, top-100 puertos, mas veloz. Completo: deteccion de version + scripts NSE seguros, mas lento y mas exhaustivo."
-            >
-              <option value="fast">nmap rapido (top-100 puertos, sin scripts, mas veloz)</option>
-              <option value="full">nmap completo (deteccion + scripts seguros, mas lento)</option>
-            </select>
-          )}
         </div>
 
         <textarea
           className="targets-textarea"
-          placeholder={
-            quickScannerType === "openvas" ? "192.168.0.143\n203.0.113.10\nmiweb.com" : "203.0.113.10\nvpn.tuempresa.com\nmiweb.com"
-          }
+          placeholder={"203.0.113.10\nvpn.tuempresa.com\nmiweb.com"}
           value={targetsText}
           onChange={(e) => setTargetsText(e.target.value)}
           rows={4}
           style={{ width: "100%", marginTop: 8, fontFamily: "monospace" }}
         />
-        {quickScannerType === "openvas" && (
-          <p className="empty-hint" style={{ marginTop: 4 }}>
-            OpenVAS es mucho mas lento que nmap (minutos, no segundos) -- el resultado aparece mas abajo en
-            "Escaneos realizados" cuando termine.
-          </p>
-        )}
 
         <div style={{ marginTop: 10 }}>
           <button
@@ -770,15 +530,12 @@ export default function Scans() {
             <div className="panel" style={{ marginTop: 8, marginBottom: 8 }}>
               <h3 style={{ marginTop: 0 }}>Quien ejecuta el escaneo</h3>
               <p className="empty-hint">
-                Sin agente, la regla corre DENTRO del contenedor de scan-service: nmap y nuclei siempre (trivy no
-                escanea IPs/hosts, usa el panel de arriba) y openvas tambien si ya lo activaste (ver "Escaneos
-                remotos" mas abajo) -- por el aislamiento de red de Docker Desktop, sin agente nmap/nuclei solo
-                alcanzan WAN/internet, nunca tu LAN real; openvas es la excepcion (no depende de ping/ARP para
-                decidir si un host esta vivo), asi que SI puede llegar a tu LAN tambien sin agente. Para nmap/nuclei
-                contra tu red real elegi{" "}
-                <strong>Agente LAN</strong> o <strong>Agente Docker</strong> para que lo ejecute el propio host
-                Docker (internet/host, misma visibilidad que corriendo sin agente). La api key de estos dos se carga
-                sola -- no hace falta pegarla. Para un agente registrado a mano hay que pegar su api key aca.
+                Sin agente, la regla corre DENTRO del contenedor de scan-service: nuclei siempre (trivy no escanea
+                IPs/hosts, usa el panel de arriba para imagenes/paquetes) -- por el aislamiento de red de Docker
+                Desktop, sin agente nuclei solo alcanza WAN/internet, nunca tu LAN real. Para nuclei contra tu red
+                real elegi <strong>Agente LAN</strong> (visibilidad real de LAN) o <strong>Agente Docker</strong>{" "}
+                (misma visibilidad que corriendo sin agente: internet/host). La api key de estos dos se carga sola
+                -- no hace falta pegarla. Para un agente registrado a mano hay que pegar su api key aca.
               </p>
               <div className="inline-form">
                 <select
@@ -787,10 +544,6 @@ export default function Scans() {
                     const id = e.target.value;
                     setSchedAgentId(id);
                     if (!id) {
-                      // openvas sigue siendo una opcion valida sin agente
-                      // (corre con el gvmd del propio scan-service, ver el
-                      // <select> de scanner mas abajo) -- solo limpiamos la
-                      // api key, que ya no aplica.
                       setSchedAgentApiKey("");
                       return;
                     }
@@ -831,9 +584,8 @@ export default function Scans() {
         <div className="inline-form">
           <input placeholder="Nombre" value={schedName} onChange={(e) => setSchedName(e.target.value)} />
           <select value={schedScannerType} onChange={(e) => setSchedScannerType(e.target.value as ScannerType)}>
-            <option value="nmap">nmap</option>
             <option value="nuclei">nuclei</option>
-            {openvasReady && <option value="openvas">openvas (activo)</option>}
+            <option value="trivy">trivy</option>
           </select>
           <input
             className="mono"
@@ -1062,226 +814,12 @@ export default function Scans() {
       <div className="panel">
         <h2>Escaneos remotos</h2>
         <p className="empty-hint">
-          Elegi el scanner ({openvasReady ? "nmap / nuclei / openvas" : "nmap / nuclei"}), el agente y el target.
-          El agente elegido se lleva el job en su siguiente polling y manda el resultado solo -- puede tardar unos
-          segundos segun su intervalo de polling. Cada scanner necesita su binario instalado en la maquina del
-          agente; si falta, el job vuelve con un error claro. Para lanzar tenes que pegar la api key del agente (la
-          que te mostro al registrarlo): se valida contra ese agente antes de crear el escaneo.
+          Elegi el scanner (nuclei / trivy), el agente y el target. El agente elegido se lleva el job en su
+          siguiente polling y manda el resultado solo -- puede tardar unos segundos segun su intervalo de
+          polling. Cada scanner necesita su binario instalado en la maquina del agente; si falta, el job vuelve
+          con un error claro. Para lanzar tenes que pegar la api key del agente (la que te mostro al
+          registrarlo): se valida contra ese agente antes de crear el escaneo.
         </p>
-
-        <div className="inline-form" style={{ marginBottom: 10 }}>
-          {openvasReady && !autoActivateResult ? (
-            <>
-              <span className="empty-hint" style={{ color: "var(--success, #2f9e44)" }}>
-                OpenVAS esta activo y disponible como scanner remoto.
-              </span>
-              <Link to="/openvas" className="btn-secondary">Administrar credenciales/targets/reportes</Link>
-            </>
-          ) : (
-            <button type="button" className="btn-secondary" onClick={() => setOpenvasPanelOpen((v) => !v)}>
-              {openvasPanelOpen ? "Cerrar" : "Activar OpenVAS"}
-            </button>
-          )}
-        </div>
-
-        {openvasPanelOpen && (!openvasReady || autoActivateResult) && (
-          <div className="panel" style={{ marginBottom: 10, border: "1px solid #d9a900" }}>
-            <h3 style={{ marginTop: 0 }}>Activar OpenVAS</h3>
-
-            {autoActivateResult ? (
-              <>
-                <p className="empty-hint" style={{ color: "var(--success, #2f9e44)" }}>
-                  OpenVAS quedo activo y listo para usarse.
-                </p>
-                <div
-                  className="panel"
-                  style={{ background: "var(--bg-2, #f6f6f6)", padding: 10, marginBottom: 8 }}
-                >
-                  <div className="inline-form" style={{ alignItems: "center" }}>
-                    <span className="empty-hint">Usuario GVM:</span>
-                    <code className="mono" style={{ userSelect: "all" }}>
-                      {autoActivateResult.gvm_user}
-                    </code>
-                    <button
-                      type="button"
-                      className="btn-secondary"
-                      onClick={() => copyToClipboard(autoActivateResult.gvm_user, "result-user")}
-                    >
-                      {copiedField === "result-user" ? "Copiado!" : "Copiar"}
-                    </button>
-                  </div>
-                  {autoActivateResult.gvm_password && (
-                    <div className="inline-form" style={{ alignItems: "center", marginTop: 6 }}>
-                      <span className="empty-hint">Contraseña GVM:</span>
-                      <code className="mono" style={{ userSelect: "all" }}>
-                        {autoActivateResult.gvm_password}
-                      </code>
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={() => copyToClipboard(autoActivateResult.gvm_password, "result-password")}
-                      >
-                        {copiedField === "result-password" ? "Copiado!" : "Copiar"}
-                      </button>
-                    </div>
-                  )}
-                </div>
-                <p className="empty-hint">
-                  Guardala si la necesitas despues -- ya quedo escrita en .env, asi que sobrevive un reinicio del
-                  stack.
-                </p>
-                {/* Auto-apertura: apenas termina la activacion, se ofrece el link a la
-                    administracion avanzada (credenciales/targets/reportes) en vez de que el
-                    usuario tenga que encontrarla sola por el menu. */}
-                <Link to="/openvas" className="btn-primary" style={{ marginRight: 8 }}>
-                  Ir a administracion avanzada de OpenVAS
-                </Link>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={() => {
-                    setAutoActivateResult(null);
-                    setOpenvasPanelOpen(false);
-                    setOvPassword("");
-                  }}
-                >
-                  Cerrar
-                </button>
-              </>
-            ) : (
-              <>
-                <p className="empty-hint">
-                  OpenVAS es el escaner mas pesado (~16 contenedores extra, varios GB de feeds) y por eso arranca
-                  apagado. Un solo boton levanta todo solo (contenedores, sincronizacion de feeds y usuario GVM) --
-                  la contraseña la genera el sistema y se muestra aca apenas termine. La primera vez puede tardar
-                  20-40 minutos por la sincronizacion de feeds; podes cerrar este panel o irte a otra pantalla
-                  mientras tanto, que esta pantalla sigue consultando sola el progreso -- volve a abrir este panel
-                  cuando quieras ver si ya esta listo (una vez que lo este, aparece arriba como scanner disponible en
-                  "Escaneos programados" y "Escaneos remotos", mas abajo).
-                </p>
-
-                {autoActivateOpenvas.isPending || autoActivating ? (
-                  openvasProgressBar()
-                ) : (
-                  <button
-                    className="btn-primary"
-                    style={{ width: "auto" }}
-                    onClick={() => autoActivateOpenvas.mutate({ gvm_user: "admin", gvm_password: "", gvm_socket_path: "" })}
-                    disabled={autoActivateOpenvas.isPending}
-                  >
-                    Activar OpenVAS
-                  </button>
-                )}
-
-                {autoActivateOpenvas.isError && (
-                  <p className="error-text">
-                    No se pudo iniciar la activacion de OpenVAS.{" "}
-                    <span className="error-detail">{connectionErrorDetail(autoActivateOpenvas.error)}</span>
-                  </p>
-                )}
-
-                {!autoActivating && !autoActivateOpenvas.isPending && <details style={{ marginTop: 12 }}>
-                  <summary className="empty-hint" style={{ cursor: "pointer" }}>
-                    Opciones avanzadas (usuario/contraseña propios, o activar a mano)
-                  </summary>
-                  <div style={{ marginTop: 8 }}>
-                    <p className="empty-hint">
-                      Usuario y contraseña ya vienen cargados solos (los podes copiar o cambiar si queres algo
-                      especifico) -- con un click arranca OpenVAS usando estos mismos, en vez de que el sistema
-                      genere una contraseña sola.
-                    </p>
-                    <div className="inline-form" style={{ marginTop: 8, alignItems: "center" }}>
-                      <input
-                        placeholder="Usuario GVM"
-                        value={ovUser}
-                        onChange={(e) => setOvUser(e.target.value)}
-                      />
-                      <input
-                        className="mono"
-                        placeholder="Contraseña GVM"
-                        value={ovPassword}
-                        onChange={(e) => setOvPassword(e.target.value)}
-                        style={{ minWidth: 220 }}
-                      />
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={() => copyToClipboard(ovPassword, "ov-password")}
-                      >
-                        {copiedField === "ov-password" ? "Copiado!" : "Copiar"}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={() => setOvPassword(generateGvmPassword())}
-                      >
-                        Generar otra
-                      </button>
-                    </div>
-                    <div className="inline-form" style={{ marginTop: 8 }}>
-                      <input
-                        className="mono"
-                        placeholder="Socket (opcional, default /run/gvmd/gvmd.sock)"
-                        value={ovSocket}
-                        onChange={(e) => setOvSocket(e.target.value)}
-                      />
-                      <button
-                        className="btn-secondary"
-                        onClick={() => autoActivateOpenvas.mutate()}
-                        disabled={autoActivateOpenvas.isPending || !ovUser.trim() || !ovPassword.trim()}
-                      >
-                        Activar con estas credenciales
-                      </button>
-                    </div>
-
-                    <hr style={{ margin: "16px 0", border: "none", borderTop: "1px solid var(--border)" }} />
-
-                    <p className="empty-hint">Metodo manual (correr los scripts de PowerShell vos mismo):</p>
-                    <ol className="empty-hint" style={{ paddingLeft: 20 }}>
-                      <li>
-                        Abri PowerShell en la carpeta del proyecto y corre:{" "}
-                        <code className="mono" style={{ userSelect: "all" }}>
-                          powershell -ExecutionPolicy Bypass -File openvas\Encender-OpenVAS.ps1
-                        </code>
-                      </li>
-                      <li>
-                        Espera 20-40 minutos (la primera vez) a que los feeds terminen de sincronizar. Se puede
-                        chequear el progreso con <code className="mono">docker compose --profile openvas ps</code>.
-                      </li>
-                      <li>
-                        Corre <code className="mono">openvas\Configurar-OpenVAS.ps1</code> (crea el usuario GVM y
-                        muestra la contraseña generada) -- o si ya tenes usuario/contraseña de GVM, pegalos arriba y
-                        usa el boton de abajo.
-                      </li>
-                    </ol>
-                    <div className="inline-form">
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={() => activateOpenvas.mutate()}
-                        disabled={activateOpenvas.isPending || !ovUser.trim() || !ovPassword.trim()}
-                      >
-                        {activateOpenvas.isPending ? "Probando conexion..." : "Probar conexion (sin orquestador)"}
-                      </button>
-                    </div>
-                    {activateOpenvas.isError && (
-                      <p className="error-text">
-                        No se pudo activar OpenVAS.{" "}
-                        <span className="error-detail">{connectionErrorDetail(activateOpenvas.error)}</span>
-                      </p>
-                    )}
-                    <p className="empty-hint" style={{ marginTop: 8 }}>
-                      Esto prueba la conexion GMP con las credenciales de arriba y las activa en memoria, sin pasar
-                      por el orquestador ni tocar Docker. Para que quede guardado tambien despues de un reinicio,
-                      corre Configurar-OpenVAS.ps1 (escribe las credenciales en .env). Para apagar todo:{" "}
-                      <code className="mono">openvas\Apagar-OpenVAS.ps1</code>.
-                    </p>
-                  </div>
-                </details>}
-              </>
-            )}
-          </div>
-        )}
 
         {agents.data && agents.data.length === 0 && (
           <p className="empty-hint">No hay ningun agente registrado todavia (ver panel de arriba).</p>
@@ -1314,9 +852,8 @@ export default function Scans() {
             onChange={(e) => setAgentJobScannerType(e.target.value as ScannerType)}
             title="El binario del scanner elegido tiene que estar instalado en la maquina del agente."
           >
-            <option value="nmap">nmap (puertos/servicios)</option>
             <option value="nuclei">nuclei (plantillas de deteccion)</option>
-            {openvasReady && <option value="openvas">openvas (activo)</option>}
+            <option value="trivy">trivy (CVEs en imagenes/paquetes)</option>
           </select>
           <input placeholder="Nombre (opcional)" value={agentJobName} onChange={(e) => setAgentJobName(e.target.value)} />
           <input
@@ -1344,13 +881,13 @@ export default function Scans() {
         {(() => {
           const selectedJobAgent = (agents.data ?? []).find((a) => a.id === agentJobAgentId);
           const dockerAgent = selectedJobAgent?.name.toLowerCase().includes("docker") ?? false;
-          const warn = dockerAgent && agentJobScannerType !== "nmap" && isLikelyPrivateIpTarget(agentJobTarget);
+          const warn = dockerAgent && isLikelyPrivateIpTarget(agentJobTarget);
           return warn ? (
             <p className="empty-hint" style={{ color: "#d9a900" }}>
               Atencion: "{selectedJobAgent?.name}" corre DENTRO de Docker Desktop y {agentJobScannerType} no puede
-              atravesar su NAT hacia una IP de LAN como "{agentJobTarget.trim()}" (nmap si puede). El escaneo va a
-              fallar al toque -- usa el Agente LAN (remote-agent/agente-lan.ps1, corriendo en una PC con
-              visibilidad real a esa red) para este target.
+              atravesar su NAT hacia una IP de LAN como "{agentJobTarget.trim()}". El escaneo va a fallar al toque
+              -- usa el Agente LAN (remote-agent/agente-lan.ps1, corriendo en una PC con visibilidad real a esa
+              red) para este target.
             </p>
           ) : null;
         })()}

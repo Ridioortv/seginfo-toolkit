@@ -13,7 +13,6 @@ import PurpleTeam from "./pages/PurpleTeam";
 import Reports from "./pages/Reports";
 import Notifications from "./pages/Notifications";
 import Integrations from "./pages/Integrations";
-import OpenvasDashboard from "./pages/OpenvasDashboard";
 
 export default function App() {
   return (
@@ -33,7 +32,6 @@ export default function App() {
             <Route path="/reports" element={<Reports />} />
             <Route path="/notifications" element={<Notifications />} />
             <Route path="/integrations" element={<Integrations />} />
-            <Route path="/openvas" element={<OpenvasDashboard />} />
           </Route>
         </Route>
       </Routes>
