@@ -3,10 +3,11 @@
 
 Que hace
 --------
-Prueba TODO el ciclo de vida de un escaneo remoto, para los 2 scanners
-(trivy / nuclei), SIN necesidad de tener los binarios instalados ni de
-escanear nada real: simula al agente hablando con scan-service por
-HTTP, exactamente como lo hace remote-agent/agent.py.
+Prueba TODO el ciclo de vida de un escaneo remoto, para los 8 scanners
+soportados (trivy / nuclei / zap / semgrep / gitleaks / yara / zeek /
+falco), SIN necesidad de tener los binarios instalados ni de escanear
+nada real: simula al agente hablando con scan-service por HTTP,
+exactamente como lo hace remote-agent/agent.py.
 
 Verifica, para cada scanner:
   1. POST /agent-scans           -> el job se crea en estado 'pending'
@@ -49,6 +50,12 @@ AUTH_URL = os.environ.get("AUTH_SERVICE_URL", "http://localhost:8001").rstrip("/
 SCANNERS = [
     ("trivy", "alpine:3.18"),
     ("nuclei", "http://example.com"),
+    ("zap", "https://example.com"),
+    ("semgrep", "https://github.com/octocat/Hello-World.git"),
+    ("gitleaks", "https://github.com/octocat/Hello-World.git"),
+    ("yara", "/tmp/sentinelops-test-file.txt"),
+    ("zeek", "eth0"),
+    ("falco", "host-test"),
 ]
 
 _passed = 0

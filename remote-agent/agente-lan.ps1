@@ -354,12 +354,265 @@ function Submit-Result([string]$jobId, [string]$status, $findings, [string]$err,
         -Body $bodyBytes -TimeoutSec 30 | Out-Null
 }
 
+# ==========================================================================
+# Sumados por directiva de expansion comercial (Manu, 2026) -- zap/
+# semgrep/gitleaks/yara (ver remote-agent/agent.py y los drivers
+# equivalentes en backend/services/scan-service/app/scanners/ para la
+# licencia/alcance exacto de cada uno). zeek/falco NO se implementan en
+# este agente nativo de Windows -- son "jobs de duracion fija" que
+# necesitan captura de paquetes/acceso a eBPF de un kernel Linux que no
+# existe en PowerShell/Windows nativo (ver el rechazo explicito mas
+# abajo, en el loop principal) -- usa el Agente Docker (remote-agent/
+# agent.py, dentro de un contenedor Linux) para esos dos.
+# ==========================================================================
+
+# Reglas PROPIAS de SentinelOps para semgrep/yara -- NUNCA un ruleset de
+# terceros (ver rules/semgrep/sentinelops-rules.yml y
+# rules/yara/sentinelops.yar en la raiz del repo para el porque). Default:
+# relativo a $root (este script vive en remote-agent/, con backend/ al
+# lado en un clone completo del repo) -- overridable por si se copian a
+# otro lado.
+$SemgrepRulesDir = if ($env:SENTINELOPS_SEMGREP_RULES_DIR) { $env:SENTINELOPS_SEMGREP_RULES_DIR } else { Join-Path $root "backend\services\scan-service\rules\semgrep" }
+$YaraRulesFile = if ($env:SENTINELOPS_YARA_RULES_FILE) { $env:SENTINELOPS_YARA_RULES_FILE } else { Join-Path $root "backend\services\scan-service\rules\yara\sentinelops.yar" }
+$ZapHomeDir = if ($env:SENTINELOPS_ZAP_HOME_DIR) { $env:SENTINELOPS_ZAP_HOME_DIR } else { Join-Path $env:USERPROFILE ".ZAP" }
+
+function Resolve-CodeTarget([string]$targetValue) {
+    # Devuelve @{ Path; TmpDir (a borrar despues, o $null); Error }. Si
+    # targetValue es una URL git clonable (http/https), la clona a un
+    # directorio temporal; si es un path local que YA existe en esta PC,
+    # se usa directo.
+    if ($targetValue -match '^(https?)://') {
+        $gitExe = Resolve-ScannerBinary "git"
+        if (-not $gitExe) {
+            return @{ Path = $null; TmpDir = $null; Error = "git no esta instalado o no esta en el PATH de esta maquina" }
+        }
+        $tmpDir = Join-Path $env:TEMP ("sentinelops-clone-" + [guid]::NewGuid().ToString("N"))
+        New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+        $result = Invoke-ScannerBinary -exe $gitExe -scannerArgs @("clone", "--single-branch", $targetValue, $tmpDir) -timeoutSeconds 180
+        if ($result.TimedOut) {
+            return @{ Path = $null; TmpDir = $tmpDir; Error = "timeout clonando el repositorio (180s)" }
+        }
+        if ($result.ExitCode -ne 0) {
+            $errText = $result.Stderr
+            $errText = $errText.Substring(0, [Math]::Min(2000, $errText.Length))
+            return @{ Path = $null; TmpDir = $tmpDir; Error = $errText }
+        }
+        return @{ Path = $tmpDir; TmpDir = $tmpDir; Error = $null }
+    }
+    if ((Test-Path $targetValue -PathType Container) -or (Test-Path $targetValue -PathType Leaf)) {
+        return @{ Path = $targetValue; TmpDir = $null; Error = $null }
+    }
+    return @{ Path = $null; TmpDir = $null; Error = "target '$targetValue' no es una URL git clonable (http/https) ni un path existente en esta maquina" }
+}
+
+# --- Gitleaks (secretos en historial de git, MIT) ------------------------
+function Get-GitleaksSeverity([string]$ruleId) {
+    $rule = ""
+    if ($ruleId) { $rule = $ruleId.ToLower() }
+    foreach ($m in @("private-key", "aws", "gcp", "azure", "service-account")) { if ($rule -like "*$m*") { return "critical" } }
+    foreach ($m in @("token", "api-key", "apikey", "secret", "password", "generic")) { if ($rule -like "*$m*") { return "high" } }
+    return "medium"
+}
+
+function Invoke-GitleaksScan([string]$targetValue) {
+    $resolved = Resolve-CodeTarget $targetValue
+    try {
+        if ($resolved.Error) { return @{ Raw = ""; Findings = @(); Error = $resolved.Error } }
+        $gitleaksExe = Resolve-ScannerBinary "gitleaks"
+        if (-not $gitleaksExe) { return @{ Raw = ""; Findings = @(); Error = "gitleaks no esta instalado (ni en el PATH ni en $BundledBinDir)" } }
+        $reportPath = Join-Path $env:TEMP ("gitleaks-report-" + [guid]::NewGuid().ToString("N") + ".json")
+        $noGit = -not (Test-Path (Join-Path $resolved.Path ".git"))
+        $gitleaksArgs = @("detect", "--source", $resolved.Path, "--report-format", "json", "--report-path", $reportPath, "--exit-code", "0", "--no-banner")
+        if ($noGit) { $gitleaksArgs += "--no-git" }
+        $result = Invoke-ScannerBinary -exe $gitleaksExe -scannerArgs $gitleaksArgs -timeoutSeconds 300
+        if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (300s)" } }
+        if ($result.ExitCode -ne 0) {
+            $errText = $result.Stderr; $errText = $errText.Substring(0, [Math]::Min(2000, $errText.Length))
+            return @{ Raw = ""; Findings = @(); Error = $errText }
+        }
+        $findings = @()
+        $rawJson = $null
+        if (Test-Path $reportPath) {
+            $rawJson = Get-Content $reportPath -Raw -ErrorAction SilentlyContinue
+            if ($rawJson) {
+                try { $items = @($rawJson | ConvertFrom-Json) } catch { $items = @() }
+                foreach ($item in $items) {
+                    if (-not $item) { continue }
+                    $ruleId = [string]$item.RuleID
+                    $filePath = [string]$item.File
+                    $findings += @{
+                        title = "Secreto detectado ($ruleId) en $filePath"
+                        description = [string]$item.Description
+                        severity = (Get-GitleaksSeverity $ruleId)
+                        cve_id = $null
+                        service = $null
+                    }
+                }
+            }
+            Remove-Item $reportPath -ErrorAction SilentlyContinue
+        }
+        return @{ Raw = $rawJson; Findings = $findings; Error = "" }
+    } finally {
+        if ($resolved.TmpDir -and (Test-Path $resolved.TmpDir)) { Remove-Item $resolved.TmpDir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# --- Semgrep (SAST, motor LGPL-2.1, SOLO reglas propias) -----------------
+function Invoke-SemgrepScan([string]$targetValue) {
+    $resolved = Resolve-CodeTarget $targetValue
+    try {
+        if ($resolved.Error) { return @{ Raw = ""; Findings = @(); Error = $resolved.Error } }
+        $semgrepExe = Resolve-ScannerBinary "semgrep"
+        if (-not $semgrepExe) { return @{ Raw = ""; Findings = @(); Error = "semgrep no esta instalado (ni en el PATH ni en $BundledBinDir)" } }
+        # --config SIEMPRE una ruta propia -- NUNCA 'auto'/'p/...' (ver
+        # rules/semgrep/sentinelops-rules.yml para el porque).
+        $semgrepArgs = @("scan", "--config", $SemgrepRulesDir, "--json", "--quiet", "--metrics=off", "--timeout", "60", $resolved.Path)
+        $result = Invoke-ScannerBinary -exe $semgrepExe -scannerArgs $semgrepArgs -timeoutSeconds 420
+        if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (420s)" } }
+        if (($result.ExitCode -ne 0) -and ($result.ExitCode -ne 1)) {
+            $errText = $result.Stderr; $errText = $errText.Substring(0, [Math]::Min(2000, $errText.Length))
+            return @{ Raw = $result.Stdout; Findings = @(); Error = $errText }
+        }
+        $findings = @()
+        if ($result.Stdout.Trim()) {
+            try { $data = $result.Stdout | ConvertFrom-Json } catch { $data = $null }
+            if ($data -and $data.results) {
+                foreach ($r in @($data.results)) {
+                    if (-not $r) { continue }
+                    $sev = "info"
+                    $rawSev = [string]$r.extra.severity
+                    if ($rawSev -eq "ERROR") { $sev = "high" } elseif ($rawSev -eq "WARNING") { $sev = "medium" }
+                    $findings += @{
+                        title = "$($r.check_id) en $($r.path)"
+                        description = [string]$r.extra.message
+                        severity = $sev
+                        cve_id = $null
+                        service = $null
+                    }
+                }
+            }
+        }
+        return @{ Raw = $result.Stdout; Findings = $findings; Error = "" }
+    } finally {
+        if ($resolved.TmpDir -and (Test-Path $resolved.TmpDir)) { Remove-Item $resolved.TmpDir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# --- YARA (patrones/indicadores conocidos en archivos, BSD-3-Clause) -----
+function Get-YaraSeverity([string]$ruleName) {
+    switch ($ruleName) {
+        "SentinelOps_EICAR_Test_File" { return "info" }
+        "SentinelOps_Embedded_PE_In_NonExecutable" { return "high" }
+        "SentinelOps_PHP_Obfuscated_Webshell_Pattern" { return "critical" }
+        "SentinelOps_Suspicious_Obfuscated_PowerShell" { return "high" }
+        "SentinelOps_Python_Reverse_Shell_Oneliner" { return "critical" }
+        default { return "medium" }
+    }
+}
+
+function Invoke-YaraScan([string]$targetValue) {
+    if (-not (Test-Path $targetValue)) {
+        return @{ Raw = ""; Findings = @(); Error = "target '$targetValue' no existe en esta maquina" }
+    }
+    $yaraExe = Resolve-ScannerBinary "yara"
+    if (-not $yaraExe) { return @{ Raw = ""; Findings = @(); Error = "yara no esta instalado (ni en el PATH ni en $BundledBinDir)" } }
+    $yaraArgs = @("-s")
+    if (Test-Path $targetValue -PathType Container) { $yaraArgs += "-r" }
+    $yaraArgs += @($YaraRulesFile, $targetValue)
+    $result = Invoke-ScannerBinary -exe $yaraExe -scannerArgs $yaraArgs -timeoutSeconds 300
+    if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (300s)" } }
+    if ($result.ExitCode -ne 0) {
+        $errText = $result.Stderr; $errText = $errText.Substring(0, [Math]::Min(2000, $errText.Length))
+        return @{ Raw = $result.Stdout; Findings = @(); Error = $errText }
+    }
+    $findings = @()
+    foreach ($line in ($result.Stdout -split "`n")) {
+        if (-not $line) { continue }
+        if ($line -match '^[ \t]') { continue }
+        $trimmed = $line.Trim()
+        if (-not $trimmed) { continue }
+        $parts = $trimmed -split '\s+', 2
+        if ($parts.Count -lt 2) { continue }
+        $ruleName = $parts[0]; $filePath = $parts[1]
+        $findings += @{
+            title = "YARA: $ruleName en $filePath"
+            description = "El archivo '$filePath' coincide con la regla YARA '$ruleName'."
+            severity = (Get-YaraSeverity $ruleName)
+            cve_id = $null
+            service = $null
+        }
+    }
+    return @{ Raw = $result.Stdout; Findings = $findings; Error = "" }
+}
+
+# --- OWASP ZAP (DAST pasivo, Apache 2.0) ---------------------------------
+# -quickurl/-quickout: Quick Start de linea de comandos de ZAP, spider +
+# analisis PASIVO unicamente -- NUNCA -quickattack (escaneo activo real).
+function Invoke-ZapScan([string]$targetValue) {
+    if (-not ($targetValue.StartsWith("http://") -or $targetValue.StartsWith("https://"))) {
+        return @{ Raw = ""; Findings = @(); Error = "target invalido para ZAP: debe ser una URL http:// o https://" }
+    }
+    $zapExe = Resolve-ScannerBinary "zap"
+    if (-not $zapExe) { $zapExe = Resolve-ScannerBinary "zap.bat" }
+    if (-not $zapExe) {
+        return @{ Raw = ""; Findings = @(); Error = "ZAP no esta instalado (ni 'zap'/'zap.bat' en el PATH ni en $BundledBinDir) -- instalalo desde https://www.zaproxy.org/download/" }
+    }
+    $reportPath = Join-Path $env:TEMP ("zap-report-" + [guid]::NewGuid().ToString("N") + ".json")
+    $zapArgs = @("-cmd", "-dir", $ZapHomeDir, "-quickurl", $targetValue, "-quickout", $reportPath, "-quickprogress")
+    $result = Invoke-ScannerBinary -exe $zapExe -scannerArgs $zapArgs -timeoutSeconds 600
+    if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (600s)" } }
+    if (-not (Test-Path $reportPath)) {
+        $errText = $result.Stderr
+        if (-not $errText) { $errText = "ZAP no genero un reporte" }
+        return @{ Raw = $result.Stdout; Findings = @(); Error = $errText.Substring(0, [Math]::Min(2000, $errText.Length)) }
+    }
+    $rawJson = Get-Content $reportPath -Raw -ErrorAction SilentlyContinue
+    Remove-Item $reportPath -ErrorAction SilentlyContinue
+    $findings = @()
+    if ($rawJson) {
+        try { $data = $rawJson | ConvertFrom-Json } catch { $data = $null }
+        $sevMap = @{ high = "high"; medium = "medium"; low = "low"; informational = "info" }
+        foreach ($site in @($data.site)) {
+            if (-not $site) { continue }
+            foreach ($alert in @($site.alerts)) {
+                if (-not $alert) { continue }
+                $riskdesc = [string]$alert.riskdesc
+                $riskKey = "informational"
+                if ($riskdesc) { $riskKey = ($riskdesc.Trim().Split(" ")[0]).ToLower() }
+                $sev = "info"
+                if ($sevMap.ContainsKey($riskKey)) { $sev = $sevMap[$riskKey] }
+                $uri = ""
+                $instances = @($alert.instances)
+                if (($instances.Count -gt 0) -and $instances[0].uri) { $uri = [string]$instances[0].uri }
+                $findings += @{
+                    title = [string]$alert.name
+                    description = [string]$alert.desc
+                    severity = $sev
+                    cve_id = $null
+                    service = $uri
+                }
+            }
+        }
+    }
+    return @{ Raw = $rawJson; Findings = $findings; Error = "" }
+}
+
 $startupNucleiPath = Resolve-ScannerBinary "nuclei"
 $startupTrivyPath = Resolve-ScannerBinary "trivy"
+$startupZapPath = Resolve-ScannerBinary "zap"
+if (-not $startupZapPath) { $startupZapPath = Resolve-ScannerBinary "zap.bat" }
+$startupSemgrepPath = Resolve-ScannerBinary "semgrep"
+$startupGitleaksPath = Resolve-ScannerBinary "gitleaks"
+$startupYaraPath = Resolve-ScannerBinary "yara"
 Write-Log "============================================================"
 Write-Log "SentinelOps - Agente LAN (PowerShell nativo) iniciado."
-Write-Log "nuclei: $(if ($startupNucleiPath) { "disponible ($startupNucleiPath)" } else { "no instalado (ni en el PATH ni en $BundledBinDir) -- esos jobs van a fallar con un mensaje claro" })"
-Write-Log "trivy:  $(if ($startupTrivyPath) { "disponible ($startupTrivyPath)" } else { "no instalado (ni en el PATH ni en $BundledBinDir) -- esos jobs van a fallar con un mensaje claro" })"
+Write-Log "nuclei:   $(if ($startupNucleiPath) { "disponible ($startupNucleiPath)" } else { "no instalado (ni en el PATH ni en $BundledBinDir) -- esos jobs van a fallar con un mensaje claro" })"
+Write-Log "trivy:    $(if ($startupTrivyPath) { "disponible ($startupTrivyPath)" } else { "no instalado (ni en el PATH ni en $BundledBinDir) -- esos jobs van a fallar con un mensaje claro" })"
+Write-Log "zap:      $(if ($startupZapPath) { "disponible ($startupZapPath)" } else { "no instalado (ni en el PATH ni en $BundledBinDir) -- esos jobs van a fallar con un mensaje claro" })"
+Write-Log "semgrep:  $(if ($startupSemgrepPath) { "disponible ($startupSemgrepPath)" } else { "no instalado (ni en el PATH ni en $BundledBinDir) -- esos jobs van a fallar con un mensaje claro" })"
+Write-Log "gitleaks: $(if ($startupGitleaksPath) { "disponible ($startupGitleaksPath)" } else { "no instalado (ni en el PATH ni en $BundledBinDir) -- esos jobs van a fallar con un mensaje claro" })"
+Write-Log "yara:     $(if ($startupYaraPath) { "disponible ($startupYaraPath)" } else { "no instalado (ni en el PATH ni en $BundledBinDir) -- esos jobs van a fallar con un mensaje claro" })"
+Write-Log "zeek/falco: NO soportados por el Agente LAN nativo (requieren captura de paquetes/eBPF de Linux) -- usa el Agente Docker para esos dos."
 Write-Log "scan-service: $scanUrl   polling cada ${pollInterval}s   (Ctrl+C para detener)"
 Write-Log "============================================================"
 
@@ -406,8 +659,82 @@ while ($true) {
                 continue
             }
 
-            # Scanner desconocido: este agente solo sabe correr nuclei/trivy.
-            Submit-Result $jobId "failed" @() "El Agente LAN (PowerShell) no reconoce el scanner '$scanner'. Los unicos soportados son nuclei y trivy."
+            if ($scanner -eq "zap") {
+                if (-not (Resolve-ScannerBinary "zap") -and -not (Resolve-ScannerBinary "zap.bat")) {
+                    Submit-Result $jobId "failed" @() "ZAP no esta instalado (ni 'zap'/'zap.bat' en el PATH ni en $BundledBinDir). Instalalo desde https://www.zaproxy.org/download/ -- y el proximo job de zap va a andar solo, sin reiniciar el agente."
+                    Write-Log "job $($jobId.Substring(0,8)): rechazado -- ZAP no esta instalado"
+                    continue
+                }
+                $res = Invoke-ZapScan $target
+                if ($res.Error) {
+                    Submit-Result $jobId "failed" @() $res.Error $res.Raw
+                    Write-Log "job $($jobId.Substring(0,8)): fallo -- $($res.Error)"
+                } else {
+                    Submit-Result $jobId "completed" $res.Findings "" $res.Raw
+                    Write-Log "job $($jobId.Substring(0,8)): completado, $($res.Findings.Count) hallazgo(s)"
+                }
+                continue
+            }
+
+            if ($scanner -eq "semgrep") {
+                if (-not (Resolve-ScannerBinary "semgrep")) {
+                    Submit-Result $jobId "failed" @() "semgrep no esta instalado (ni en el PATH ni en $BundledBinDir). Instalalo (pip install semgrep) -- y el proximo job de semgrep va a andar solo, sin reiniciar el agente."
+                    Write-Log "job $($jobId.Substring(0,8)): rechazado -- semgrep no esta instalado"
+                    continue
+                }
+                $res = Invoke-SemgrepScan $target
+                if ($res.Error) {
+                    Submit-Result $jobId "failed" @() $res.Error $res.Raw
+                    Write-Log "job $($jobId.Substring(0,8)): fallo -- $($res.Error)"
+                } else {
+                    Submit-Result $jobId "completed" $res.Findings "" $res.Raw
+                    Write-Log "job $($jobId.Substring(0,8)): completado, $($res.Findings.Count) hallazgo(s)"
+                }
+                continue
+            }
+
+            if ($scanner -eq "gitleaks") {
+                if (-not (Resolve-ScannerBinary "gitleaks")) {
+                    Submit-Result $jobId "failed" @() "gitleaks no esta instalado (ni en el PATH ni en $BundledBinDir). Instalalo (https://github.com/gitleaks/gitleaks#installing) -- y el proximo job de gitleaks va a andar solo, sin reiniciar el agente."
+                    Write-Log "job $($jobId.Substring(0,8)): rechazado -- gitleaks no esta instalado"
+                    continue
+                }
+                $res = Invoke-GitleaksScan $target
+                if ($res.Error) {
+                    Submit-Result $jobId "failed" @() $res.Error $res.Raw
+                    Write-Log "job $($jobId.Substring(0,8)): fallo -- $($res.Error)"
+                } else {
+                    Submit-Result $jobId "completed" $res.Findings "" $res.Raw
+                    Write-Log "job $($jobId.Substring(0,8)): completado, $($res.Findings.Count) hallazgo(s)"
+                }
+                continue
+            }
+
+            if ($scanner -eq "yara") {
+                if (-not (Resolve-ScannerBinary "yara")) {
+                    Submit-Result $jobId "failed" @() "yara no esta instalado (ni en el PATH ni en $BundledBinDir). Instalalo (https://virustotal.github.io/yara/) -- y el proximo job de yara va a andar solo, sin reiniciar el agente."
+                    Write-Log "job $($jobId.Substring(0,8)): rechazado -- yara no esta instalado"
+                    continue
+                }
+                $res = Invoke-YaraScan $target
+                if ($res.Error) {
+                    Submit-Result $jobId "failed" @() $res.Error $res.Raw
+                    Write-Log "job $($jobId.Substring(0,8)): fallo -- $($res.Error)"
+                } else {
+                    Submit-Result $jobId "completed" $res.Findings "" $res.Raw
+                    Write-Log "job $($jobId.Substring(0,8)): completado, $($res.Findings.Count) hallazgo(s)"
+                }
+                continue
+            }
+
+            if (($scanner -eq "zeek") -or ($scanner -eq "falco")) {
+                Submit-Result $jobId "failed" @() "'$scanner' no esta soportado en el Agente LAN nativo de Windows (necesita captura de paquetes / eBPF de Linux). Usa el Agente Docker de SentinelOps para correr este scanner."
+                Write-Log "job $($jobId.Substring(0,8)): rechazado -- '$scanner' requiere el Agente Docker, no el Agente LAN nativo"
+                continue
+            }
+
+            # Scanner desconocido: este agente no reconoce ese nombre.
+            Submit-Result $jobId "failed" @() "El Agente LAN (PowerShell) no reconoce el scanner '$scanner'. Los soportados son nuclei, trivy, zap, semgrep, gitleaks y yara (zeek y falco requieren el Agente Docker)."
             Write-Log "job $($jobId.Substring(0,8)): rechazado -- '$scanner' no soportado por este agente"
         }
     } catch {

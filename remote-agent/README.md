@@ -16,6 +16,14 @@ de esa LAN con visibilidad real a la red que se quiere escanear -- y
 hace de "brazos y piernas" para los escaneos que scan-service no puede
 alcanzar el mismo.
 
+Soporta los mismos **8 scanners** que scan-service: `nuclei`, `trivy`,
+`zap` (OWASP ZAP), `semgrep`, `gitleaks`, `yara`, `zeek` y `falco`. Una
+salvedad: **`zeek` y `falco` necesitan captura de paquetes / eBPF de
+Linux y NO corren en el Agente LAN nativo de Windows** (`agente-lan.ps1`)
+-- si se les asigna un job de zeek/falco, lo rechazan al toque con un
+mensaje claro. Para esos dos usa el Agente Docker (corre Linux dentro
+del contenedor, que ya trae los permisos de kernel necesarios).
+
 ## Como funciona (modelo de seguridad)
 
 - El agente **siempre inicia la conexion** hacia `scan-service`
@@ -36,21 +44,31 @@ alcanzar el mismo.
   en el momento de registrar el agente desde la UI, y despues no se
   puede volver a ver (si se pierde, hay que borrar el agente y crear uno
   nuevo).
-- El agente **solo sabe correr en modo deteccion**: `nuclei` sin las
-  categorias de templates `dos`/`fuzz`/`intrusive`, y `trivy` solo lee
-  (nunca ejecuta nada del target). Es exactamente el mismo comando (y
-  las mismas restricciones) que usa `scan-service` cuando escanea el
-  mismo desde adentro del contenedor.
+- El agente **solo sabe correr en modo no intrusivo**: `nuclei` sin las
+  categorias de templates `dos`/`fuzz`/`intrusive`; `trivy` solo lee;
+  `zap` solo en modo pasivo (spider + analisis pasivo, nunca
+  `-quickattack`/escaneo activo); `semgrep`/`gitleaks`/`yara` solo LEEN
+  codigo/archivos (nunca ejecutan nada del repo/target escaneado); y
+  `zeek`/`falco` solo observan trafico/eventos durante una ventana de
+  tiempo fija (`options.duration_minutes`, 1-60 min, default 5). Es
+  exactamente el mismo comando (y las mismas restricciones) que usa
+  `scan-service` cuando escanea el mismo desde adentro del contenedor.
+- **`semgrep` y `yara` usan UNICAMENTE reglas propias de SentinelOps**
+  (`backend/services/scan-service/rules/semgrep/sentinelops-rules.yml` y
+  `.../rules/yara/sentinelops.yar`), nunca el registro publico de
+  semgrep (`--config auto`/`p/...`) ni packs de YARA de terceros -- una
+  decision de licenciamiento (ver `THIRD-PARTY-LICENSES.md` en la raiz
+  del repo), no solo tecnica.
 
 ## Requisitos
 
 - Python 3.9 o mas nuevo. El script **no usa ninguna libreria externa**
   -- solo la libreria estandar de Python -- asi que no hace falta
   `pip install` nada.
-- El agente corre 2 scanners posibles (se elige por job, campo
+- El agente corre 8 scanners posibles (se elige por job, campo
   `scanner_type`). Solo hace falta instalar el/los binarios de los que
   vayas a usar en la maquina del agente -- si falta uno, ese job vuelve
-  con un mensaje de error claro en vez de colgarse; el otro sigue
+  con un mensaje de error claro en vez de colgarse; el resto sigue
   funcionando igual:
   - **trivy** (CVEs en imagenes/paquetes): instalar el binario `trivy`
     (ver [aquasecurity/trivy](https://github.com/aquasecurity/trivy)) y
@@ -61,6 +79,31 @@ alcanzar el mismo.
     y dejarlo en el `PATH`. El agente refresca las templates solo al
     arrancar y despues cada 12hs en segundo plano -- no hace falta correr
     `nuclei -update-templates` a mano.
+  - **zap** (OWASP ZAP, DAST pasivo contra una URL): instalar
+    [OWASP ZAP](https://www.zaproxy.org/download/) y dejar `zap`/`zap.bat`
+    en el `PATH`. El target tiene que ser una URL `http://`/`https://`.
+  - **semgrep** (SAST, motor LGPL-2.1): `pip install semgrep` (o ver
+    [semgrep.dev/docs/getting-started](https://semgrep.dev/docs/getting-started))
+    y dejarlo en el `PATH`. El target puede ser una URL git clonable
+    (`http(s)://...git`) o un path local ya existente en la maquina del
+    agente. Usa SIEMPRE las reglas propias del repo
+    (`SENTINELOPS_SEMGREP_RULES_DIR`, default
+    `backend/services/scan-service/rules/semgrep/` relativo a la raiz del
+    repo) -- nunca el registro publico de semgrep.
+  - **gitleaks** (secretos en un repo/path, MIT): instalar el binario
+    `gitleaks` (ver [gitleaks/gitleaks](https://github.com/gitleaks/gitleaks#installing))
+    y dejarlo en el `PATH`. Mismo target que semgrep (URL git o path
+    local).
+  - **yara** (patrones/indicadores conocidos en archivos, BSD-3-Clause):
+    instalar el binario `yara` (ver
+    [VirusTotal/yara](https://virustotal.github.io/yara/)) y dejarlo en
+    el `PATH`. El target tiene que ser un path local (archivo o carpeta)
+    ya existente en la maquina del agente. Usa SIEMPRE las reglas
+    propias del repo (`SENTINELOPS_YARA_RULES_FILE`, default
+    `backend/services/scan-service/rules/yara/sentinelops.yar`).
+  - **zeek** y **falco**: **no soportados en el Agente LAN nativo de
+    Windows** -- necesitan captura de paquetes / eBPF de Linux. Usa el
+    Agente Docker para estos dos (ver "Produccion" mas abajo).
 
 ## Paso 1: registrar el agente en SentinelOps
 
@@ -124,12 +167,14 @@ Linux/Mac, un servicio `systemd` o simplemente `nohup`/`screen`/`tmux`.
 ## Paso 3: lanzar escaneos remotos
 
 Desde la pagina **Escaneos** de SentinelOps, en el panel "Escaneos
-remotos", elegi el agente registrado, el scanner (`nuclei` o `trivy`) y
-el target, y crea el job. El agente lo va a recoger en su siguiente poll
-(dentro de `POLL_INTERVAL_SECONDS`), correr el scanner elegido, y mandar
-los resultados de vuelta -- los vas a ver aparecer en esa misma pagina, y
-los hallazgos se reenvian automaticamente a vuln-service para
-priorizacion (CVSS/EPSS/KEV), igual que un escaneo normal.
+remotos", elegi el agente registrado, el scanner (`nuclei`, `trivy`,
+`zap`, `semgrep`, `gitleaks`, `yara`, `zeek` o `falco`) y el target, y
+crea el job (para `zeek`/`falco` tambien elegis la duracion en minutos,
+1-60). El agente lo va a recoger en su siguiente poll (dentro de
+`POLL_INTERVAL_SECONDS`), correr el scanner elegido, y mandar los
+resultados de vuelta -- los vas a ver aparecer en esa misma pagina, y los
+hallazgos se reenvian automaticamente a vuln-service para priorizacion
+(CVSS/EPSS/KEV), igual que un escaneo normal.
 
 ## Si algo no funciona
 
@@ -141,10 +186,14 @@ priorizacion (CVSS/EPSS/KEV), igual que un escaneo normal.
   necesitas la IP de la LAN de la PC donde esta SentinelOps, y que el
   firewall de esa PC permita conexiones entrantes al puerto 8003 desde
   esa otra maquina.
-- **Los jobs quedan en "failed" con "nuclei/trivy no esta instalado o no
+- **Los jobs quedan en "failed" con "<scanner> no esta instalado o no
   esta en el PATH"**: instala el binario que falta (ver Requisitos
-  arriba) y asegurate de poder correrlo (`nuclei -version` / `trivy
-  --version`) desde la misma terminal donde corres `agent.py`.
+  arriba) y asegurate de poder correrlo desde la misma terminal donde
+  corres `agent.py` (o donde corre `agente-lan.ps1`).
+- **Un job de "zeek" o "falco" vuelve rechazado con "requiere el Agente
+  Docker"**: es esperado si se lo asignaste al Agente LAN -- esos dos
+  scanners necesitan captura de paquetes/eBPF de Linux, asignalos al
+  Agente Docker en cambio.
 - **El escaneo tarda mucho o falla por timeout**: el agente usa los
   mismos timeouts que scan-service -- si necesitas escanear muchos
   targets, es mejor dividir en varios jobs mas chicos.
@@ -180,23 +229,26 @@ defecto se crean dos:
 
 - **Agente Docker (internet/host)** -> corre como el contenedor
   `remote-agent` dentro del stack (misma imagen que scan-service, ya trae
-  trivy/nuclei). Arranca solo con `docker compose up`. Por el NAT de
-  Docker Desktop escanea internet y la propia PC (`host.docker.internal`),
-  **no** la LAN.
+  los 8 scanners -- trivy/nuclei/zap/semgrep/gitleaks/yara/zeek/falco --
+  y las reglas propias de semgrep/yara horneadas adentro). Arranca solo
+  con `docker compose up`. Por el NAT de Docker Desktop escanea internet
+  y la propia PC (`host.docker.internal`), **no** la LAN -- pero es el
+  unico que puede correr `zeek`/`falco` (necesitan Linux).
 - **Agente LAN** -> corre en el **host** (fuera de Docker) para llegar a la
   red real (`192.168.x.x`). Es un script PowerShell nativo
   (`remote-agent/agente-lan.ps1`) que **no requiere instalar Python ni
   nada mas**: usa PowerShell + .NET puro, que ya vienen con Windows.
-  Para nuclei/trivy busca el binario en dos lugares, en este orden: el
-  PATH del sistema, y despues `remote-agent/bin/nuclei.exe` /
-  `remote-agent/bin/trivy.exe` -- una carpeta al lado del script (creala
-  si no existe) donde alcanza con poner el .exe descargado oficialmente,
-  sin instalar nada de verdad ni tocar el PATH de Windows. Cualquiera de
-  los dos lugares funciona, y el agente los detecta en el siguiente job
-  sin reiniciarse. Esa carpeta (`remote-agent/bin/`) esta en
-  `.gitignore` (via `*.exe`) -- esos binarios NUNCA se commitean (GitHub
-  bloquea archivos de mas de 100MB, y nuclei.exe/trivy.exe pesan
-  bastante mas).
+  Para nuclei/trivy/zap/semgrep/gitleaks/yara busca el binario en dos
+  lugares, en este orden: el PATH del sistema, y despues
+  `remote-agent/bin/<nombre>.exe` (o `.bat` para `zap`) -- una carpeta al
+  lado del script (creala si no existe) donde alcanza con poner el .exe
+  descargado oficialmente, sin instalar nada de verdad ni tocar el PATH
+  de Windows. Cualquiera de los dos lugares funciona, y el agente los
+  detecta en el siguiente job sin reiniciarse. Esa carpeta
+  (`remote-agent/bin/`) esta en `.gitignore` (via `*.exe`) -- esos
+  binarios NUNCA se commitean (GitHub bloquea archivos de mas de 100MB,
+  y varios de estos pesan bastante). `zeek` y `falco` quedan afuera de
+  este agente -- ver la salvedad al principio de este README.
 
 Las api keys de ambos estan en `.env` (`REMOTE_AGENT_DOCKER_KEY` y
 `REMOTE_AGENT_LAN_KEY`) -- son las que se pegan en la UI al lanzar un
@@ -236,4 +288,4 @@ cambio -- se detiene si cerras esa ventana.
 ### Probar todo el pipeline sin escanear nada real
 
 `python remote-agent/test_pipeline.py` (ver cabecera del archivo) ejercita
-el ciclo completo para los 2 scanners y valida la seguridad de la api key.
+el ciclo completo para los 8 scanners y valida la seguridad de la api key.
