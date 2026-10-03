@@ -2,14 +2,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# nmap: paquete apt liviano y estable. trivy y nuclei se instalan aparte
-# mas abajo (no tienen paquete apt en Debian). openvas NO se instala aca:
-# gvmd/ospd-openvas es un producto completo (su propia base de datos +
-# sincronizacion de feed de NVTs) que corre como servicios propios en
-# docker-compose.yml (ver ese archivo, seccion GVM/OpenVAS). Este
-# contenedor solo necesita el CLIENTE gvm-cli (paquete pip gvm-tools, mas
-# abajo) para hablar por socket GMP con el gvmd de esos servicios.
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev curl nmap unzip \
+# trivy y nuclei se instalan aparte mas abajo (no tienen paquete apt en
+# Debian) -- gcc/libpq-dev son para compilar dependencias Python nativas,
+# curl/unzip son herramientas de instalacion que usan los pasos de abajo.
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev curl unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Trivy (CVEs conocidos en imagenes de contenedor / filesystems): script
@@ -53,10 +49,6 @@ RUN nuclei -update-templates -silent || true
 COPY backend/services/scan-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# gvm-tools: paquete pip que provee el binario gvm-cli, cliente GMP usado
-# por app/scanners/openvas.py para hablar (via socket) con el gvmd que
-# corre como su propio servicio en docker-compose.yml.
-RUN pip install --no-cache-dir gvm-tools
 
 COPY backend/services/scan-service/app ./app
 COPY backend/services/scan-service/tests ./tests
@@ -64,6 +56,26 @@ COPY backend/shared ./backend/shared
 RUN touch backend/__init__.py
 
 ENV PYTHONPATH=/app
+
+# A diferencia del resto de este Dockerfile hasta ahora: scan-service
+# corria como root porque gvm-cli (gvm-tools) necesitaba arrancar como
+# root para poder bajar sus propios privilegios a 'nobody' via setuid/
+# setgid antes del exec (gvmtools/helper.py se niega EXPLICITAMENTE a
+# correr como root, pero SI necesitaba serlo un instante antes). Sin GVM
+# ya no hay ningun subproceso que necesite ese truco -- trivy/nuclei
+# nunca lo necesitaron -- asi que este contenedor pasa al mismo patron
+# no-root que los demas 14 servicios del backend.
+# chmod 755 /root (ademas del chown -R de las dos subcarpetas): trivy/
+# nuclei escriben sus caches en /root/.cache/trivy y /root/nuclei-templates
+# (ver docker-compose.yml, volumenes trivy_cache/nuclei_templates) -- sin
+# abrir el propio directorio /root (modo 700 por default en esta imagen
+# base), el usuario sentinelops no puede ni ATRAVESARLO para llegar a esas
+# subcarpetas, aunque esas dos esten chowneadas, y trivy/nuclei fallarian
+# con Permission denied en el primer escaneo.
+RUN groupadd -r -g 1001 sentinelops && useradd -r -u 1001 -g sentinelops -M -s /usr/sbin/nologin sentinelops \
+    && chmod 755 /root \
+    && chown -R sentinelops:sentinelops /app /root/.cache/trivy /root/nuclei-templates
+USER sentinelops
 
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
     CMD curl -f http://localhost:8000/health || exit 1

@@ -65,7 +65,7 @@ def _assert_valid_service_token_for_org(headers, organization_id):
 
 def test_forward_findings_sends_service_jwt_not_raw_org_id(fake_httpx):
     job = SimpleNamespace(
-        id="job-1", asset_id="asset-1", scanner_type=SimpleNamespace(value="nmap"),
+        id="job-1", asset_id="asset-1", scanner_type=SimpleNamespace(value="nuclei"),
         findings=[{"title": "x"}], organization_id="org-real",
     )
     asyncio.run(services._forward_findings_to_vuln_service(job))
@@ -77,7 +77,7 @@ def test_forward_findings_sends_service_jwt_not_raw_org_id(fake_httpx):
 
 def test_forward_agent_findings_sends_service_jwt_not_raw_org_id(fake_httpx):
     job = SimpleNamespace(
-        id="job-2", scanner_type="nmap", findings=[{"title": "y"}], organization_id="org-real-2",
+        id="job-2", scanner_type="nuclei", findings=[{"title": "y"}], organization_id="org-real-2",
     )
     asyncio.run(services._forward_agent_findings_to_vuln_service(job))
 

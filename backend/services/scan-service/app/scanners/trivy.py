@@ -67,8 +67,8 @@ class TrivyDriver(ScannerDriver):
             await proc.wait()
             return ScanResult(raw_output="", error="timeout de escaneo (540s)")
         except asyncio.CancelledError:
-            # Ver nmap.py: sin este kill(), trivy sigue corriendo huerfano
-            # dentro del contenedor aunque el job ya haya quedado cancelado.
+            # Sin este kill(), trivy sigue corriendo huerfano dentro del
+            # contenedor aunque el job ya haya quedado cancelado.
             if proc is not None:
                 proc.kill()
                 await proc.wait()

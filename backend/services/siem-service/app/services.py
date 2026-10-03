@@ -201,7 +201,7 @@ async def delete_rule(db: AsyncSession, rule: SigmaRule) -> None:
 DEFAULT_RULES: list[dict] = [
     {
         "name": "Hallazgo critico de escaneo",
-        "description": "Un escaneo (nmap/trivy/nuclei/openvas) reporto un hallazgo de severidad critica.",
+        "description": "Un escaneo (trivy/nuclei) reporto un hallazgo de severidad critica.",
         "severity": "critical",
         "tags": ["scan", "vulnerability", "critical"],
         "detection": {

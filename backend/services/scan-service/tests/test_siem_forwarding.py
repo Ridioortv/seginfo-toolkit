@@ -7,7 +7,7 @@ from app.services import _findings_to_siem_events
 class TestFindingsToSiemEvents:
     def test_one_event_per_finding(self):
         findings = [{"title": "Puerto 22 abierto", "severity": "low"}, {"title": "Puerto 23 abierto", "severity": "high"}]
-        events = _findings_to_siem_events("nmap", "192.168.1.10", "asset-1", findings)
+        events = _findings_to_siem_events("nuclei", "192.168.1.10", "asset-1", findings)
         assert len(events) == 2
 
     def test_event_carries_target_scanner_and_severity(self):
@@ -22,8 +22,8 @@ class TestFindingsToSiemEvents:
         assert event["message"] == "OpenSSL vulnerable"
 
     def test_missing_severity_defaults_to_info(self):
-        events = _findings_to_siem_events("nmap", "10.0.0.1", None, [{"title": "Puerto abierto"}])
+        events = _findings_to_siem_events("nuclei", "10.0.0.1", None, [{"title": "Puerto abierto"}])
         assert events[0]["severity"] == "info"
 
     def test_no_findings_returns_empty_list(self):
-        assert _findings_to_siem_events("nmap", "10.0.0.1", None, []) == []
+        assert _findings_to_siem_events("nuclei", "10.0.0.1", None, []) == []

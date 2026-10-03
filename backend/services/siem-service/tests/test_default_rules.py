@@ -20,7 +20,7 @@ def _scan_event(severity: str) -> dict:
             "event_category": "vulnerability",
             "severity": severity,
             "message": "Puerto 23 (telnet) abierto",
-            "source_type": "nmap",
+            "source_type": "nuclei",
         },
         organization_id="org-1",
     )

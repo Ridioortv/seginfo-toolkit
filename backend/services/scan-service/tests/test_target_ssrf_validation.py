@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.target_validation import reject_dangerous_network_target, validate_target
-from app.schemas import AgentScanJobCreate, GvmTargetCreate, ScanJobCreate, ScanScheduleCreate
+from app.schemas import AgentScanJobCreate, ScanJobCreate, ScanScheduleCreate
 
 
 # --- reject_dangerous_network_target: unidad ------------------------------
@@ -24,8 +24,6 @@ from app.schemas import AgentScanJobCreate, GvmTargetCreate, ScanJobCreate, Scan
         "::1",
         "postgres",
         "auth-service",
-        "openvas-orchestrator",
-        "http://openvas-orchestrator:8000/start",
         "https://postgres:5432/",
         "redis:6379",
     ],
@@ -43,8 +41,8 @@ def test_rejects_internal_and_metadata_targets(target):
         "192.168.1.1",
         "192.168.0.0/16",
         "172.16.0.5",
-        "scanme.nmap.org",
-        "https://scanme.nmap.org:8443/",
+        "example.com",
+        "https://example.com:8443/",
     ],
 )
 def test_allows_lan_and_internet_targets(target):
@@ -55,9 +53,9 @@ def test_allows_lan_and_internet_targets(target):
 
 # --- ScanJobCreate: aplicado segun scanner_type ----------------------------
 
-def test_scan_job_create_rejects_metadata_target_for_nmap():
+def test_scan_job_create_rejects_metadata_target_for_nuclei():
     with pytest.raises(ValidationError):
-        ScanJobCreate(scanner_type="nmap", target="169.254.169.254")
+        ScanJobCreate(scanner_type="nuclei", target="169.254.169.254")
 
 
 def test_scan_job_create_rejects_internal_service_name_for_nuclei():
@@ -65,8 +63,8 @@ def test_scan_job_create_rejects_internal_service_name_for_nuclei():
         ScanJobCreate(scanner_type="nuclei", target="http://auth-service:8000/")
 
 
-def test_scan_job_create_allows_lan_target_for_nmap():
-    job = ScanJobCreate(scanner_type="nmap", target="192.168.1.5")
+def test_scan_job_create_allows_lan_target_for_nuclei():
+    job = ScanJobCreate(scanner_type="nuclei", target="192.168.1.5")
     assert job.target == "192.168.1.5"
 
 
@@ -81,7 +79,7 @@ def test_scan_job_create_allows_trivy_image_named_like_internal_service():
 
 def test_schedule_rejects_internal_target_without_agent():
     with pytest.raises(ValidationError):
-        ScanScheduleCreate(scanner_type="nmap", target="postgres", frequency="daily")
+        ScanScheduleCreate(scanner_type="nuclei", target="postgres", frequency="daily")
 
 
 def test_schedule_allows_internal_looking_target_with_agent():
@@ -89,7 +87,7 @@ def test_schedule_allows_internal_looking_target_with_agent():
     # LAN real del cliente -- el denylist de nombres de servicio internos
     # no tiene sentido ahi.
     schedule = ScanScheduleCreate(
-        scanner_type="nmap", target="postgres", frequency="daily",
+        scanner_type="nuclei", target="postgres", frequency="daily",
         agent_id="agent-1", agent_api_key="k",
     )
     assert schedule.target == "postgres"
@@ -98,23 +96,8 @@ def test_schedule_allows_internal_looking_target_with_agent():
 # --- AgentScanJobCreate: nunca se le aplica (corre en la LAN del cliente) -
 
 def test_agent_scan_job_create_never_blocks_network_denylist():
-    job = AgentScanJobCreate(agent_id="agent-1", scanner_type="nmap", target="postgres", api_key="k")
+    job = AgentScanJobCreate(agent_id="agent-1", scanner_type="nuclei", target="postgres", api_key="k")
     assert job.target == "postgres"
-
-
-# --- GvmTargetCreate.hosts: siempre aplicado (gvmd/ospd-openvas tambien
-# corren dentro de la red docker de la plataforma) -------------------------
-
-def test_gvm_target_create_rejects_metadata_hosts():
-    with pytest.raises(ValidationError):
-        GvmTargetCreate(name="x", hosts="169.254.169.254", port_list_id="pl1")
-
-
-def test_gvm_target_create_allows_lan_cidr_hosts():
-    # Mismo caso que ya cubre test_openvas_dashboard_endpoints.py -- sigue
-    # permitido.
-    target = GvmTargetCreate(name="Oficina", hosts="10.0.0.0/24", port_list_id="pl1")
-    assert target.hosts == "10.0.0.0/24"
 
 
 # --- validate_target: sin cambios de comportamiento (solo sintaxis) -------

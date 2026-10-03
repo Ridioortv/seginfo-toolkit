@@ -1,6 +1,6 @@
 """Tests de app/services.py::is_deletable_status -- la regla de negocio que
 decide si un escaneo (propio o de agente remoto) ya se puede borrar. Sin
-DB: solo logica pura, igual que test_nmap_driver.py en este mismo paquete."""
+DB: solo logica pura, igual que otros tests de este mismo paquete."""
 import enum
 
 from app.services import is_deletable_status

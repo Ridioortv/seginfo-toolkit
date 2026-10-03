@@ -32,8 +32,8 @@ class VulnStatus(str, enum.Enum):
 
 
 class Vulnerability(Base):
-    """Un hallazgo normalizado. Puede o no tener CVE asociado (p.ej. un
-    puerto abierto detectado por nmap no tiene CVE, pero un paquete
+    """Un hallazgo normalizado. Puede o no tener CVE asociado (p.ej. una
+    exposicion detectada por nuclei no siempre tiene CVE, pero un paquete
     desactualizado detectado por trivy si). El `priority_score` es lo que
     ordena la cola de triage y se recalcula en cada enriquecimiento."""
 

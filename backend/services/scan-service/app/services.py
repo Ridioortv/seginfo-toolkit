@@ -14,7 +14,7 @@ from sqlalchemy import select, or_, and_, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
 from backend.shared.security import create_access_token
-from app.models import ScanJob, ScanStatus, ScanSchedule, ScanAgent, AgentScanJob, ScannerType, GvmOwnedResource
+from app.models import ScanJob, ScanStatus, ScanSchedule, ScanAgent, AgentScanJob, ScannerType
 from app.scanners import get_driver, DRIVERS
 
 logger = configure_logging("scan-service")
@@ -597,18 +597,6 @@ async def execute_scan_job(session_factory, job_id: str) -> None:
             job = await db.get(ScanJob, job_id)
             job.raw_result = (result.raw_output or "")[:200_000]
             job.finished_at = _now()
-            # OpenVasDriver.run() puede "marcar" el ScanResult con un
-            # gvm_task_id extra (ver app/scanners/openvas.py::_tag) cuando
-            # llega a crear un task real en gvmd, aunque el escaneo despues
-            # falle o de timeout -- se guarda en options (no hay columna
-            # propia) para que el dashboard de OpenVAS pueda pedir despues
-            # el reporte completo/exportarlo (GET /openvas/tasks trae el
-            # report_id de gvmd a partir de este task_id). Otros scanners
-            # (nmap/trivy/nuclei) nunca settean este atributo, asi que esto
-            # no les cambia nada.
-            gvm_task_id = getattr(result, "gvm_task_id", None)
-            if gvm_task_id:
-                job.options = {**(job.options or {}), "gvm_task_id": gvm_task_id}
             if result.error:
                 job.status = ScanStatus.failed
                 job.error_message = result.error[:2000]
@@ -617,9 +605,9 @@ async def execute_scan_job(session_factory, job_id: str) -> None:
                 job.status = ScanStatus.completed
                 job.findings = result.findings
                 # ScanResult (ver app/scanners/base.py) no declara ningun
-                # campo "packages" -- NINGUN driver (nmap/trivy/nuclei/
-                # openvas) lo setea hoy en el flujo generico de
-                # execute_scan_job. El inventario de paquetes de trivy se
+                # campo "packages" -- NINGUN driver (trivy/nuclei) lo setea
+                # hoy en el flujo generico de execute_scan_job. El
+                # inventario de paquetes de trivy se
                 # llena por una via COMPLETAMENTE distinta (la subida de un
                 # archivo, ver execute_uploaded_scan_job mas arriba, que
                 # escribe job.packages directo). Leer result.packages a
@@ -1140,97 +1128,3 @@ async def _forward_agent_findings_to_siem_service(job: AgentScanJob) -> None:
             "no se pudo reenviar hallazgos de agente remoto a siem-service",
             extra={"job_id": job.id, "error": str(exc)},
         )
-
-
-# --- Aislamiento multi-tenant de recursos GVM (dashboard de OpenVAS) ------
-# Ver GvmOwnedResource en app/models.py para el por que: gvmd/ospd-openvas
-# no tienen ningun concepto de organizacion, asi que sin esto cualquier
-# usuario autenticado de CUALQUIER organizacion podia listar/leer/borrar
-# las credenciales y targets GVM de TODAS las demas organizaciones del
-# mismo deployment.
-
-async def record_gvm_resource_ownership(
-    db: AsyncSession, organization_id: str, resource_type: str, gvm_id: str
-) -> None:
-    db.add(GvmOwnedResource(organization_id=organization_id, resource_type=resource_type, gvm_id=gvm_id))
-    await db.flush()
-
-
-async def forget_gvm_resource_ownership(db: AsyncSession, resource_type: str, gvm_id: str) -> None:
-    result = await db.execute(
-        select(GvmOwnedResource).where(
-            GvmOwnedResource.resource_type == resource_type, GvmOwnedResource.gvm_id == gvm_id,
-        )
-    )
-    for row in result.scalars().all():
-        await db.delete(row)
-    await db.flush()
-
-
-async def _owner_org_map(db: AsyncSession, resource_type: str) -> dict[str, str]:
-    result = await db.execute(
-        select(GvmOwnedResource.gvm_id, GvmOwnedResource.organization_id).where(
-            GvmOwnedResource.resource_type == resource_type
-        )
-    )
-    return dict(result.all())
-
-
-def _resolve_owner(owners: dict[str, str], gvm_id: str) -> str:
-    """Logica PURA (sin DB, testeada directo) que decide a que
-    organizacion pertenece un recurso GVM dado el mapa {gvm_id: org_id} ya
-    cargado: si nunca se registro (creado antes de este fix, o por fuera
-    de la UI con gvm-cli/gvm-tools a mano) cae a DEFAULT_ORGANIZATION_ID --
-    mismo criterio de backfill que ya usa el resto del servicio para
-    columnas organization_id nuevas (ver app/main.py::lifespan)."""
-    from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
-    return owners.get(gvm_id, DEFAULT_ORGANIZATION_ID)
-
-
-def _filter_by_org(owners: dict[str, str], items: list[dict], organization_id: str) -> list[dict]:
-    """Logica PURA (sin DB, testeada directo): filtra una lista de dicts
-    con clave "id" (tal como los devuelve gvm_manage.list_credentials/
-    list_targets) para dejar solo los que pertenecen a `organization_id`,
-    dado el mapa {gvm_id: org_id} ya cargado -- ver _resolve_owner para el
-    fallback de los no registrados."""
-    return [item for item in items if _resolve_owner(owners, item["id"]) == organization_id]
-
-
-async def resolve_gvm_resource_org(db: AsyncSession, resource_type: str, gvm_id: str) -> str:
-    """Organizacion duena de un recurso GVM (credential/target) ya
-    existente en gvmd -- ver _resolve_owner para la regla."""
-    owners = await _owner_org_map(db, resource_type)
-    return _resolve_owner(owners, gvm_id)
-
-
-async def filter_gvm_resources_by_org(
-    db: AsyncSession, resource_type: str, items: list[dict], organization_id: str
-) -> list[dict]:
-    """Ver _filter_by_org para la regla -- esto solo le agrega el fetch de
-    `owners` desde la DB."""
-    owners = await _owner_org_map(db, resource_type)
-    return _filter_by_org(owners, items, organization_id)
-
-
-async def gvm_task_org_map(db: AsyncSession) -> dict[str, str]:
-    """{gvm_task_id: organization_id} para todos los ScanJob de tipo
-    openvas que llegaron a correr un task GVM real (ver
-    execute_scan_job, que guarda options['gvm_task_id'] -- ver
-    app/scanners/openvas.py::OpenVasDriver.run / _tag). Se usa para
-    filtrar/validar list_openvas_tasks, delete_openvas_task y los
-    endpoints de reportes por organizacion, igual que
-    filter_gvm_resources_by_org para credenciales/targets."""
-    result = await db.execute(
-        select(ScanJob.organization_id, ScanJob.options).where(ScanJob.scanner_type == ScannerType.openvas)
-    )
-    mapping: dict[str, str] = {}
-    for organization_id, options in result.all():
-        task_id = (options or {}).get("gvm_task_id")
-        if task_id and organization_id:
-            mapping[task_id] = organization_id
-    return mapping
-
-
-async def resolve_gvm_task_org(db: AsyncSession, task_id: str) -> str:
-    mapping = await gvm_task_org_map(db)
-    return _resolve_owner(mapping, task_id)

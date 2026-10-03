@@ -25,9 +25,9 @@ class ScanJobCreate(BaseModel):
         # trivy escanea una imagen/filesystem, no un host de red -- un
         # target "postgres:16" ahi es una referencia de imagen legitima y
         # comunisima, no el nombre del contenedor postgres de la plataforma
-        # (ver target_validation.reject_dangerous_network_target). El resto
-        # (nmap/nuclei/openvas) SI corre dentro de la red docker de la
-        # plataforma, asi que su target se valida contra ese denylist.
+        # (ver target_validation.reject_dangerous_network_target). nuclei SI
+        # corre dentro de la red docker de la plataforma, asi que su target
+        # se valida contra ese denylist.
         if self.scanner_type != ScannerType.trivy:
             reject_dangerous_network_target(self.target)
         return self
@@ -192,12 +192,10 @@ AgentJobStatus = Literal["pending", "assigned", "completed", "failed"]
 class AgentScanJobCreate(BaseModel):
     agent_id: str = Field(..., min_length=1)
     name: str = ""
-    # El agente remoto (remote-agent/agent.py) ahora sabe correr los cuatro
-    # escaneres. nmap/trivy/nuclei son binarios sueltos que el agente corre
-    # localmente; openvas requiere ademas un stack GVM en la maquina del
-    # agente (si no lo tiene, el agente reporta un error claro en vez de
-    # colgarse). Ver remote-agent/agent.py.
-    scanner_type: Literal["nmap", "trivy", "nuclei", "openvas"] = "nmap"
+    # El agente remoto (remote-agent/agent.py) sabe correr trivy y nuclei --
+    # binarios sueltos que corre localmente en la maquina del agente. Ver
+    # remote-agent/agent.py.
+    scanner_type: Literal["trivy", "nuclei"] = "nuclei"
     target: str = Field(..., min_length=1)
     options: dict = Field(default_factory=dict)
     # Al LANZAR un escaneo remoto desde la UI se exige tambien la api key del
@@ -252,123 +250,3 @@ class AgentResultSubmit(BaseModel):
     findings: list[dict] = Field(default_factory=list)
     raw_output: str = ""
     error_message: str = ""
-
-
-# --- Activacion de OpenVAS desde la UI (ver GET/POST /openvas/*, app/
-# scanners/openvas.py::probe_connection) ---
-# OpenVAS esta apagado por defecto (ver docker-compose.yml, profile
-# "openvas") y este proceso NO tiene acceso al socket de Docker: no puede
-# levantar los contenedores de GVM el mismo. Lo que si puede hacer es
-# probar la conexion GMP con credenciales ya en pie (contenedores ya
-# levantados por openvas/Encender-OpenVAS.ps1) y, si funciona, aplicarlas
-# en memoria para no exigir un reinicio del contenedor.
-
-class OpenvasActivateRequest(BaseModel):
-    gvm_user: str = Field(..., min_length=1)
-    gvm_password: str = Field(..., min_length=1)
-    gvm_socket_path: str = Field(default="", description="Vacio usa el default /run/gvmd/gvmd.sock")
-
-
-class OpenvasStatusOut(BaseModel):
-    configured: bool
-    ready: bool
-    detail: str
-
-
-# --- Activacion AUTOMATICA de OpenVAS (ver POST/GET /openvas/auto-activate*
-# en main.py) -- a diferencia de OpenvasActivateRequest de arriba (que solo
-# prueba credenciales contra un gvmd YA levantado a mano), esta llama al
-# servicio openvas-orchestrator (unico con acceso al socket de Docker, ver
-# openvas-orchestrator/main.py) para que levante el profile "openvas" el
-# mismo, cree/actualice el usuario GVM, y guarde las credenciales en .env
-# -- sin que el operador corra ningun script de PowerShell.
-
-class OpenvasAutoActivateRequest(BaseModel):
-    gvm_user: str = Field(default="admin", min_length=1)
-    gvm_password: str = Field(default="", description="Vacio = el orquestador genera una password aleatoria")
-    gvm_socket_path: str = Field(default="", description="Vacio usa el default /run/gvmd/gvmd.sock")
-
-
-class OpenvasProgressOut(BaseModel):
-    running: bool
-    # Contenedores arriba + usuario GVM creado/actualizado + .env escrito
-    # -- por el orquestador. NO implica todavia que scan-service haya
-    # confirmado la conexion GMP (eso es `ready`, ver abajo).
-    provisioned: bool
-    # True solo cuando, ADEMAS de `provisioned`, main.py::openvas_auto_activate_progress
-    # ya probo la conexion GMP con exito (misma funcion que usa el
-    # /openvas/activate manual) y aplico las credenciales en memoria.
-    ready: bool
-    phase: str
-    percent: int
-    detail: str
-    error: str | None = None
-    gvm_user: str | None = None
-    gvm_password: str | None = None
-
-
-# --- Dashboard de OpenVAS (ver app/gvm_manage.py y GET/POST/DELETE
-# /openvas/configs, /port-lists, /report-formats, /credentials, /targets,
-# /tasks, /reports/* en main.py) -- una vez que OpenVAS esta activo
-# (OpenvasProgressOut.ready / OpenvasStatusOut.ready), esto es lo que deja
-# elegir tipo de escaneo, credenciales para escaneo autenticado, targets
-# reusables y exportar reportes completos, en vez de que el driver elija
-# todo solo (ver _CONFIG_NAME_PREFERENCES etc. en app/scanners/openvas.py,
-# que sigue siendo el fallback cuando no se especifica nada de esto).
-
-class GvmEntityOut(BaseModel):
-    """Config de escaneo / scanner / formato de reporte tal como los
-    devuelve gvmd -- solo id+nombre, alcanza para poblar un <select/>."""
-
-    id: str
-    name: str
-
-
-class GvmCredentialCreate(BaseModel):
-    name: str = Field(..., min_length=1)
-    login: str = Field(..., min_length=1)
-    password: str = Field(..., min_length=1)
-
-
-class GvmCredentialOut(BaseModel):
-    id: str
-    name: str
-    login: str
-    credential_type: str
-
-
-class GvmTargetCreate(BaseModel):
-    name: str = Field(..., min_length=1)
-    hosts: str = Field(..., min_length=1, description="Host, rango o CIDR -- mismo formato que ScanJobCreate.target")
-    port_list_id: str = Field(..., min_length=1)
-    ssh_credential_id: str | None = None
-    smb_credential_id: str | None = None
-
-    @field_validator("hosts")
-    @classmethod
-    def _validate_hosts(cls, v: str) -> str:
-        v = validate_target(v)
-        # Siempre target de red (gvmd/ospd-openvas tambien corren dentro de
-        # la red docker de la plataforma) -- a diferencia de ScanJobCreate,
-        # aca no hay scanner_type que pueda ser trivy, asi que se aplica
-        # sin condicion.
-        reject_dangerous_network_target(v)
-        return v
-
-
-class GvmTargetOut(BaseModel):
-    id: str
-    name: str
-    hosts: str
-    port_list_id: str | None
-    ssh_credential_id: str | None
-    smb_credential_id: str | None
-
-
-class GvmTaskOut(BaseModel):
-    id: str
-    name: str
-    status: str
-    progress: int
-    target_id: str | None
-    last_report_id: str | None

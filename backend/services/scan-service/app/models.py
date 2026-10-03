@@ -17,10 +17,8 @@ def _now() -> datetime:
 
 
 class ScannerType(str, enum.Enum):
-    nmap = "nmap"
     trivy = "trivy"
     nuclei = "nuclei"
-    openvas = "openvas"
 
 
 class ScanStatus(str, enum.Enum):
@@ -40,7 +38,8 @@ class ScanSchedule(Base):
     Sin agent_id (default, comportamiento historico): cada disparo crea un
     ScanJob nuevo que corre DENTRO del contenedor de scan-service -- por el
     aislamiento de red de Docker Desktop, esto nunca alcanza una LAN real
-    (ver app/scanners/nmap.py), solo targets de WAN/internet.
+    (nuclei no tiene forma de atravesar ese NAT), solo targets de WAN/internet.
+    trivy no aplica aca (escanea una imagen/filesystem, no un host de red).
 
     Con agent_id: cada disparo crea un AgentScanJob para que lo ejecute ESE
     agente remoto (ver ScanAgent/AgentScanJob mas abajo) -- el mismo
@@ -83,7 +82,7 @@ class ScanJob(Base):
     `packages` es propio de trivy: el inventario COMPLETO de paquetes
     detectados en la imagen/filesystem (no solo los que tienen CVE, a
     diferencia de `findings`) -- ver app/scanners/trivy.py::_parse_trivy_packages.
-    Para nmap/nuclei/openvas queda una lista vacia."""
+    Para nuclei queda una lista vacia."""
 
     __tablename__ = "scan_jobs"
 
@@ -146,7 +145,7 @@ class AgentScanJob(Base):
     organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     agent_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), default="")
-    scanner_type: Mapped[str] = mapped_column(String(20), default="nmap")
+    scanner_type: Mapped[str] = mapped_column(String(20), default="nuclei")
     target: Mapped[str] = mapped_column(String(500), nullable=False)
     options: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|assigned|completed|failed
@@ -157,34 +156,3 @@ class AgentScanJob(Base):
     assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-
-class GvmOwnedResource(Base):
-    """Rastrea a que organizacion pertenece cada credencial/target GVM
-    creado desde el dashboard de OpenVAS (app/gvm_manage.py + endpoints
-    /openvas/credentials, /openvas/targets en main.py).
-
-    gvmd/ospd-openvas no tienen NINGUN concepto de organizacion -- es un
-    unico motor compartido por todo el deployment (se autentica con un
-    solo GVM_USER/GVM_PASSWORD para todo scan-service, ver
-    app/scanners/openvas.py). Sin esta tabla, list/get/delete de
-    credenciales y targets GVM no tenian NINGUN filtro de organizacion
-    (a diferencia de ScanJob/ScanSchedule/ScanAgent/AgentScanJob, que si
-    filtran por organization_id) -- cualquier usuario autenticado de
-    CUALQUIER organizacion podia listar, leer y borrar las credenciales
-    (incluye el login/password guardado para escaneo autenticado) y
-    targets GVM de TODAS las demas organizaciones del mismo deployment.
-    Ver services.py (record_gvm_resource_ownership / resolve_gvm_resource_org
-    / list_owned_gvm_resource_ids) y main.py (donde se usan) para el
-    arreglo completo -- incluye tambien a los tasks/reportes GVM, cuya
-    organizacion se resuelve en cambio via ScanJob.options['gvm_task_id']
-    (ya se crean con organization_id, ver services.execute_scan_job)."""
-
-    __tablename__ = "gvm_owned_resources"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    organization_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
-    # "credential" | "target" -- nunca "task"/"report" (esos usan ScanJob,
-    # ver docstring de arriba).
-    resource_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
-    gvm_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
