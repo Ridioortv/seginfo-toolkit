@@ -1318,3 +1318,98 @@ arranco el producto (OpenVAS) -- antes de llevarlo a mercado asi, vale la
 pena confirmar que trivy + nuclei cubre lo que tus clientes esperan, o si
 hace falta sumar otra capacidad de escaneo de red/infraestructura que sí
 este lista para vender.
+
+## Se suman 6 scanners con licencias aptas para vender: ZAP, Semgrep, Gitleaks, YARA, Zeek, Falco (2026-10-03)
+
+Manu pidio implementar, en Escaneos programados y Escaneos remotos, los
+scanners que una investigacion de licenciamiento previa habia identificado
+como legalmente aptos para vender el software sin restricciones (ver el
+analisis en el doc de licencias ya compartido). Se le pregunto
+explicitamente por Zeek/Falco -- son herramientas de monitoreo continuo, no
+"escanea un target y termina" como trivy/nuclei -- y elegio sumar las 6
+igual, forzando Zeek/Falco como jobs de **duracion fija** (ventana
+configurable 1-60 min, default 5).
+
+El producto pasa de 2 a **8 scanners**: `trivy`, `nuclei` (ya existian) +
+`zap` (OWASP ZAP, Apache-2.0), `semgrep` (motor LGPL-2.1, **reglas propias
+unicamente** -- nunca el registro publico `auto`/`p/...`, que tiene una
+licencia que prohibe ofrecerlo como parte de un servicio a terceros),
+`gitleaks` (MIT), `yara` (BSD-3-Clause, **reglas propias unicamente**, por
+la misma razon que semgrep pero con packs de terceros), `zeek`
+(BSD-3-Clause) y `falco` (Apache-2.0). Quedaron deliberadamente afuera
+ClamAV, Opengrep, Suricata, Wazuh/OSSEC, Grafana Loki/Tempo y TruffleHog
+(cada uno con un problema de licencia o de alcance distinto, ver el doc de
+licencias).
+
+- **Backend (`scan-service`)**: 6 drivers nuevos en `app/scanners/`
+  (`zap.py`, `semgrep.py`, `gitleaks.py`, `yara.py`, `zeek.py`, `falco.py`),
+  mismo patron que `trivy.py`/`nuclei.py` (subprocess async, timeout,
+  `ScanResult`). Dos piezas compartidas nuevas: `_codetarget.py` (resuelve
+  un target a un `git clone` temporal si es una URL http(s), o a un path
+  local existente -- la usan semgrep y gitleaks) y `_duration.py`
+  (`resolve_duration_seconds`, acota `options.duration_minutes` a 1-60,
+  default 5 -- la usan zeek y falco: en zeek el timeout de
+  `asyncio.wait_for` ES el fin exitoso de la captura, no un error; falco
+  usa su propio flag nativo `-M <segundos>`). `app/models.py` suma los 6
+  valores a `ScannerType`. `app/schemas.py` extiende el denylist SSRF: zap/
+  semgrep/gitleaks pueden tener un target de red y se siguen chequeando;
+  yara/zeek/falco nunca reciben un host/URL como target y quedan exentos
+  (igual que trivy ya lo estaba). `requirements.txt` suma `semgrep==1.86.0`
+  (motor LGPL-2.1 invocado como binario externo via subprocess, nunca
+  importado como libreria). Reglas propias nuevas en
+  `rules/semgrep/sentinelops-rules.yml` (12 reglas) y
+  `rules/yara/sentinelops.yar` (5 reglas, incluye deteccion de EICAR,
+  webshells PHP obfuscados, PE embebido en archivo no-ejecutable,
+  PowerShell obfuscado y one-liners de reverse shell en Python). El
+  `Dockerfile` instala los 6 binarios nuevos (gitleaks/ZAP via tarball de
+  GitHub releases, Zeek via el repo OBS de openSUSE, Falco via su repo apt
+  oficial -- estos 2 ultimos con fallback no-fatal si el build corre en una
+  arquitectura/distro donde el repo no esta disponible) y copia las 2
+  carpetas de reglas dentro de la imagen. `docker-compose.yml` suma los
+  capabilities de Linux que Zeek (`NET_RAW`/`NET_ADMIN`) y Falco
+  (`SYS_ADMIN`/`SYS_RESOURCE`/`SYS_PTRACE`/`BPF`/`PERFMON`, driver eBPF
+  moderno) necesitan a `scan-service` y `remote-agent`. 166/166 tests en
+  verde (`test_zap_driver.py`, `test_semgrep_driver.py`,
+  `test_gitleaks_driver.py`, `test_yara_driver.py`, `test_zeek_driver.py`,
+  `test_falco_driver.py`, `test_codetarget.py` nuevos; `test_target_ssrf_
+  validation.py` ampliado con los 6 scanners nuevos).
+- **`remote-agent/`**: `agent.py` suma `run_zap`/`run_semgrep`/
+  `run_gitleaks`/`run_yara`/`run_zeek`/`run_falco` (mismo patron sync que
+  ya tenia para trivy/nuclei) y generaliza `_is_private_ip_target` para
+  parsear URLs completas (necesario para zap). `agente-lan.ps1` (PowerShell
+  nativo, sin Python) suma las 4 que SI puede correr en Windows nativo --
+  `zap`/`semgrep`/`gitleaks`/`yara`, con su propio `Resolve-CodeTarget` -- y
+  rechaza `zeek`/`falco` con un mensaje claro de "usa el Agente Docker"
+  (necesitan captura de paquetes/eBPF de Linux, que Windows nativo no
+  tiene). `test_pipeline.py` y `README.md` quedaron documentando los 8
+  scanners.
+- **Frontend (`Scans.tsx`)**: `ScannerType` pasa de 2 a 8 valores. Los 2
+  selects de scanner (Escaneos programados y Escaneos remotos) ofrecen los
+  8. Cuando se elige `zeek`/`falco` en cualquiera de los 2 formularios
+  aparece un input "Duracion (min)" (1-60, default 5) que se manda como
+  `options.duration_minutes`. El aviso de "LAN detras del NAT de Docker" se
+  generalizo para reconocer tambien un target tipo URL (no solo IP/CIDR
+  pelada), asi tambien avisa para `zap` (y de paso para semgrep/gitleaks si
+  el repo a clonar esta en un git server interno).
+- **`.env.example`**: se documentaron (comentadas, no requeridas --
+  tienen default sensato) las 3 variables que permiten apuntar
+  `agente-lan.ps1`/`agent.py` a un set de reglas/home distinto al que
+  viene con el repo: `SENTINELOPS_SEMGREP_RULES_DIR`,
+  `SENTINELOPS_YARA_RULES_FILE`, `SENTINELOPS_ZAP_HOME_DIR`.
+- **`THIRD-PARTY-LICENSES.md`** (nuevo, en la raiz): atribucion de
+  copyright y licencia de cada uno de los 8 motores de escaneo que usa el
+  producto.
+
+**Resultado para Manu**: el producto pasa de 2 a 8 scanners, todos con
+licencias que permiten venderlo sin pedirle permiso a nadie (Apache-2.0,
+MIT, BSD-3-Clause, o LGPL-2.1 usado correctamente como binario externo).
+**Dos cosas pendientes de tu lado, no resueltas en esta sesion**: (1) el
+`Dockerfile` quedo reescrito pero **nunca se corrio `docker compose build`**
+-- instalar Zeek/Falco via sus repos apt puede fallar segun la
+arquitectura/version de Docker Desktop (WSL2 vs Hyper-V), conviene buildear
+y revisar los logs antes de confiar en que los 8 binarios quedaron
+instalados; (2) `agente-lan.ps1` no se pudo correr por ningun interprete de
+PowerShell real durante esta sesion (solo revision manual linea por linea)
+-- probalo a mano con un job de cada uno de los 4 scanners nuevos que
+soporta (zap/semgrep/gitleaks/yara) antes de darlo por funcionando en
+produccion.

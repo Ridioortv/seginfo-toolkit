@@ -25,7 +25,21 @@ function scheduleWhen(s: ScanScheduleOut): string {
   return `Todos los dias a las ${time}`;
 }
 
-type ScannerType = "trivy" | "nuclei";
+type ScannerType =
+  | "trivy"
+  | "nuclei"
+  | "zap"
+  | "semgrep"
+  | "gitleaks"
+  | "yara"
+  | "zeek"
+  | "falco";
+
+// Zeek y Falco no escanean un target puntual -- corren durante una
+// ventana de tiempo fija (options.duration_minutes, 1-60, default 5 en
+// el backend) y reportan lo que detectaron en ese lapso. Ver
+// app/scanners/_duration.py en scan-service.
+const FIXED_DURATION_SCANNERS = new Set<ScannerType>(["zeek", "falco"]);
 type NetworkScope = "lan" | "man" | "wan" | "custom";
 
 const SCOPE_LABELS: Record<NetworkScope, string> = {
@@ -61,8 +75,19 @@ function packageLine(v: VulnerabilityOut): string | null {
 // ahi. Deteccion simple (RFC1918 + loopback + link-local), solo IPv4
 // literal: un hostname (ej. intranet.miempresa.local) se deja pasar sin
 // avisar, igual que del lado del agente.
+function extractHostForPrivateIpCheck(target: string): string {
+  const trimmed = target.trim();
+  // URL (zap, o semgrep/gitleaks clonando desde un git server): sacar el
+  // host sin esquema/path. Si no es una URL, es el caso historico
+  // (IP/CIDR/host pelado de nuclei/trivy) -- cortar en el primer "/".
+  const urlMatch = trimmed.match(/^https?:\/\/([^/]+)/i);
+  const hostPort = urlMatch ? urlMatch[1] : trimmed.split("/")[0];
+  const colonParts = hostPort.split(":");
+  return colonParts.length === 2 ? colonParts[0] : hostPort;
+}
+
 function isLikelyPrivateIpTarget(target: string): boolean {
-  const host = target.trim().split("/")[0];
+  const host = extractHostForPrivateIpCheck(target);
   const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (!m) return false;
   const parts = m.slice(1, 5).map(Number);
@@ -174,6 +199,9 @@ export default function Scans() {
 
   const [schedName, setSchedName] = useState("");
   const [schedScannerType, setSchedScannerType] = useState<ScannerType>("nuclei");
+  // Solo se usa (y solo se manda al backend) cuando schedScannerType es
+  // "zeek"/"falco" -- ver FIXED_DURATION_SCANNERS.
+  const [schedDurationMinutes, setSchedDurationMinutes] = useState(5);
   const [schedTarget, setSchedTarget] = useState("");
   const [schedFrequency, setSchedFrequency] = useState<"daily" | "weekly">("daily");
   const [schedDayOfWeek, setSchedDayOfWeek] = useState(0);
@@ -189,6 +217,8 @@ export default function Scans() {
   const [justCreatedKey, setJustCreatedKey] = useState<{ agentName: string; apiKey: string } | null>(null);
   const [agentJobAgentId, setAgentJobAgentId] = useState("");
   const [agentJobScannerType, setAgentJobScannerType] = useState<ScannerType>("nuclei");
+  // Idem schedDurationMinutes, para el formulario de Escaneos remotos.
+  const [agentJobDurationMinutes, setAgentJobDurationMinutes] = useState(5);
   const [agentJobName, setAgentJobName] = useState("");
   const [agentJobTarget, setAgentJobTarget] = useState("");
   // Api key del agente elegido: se pide al lanzar (ademas del login) y el
@@ -234,6 +264,9 @@ export default function Scans() {
           day_of_week: schedFrequency === "weekly" ? schedDayOfWeek : null,
           agent_id: schedAgentId || null,
           agent_api_key: schedAgentId ? schedAgentApiKey : null,
+          options: FIXED_DURATION_SCANNERS.has(schedScannerType)
+            ? { duration_minutes: schedDurationMinutes }
+            : {},
         })
       ).data,
     onSuccess: () => {
@@ -302,6 +335,9 @@ export default function Scans() {
           name: agentJobName,
           target: agentJobTarget,
           api_key: agentJobApiKey,
+          options: FIXED_DURATION_SCANNERS.has(agentJobScannerType)
+            ? { duration_minutes: agentJobDurationMinutes }
+            : {},
         })
       ).data,
     onSuccess: () => {
@@ -586,13 +622,30 @@ export default function Scans() {
           <select value={schedScannerType} onChange={(e) => setSchedScannerType(e.target.value as ScannerType)}>
             <option value="nuclei">nuclei</option>
             <option value="trivy">trivy</option>
+            <option value="zap">zap (OWASP ZAP -- DAST pasivo contra una URL)</option>
+            <option value="semgrep">semgrep (SAST, reglas propias)</option>
+            <option value="gitleaks">gitleaks (secretos en un repo/path)</option>
+            <option value="yara">yara (patrones conocidos en archivos)</option>
+            <option value="zeek">zeek (captura de red por tiempo fijo)</option>
+            <option value="falco">falco (eventos de runtime por tiempo fijo)</option>
           </select>
           <input
             className="mono"
-            placeholder="Target (IP, CIDR, host, imagen segun el scanner)"
+            placeholder="Target (IP, CIDR, host, imagen, URL o interfaz de red segun el scanner)"
             value={schedTarget}
             onChange={(e) => setSchedTarget(e.target.value)}
           />
+          {FIXED_DURATION_SCANNERS.has(schedScannerType) && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              Duracion (min)
+              <input
+                type="number" min={1} max={60} style={{ width: 70 }}
+                value={schedDurationMinutes}
+                onChange={(e) => setSchedDurationMinutes(Number(e.target.value))}
+                title="Zeek/Falco corren durante esta ventana fija (1-60 min) y despues reportan lo que detectaron."
+              />
+            </label>
+          )}
         </div>
         <div className="inline-form" style={{ marginTop: 8 }}>
           <select value={schedFrequency} onChange={(e) => setSchedFrequency(e.target.value as "daily" | "weekly")}>
@@ -854,14 +907,31 @@ export default function Scans() {
           >
             <option value="nuclei">nuclei (plantillas de deteccion)</option>
             <option value="trivy">trivy (CVEs en imagenes/paquetes)</option>
+            <option value="zap">zap (OWASP ZAP -- DAST pasivo contra una URL)</option>
+            <option value="semgrep">semgrep (SAST, reglas propias)</option>
+            <option value="gitleaks">gitleaks (secretos en un repo/path)</option>
+            <option value="yara">yara (patrones conocidos en archivos)</option>
+            <option value="zeek">zeek (captura de red por tiempo fijo)</option>
+            <option value="falco">falco (eventos de runtime por tiempo fijo)</option>
           </select>
           <input placeholder="Nombre (opcional)" value={agentJobName} onChange={(e) => setAgentJobName(e.target.value)} />
           <input
             className="mono"
-            placeholder="Target (IP, CIDR, host visible desde el agente)"
+            placeholder="Target (IP, CIDR, host, URL, path o interfaz segun el scanner)"
             value={agentJobTarget}
             onChange={(e) => setAgentJobTarget(e.target.value)}
           />
+          {FIXED_DURATION_SCANNERS.has(agentJobScannerType) && (
+            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              Duracion (min)
+              <input
+                type="number" min={1} max={60} style={{ width: 70 }}
+                value={agentJobDurationMinutes}
+                onChange={(e) => setAgentJobDurationMinutes(Number(e.target.value))}
+                title="Zeek/Falco corren durante esta ventana fija (1-60 min) y despues reportan lo que detectaron."
+              />
+            </label>
+          )}
           <input
             type="password"
             className="mono"
