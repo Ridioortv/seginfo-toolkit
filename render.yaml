@@ -1,0 +1,80 @@
+# Blueprint de Render para licensing-server -- el UNICO servicio de este
+# repo pensado para la nube (ver licensing-server/README.md y STATUS.md):
+# el resto de SentinelOps (scan-service, openvas, frontend, etc.) se
+# distribuye como RAR para que cada cliente lo corra en su propia
+# infraestructura on-prem, no tiene sentido ni sirve desplegarlo aca.
+#
+# Por que licensing-server anda igual en Render que en una PC local: ya
+# esta escrito para los dos caminos desde el principio (ver app/db.py y
+# el Dockerfile) -- sin DATABASE_URL usa SQLite en un volumen local (VPS
+# propio), con DATABASE_URL usa Postgres (este camino: Render + Neon,
+# donde el disco del plan free es descartable). El Dockerfile ya lee
+# $PORT en vez de un puerto fijo (lo que exige Render) y expone
+# GET /health, que se reusa aca como healthCheckPath. No hay
+# threads/websockets/cron corriendo en proceso -- solo requests HTTP
+# sync en el threadpool de FastAPI -- asi que el plan "free" (que duerme
+# sin trafico) no rompe nada, solo agrega latencia de arranque en el
+# primer request despues de dormir.
+#
+# Uso: Dashboard de Render -> New -> Blueprint -> conectar este repo.
+# Render lee este archivo solo y crea el servicio. Las variables con
+# "sync: false" las pide el dashboard en el momento de crear el servicio
+# (nunca quedan en este archivo ni en el repo); "generateValue: true"
+# hace que Render genere el secreto solo, sin pedirlo.
+services:
+  - type: web
+    name: sentinelops-licensing-server
+    runtime: docker
+    dockerfilePath: ./licensing-server/Dockerfile
+    dockerContext: ./licensing-server
+    plan: free
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      # ADMIN_TOKEN protege /admin/* -- Render puede generarlo solo, no
+      # hace falta pensarlo (ver licensing-server/.env.example).
+      - key: ADMIN_TOKEN
+        generateValue: true
+      # Clave Ed25519 de firma -- esta SI hay que generarla a mano con
+      # `python generate_keys.py` (no es un secreto random generico,
+      # tiene que ser el par que coincide con LICENSE_SERVER_PUBLIC_KEY
+      # que se distribuye a los clientes) y pegarla aca cuando Render la
+      # pida.
+      - key: LICENSE_SIGNING_PRIVATE_KEY
+        sync: false
+      # Connection string de Neon (o Supabase) -- con esto seteado,
+      # db.py usa Postgres en vez de SQLite (ver el comentario de
+      # arriba). Pegar tal cual la da Neon, ya incluye sslmode=require.
+      # LICENSING_DB_PATH/LICENSE_SERVER_DOMAIN no se listan aca a
+      # proposito: son del camino VPS+Caddy, Render no los necesita.
+      - key: DATABASE_URL
+        sync: false
+      # Mercado Pago (cobro en ARS, gateway principal) -- las que se
+      # dejen vacias simplemente hacen que /webhooks/mercadopago y
+      # /admin/clients/*/mercadopago-subscription-link devuelvan 503,
+      # sin romper el resto del servicio (ver app/main.py).
+      - key: MERCADOPAGO_ACCESS_TOKEN
+        sync: false
+      - key: MERCADOPAGO_WEBHOOK_SECRET
+        sync: false
+      - key: MERCADOPAGO_PLAN_ID
+        sync: false
+      - key: MERCADOPAGO_BACK_URL
+        value: https://www.google.com/?sentinelops_subscribed=1
+      # PayPal (cobro en USD, camino en paralelo para clientes del
+      # exterior) -- mismo criterio, vacias = 503 nomas en esos
+      # endpoints.
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: PAYPAL_PLAN_ID
+        sync: false
+      - key: PAYPAL_ENV
+        value: sandbox
+      - key: PAYPAL_RETURN_URL
+        value: https://www.google.com/?sentinelops_subscribed=1
+      - key: PAYPAL_CANCEL_URL
+        value: https://www.google.com/?sentinelops_cancelled=1

@@ -1186,3 +1186,61 @@ LAN") en el selector en vez de "Agente Docker" (el que probablemente
 elegiste, llamado "gvm" o similar en tu lista de agentes). Si "Agente
 LAN" no aparece en el selector, es que agente-lan.ps1 no esta corriendo
 en ninguna PC todavia.**
+
+## render.yaml para licensing-server + investigacion de "archivos que no se pueden subir al repo" (2026-10-02)
+
+Manu pregunto (via consejo de una amiga) tres cosas: 1) el problema que
+tiene con archivos que no puede subir al repo, 2) si su programa anda
+igual en Render que en local, 3) si es asi, un `render.yaml` para
+desplegar rapido.
+
+**Investigacion del punto 1** (`remote-agent/bin/`): encontre
+`trivy.exe` (172MB) y `nuclei.exe` (145MB), ambos arriba del limite
+duro de 100MB por archivo de GitHub. Ya estan correctamente excluidos
+por la regla `*.exe` de `.gitignore` -- `git ls-files` confirma que
+NINGUN `.exe` esta trackeado hoy, asi que un `git push` ahora mismo no
+deberia rechazar nada por esto. Si el problema que vive Manu es otro
+(otro archivo, otro error), falta que lo describa para investigar ese
+caso puntual -- esto es la hipotesis mas probable dado lo que hay en
+el repo, no una confirmacion.
+
+**Punto 2 (licensing-server especificamente, no el resto de
+SentinelOps)**: revise `app/db.py`, `Dockerfile` y `.env.example` --
+ya esta escrito a proposito para andar igual en los dos caminos desde
+el principio (toggle SQLite/Postgres por `DATABASE_URL`, puerto
+leido de `$PORT`, sin threads/websockets/cron en proceso, health
+check en `/health`). Respuesta: SI, anda igual en Render que en local
+-- las unicas diferencias son de plataforma (el plan free duerme sin
+trafico, agrega latencia en el primer request), no de codigo. El
+resto de SentinelOps (scan-service, openvas, etc.) NO esta pensado
+para Render -- se distribuye como RAR on-prem a proposito (requiere
+Docker socket, capabilities de red privilegiadas, visibilidad de LAN
+real -- nada de eso existe en una plataforma como Render), asi que el
+Blueprint cubre solo licensing-server.
+
+**Punto 3**: `render.yaml` nuevo en la raiz del repo, 1 servicio
+(`sentinelops-licensing-server`, `runtime: docker`, apuntando a
+`licensing-server/Dockerfile` con ese mismo directorio como build
+context), `healthCheckPath: /health`, `plan: free`, variables de
+entorno declaradas con `sync: false` (las pide Render al crear el
+servicio, nunca quedan en el repo) salvo `ADMIN_TOKEN`
+(`generateValue: true`, Render lo genera solo) y los valores no
+sensibles que ya tenian default en `.env.example` (URLs de retorno de
+PayPal/Mercado Pago, `PAYPAL_ENV=sandbox`). Verifique la sintaxis
+parseando el YAML con `python3 -c "import yaml; yaml.safe_load(...)"`
+y confirme contra la documentacion oficial de Render (`runtime: docker`
+reemplaza al campo viejo `env: docker`; `autoDeployTrigger` reemplaza
+a `autoDeploy`). `licensing-server/README.md` ahora menciona este
+atajo de Blueprint en la seccion "Desplegar en Render + Neon", con una
+nota de que Render cambio de planes en julio 2026 y no pude confirmar
+si el nivel free sigue sin pedir tarjeta -- Manu deberia confirmarlo
+el mismo en el paso de signup.
+
+**Para Manu**:
+- Si el problema de archivos no era el de trivy.exe/nuclei.exe,
+  describime que error te tira exactamente al subir (que archivo, que
+  mensaje) para investigar el caso real.
+- `render.yaml` listo para usar: Render dashboard -> New -> Blueprint
+  -> elegir este repo. Te va a pedir `DATABASE_URL` (connection string
+  de Neon) y `LICENSE_SIGNING_PRIVATE_KEY` (la que genera
+  `generate_keys.py`) en el momento de crear el servicio.

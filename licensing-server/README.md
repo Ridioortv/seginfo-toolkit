@@ -156,6 +156,23 @@ Este camino no usa Caddy ni `LICENSE_SERVER_DOMAIN` -- Render te da un
 dominio propio (`https://tu-servicio.onrender.com`) con TLS automático
 incluido.
 
+**Atajo**: si ya tenés Neon armado (paso 1), en vez de los pasos 2-4 de
+abajo podés usar el `render.yaml` en la raíz del repo -- Dashboard de
+Render -> **New -> Blueprint** -> elegí este repo. Render lee ese
+archivo y crea el servicio con el Dockerfile, el health check y las
+variables de entorno ya declaradas (te va a pedir en pantalla los
+valores de las que no tienen un default, como `DATABASE_URL` y
+`LICENSE_SIGNING_PRIVATE_KEY` -- `ADMIN_TOKEN` se genera solo). Mismo
+resultado final, un solo click en vez de completar el formulario a
+mano.
+
+Nota sobre "sin tarjeta": Render cambió sus planes en julio de 2026
+(de 8 a 4 opciones) y sigue habiendo un nivel "Free" en el rango de
+precios, pero no pude confirmar en la documentación pública si
+todavía no pide ninguna verificación de tarjeta en el signup --
+confirmalo vos mismo en el paso 3 antes de depender de esto, por si
+cambió desde que se escribió esta guía.
+
 ### 1. Base de datos: Neon (Postgres gratis, sin tarjeta)
 
 1. Entrá a [neon.tech](https://neon.tech) y creá una cuenta (con
