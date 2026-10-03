@@ -24,6 +24,10 @@ const STATUS_CLASS: Record<string, string> = {
   simulated: "badge badge-neutral",
   executed: "badge badge-success",
   sent: "badge badge-success",
+  // Estados nativos de un task de gvmd (GvmTaskOut.status, ver
+  // OpenvasDashboard.tsx) -- "running"/"failed"/"pending" ya estaban
+  // cubiertos arriba; "done" es el equivalente de gvmd a "completed".
+  done: "badge badge-success",
 };
 
 export function SeverityBadge({ value }: { value: string }) {

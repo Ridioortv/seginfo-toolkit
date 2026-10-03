@@ -1045,9 +1045,12 @@ export default function Scans() {
 
         <div className="inline-form" style={{ marginBottom: 10 }}>
           {openvasReady && !autoActivateResult ? (
-            <span className="empty-hint" style={{ color: "var(--success, #2f9e44)" }}>
-              OpenVAS esta activo y disponible como scanner remoto.
-            </span>
+            <>
+              <span className="empty-hint" style={{ color: "var(--success, #2f9e44)" }}>
+                OpenVAS esta activo y disponible como scanner remoto.
+              </span>
+              <Link to="/openvas" className="btn-secondary">Administrar credenciales/targets/reportes</Link>
+            </>
           ) : (
             <button type="button" className="btn-secondary" onClick={() => setOpenvasPanelOpen((v) => !v)}>
               {openvasPanelOpen ? "Cerrar" : "Activar OpenVAS"}
@@ -1101,6 +1104,12 @@ export default function Scans() {
                   Guardala si la necesitas despues -- ya quedo escrita en .env, asi que sobrevive un reinicio del
                   stack.
                 </p>
+                {/* Auto-apertura: apenas termina la activacion, se ofrece el link a la
+                    administracion avanzada (credenciales/targets/reportes) en vez de que el
+                    usuario tenga que encontrarla sola por el menu. */}
+                <Link to="/openvas" className="btn-primary" style={{ marginRight: 8 }}>
+                  Ir a administracion avanzada de OpenVAS
+                </Link>
                 <button
                   type="button"
                   className="btn-secondary"

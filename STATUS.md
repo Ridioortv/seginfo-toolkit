@@ -1101,3 +1101,44 @@ banner de arranque va a loguear "nuclei: disponible (...)" / "trivy:
 disponible (...)", y los proximos jobs de esos scanners contra targets
 de LAN deberian completar en vez de fallar.
 
+
+## Dashboard de administracion avanzada de OpenVAS (2026-10-03)
+
+El backend de scan-service ya tenia, desde una corrida anterior, el modulo
+completo `app/gvm_manage.py` con 18 endpoints `/openvas/*` para administrar
+credenciales de escaneo autenticado, targets reutilizables, tasks y
+exportacion de reportes contra gvmd real (con tenancy por organizacion ya
+corregida en la auditoria de seguridad transversal) -- pero ningun lugar
+del frontend los consumia. Scans.tsx solo cubre activacion/estado y
+lanzar un escaneo puntual, nunca administracion de esos recursos
+reutilizables.
+
+- Pagina nueva `frontend/src/pages/OpenvasDashboard.tsx` (ruta `/openvas`,
+  nav "OpenVAS avanzado"): 3 paneles -- credenciales (alta por formulario
+  + tabla + borrado), targets (alta con hosts + lista de puertos +
+  credenciales SSH/SMB opcionales, poblados desde `/openvas/port-lists` y
+  `/openvas/credentials` + tabla + borrado) y analisis/reportes (tabla con
+  estado, barra de progreso real via `refetchInterval`, y exportacion
+  PDF/CSV/XML por fila usando el mismo patron blob-download que
+  Reports.tsx). Si OpenVAS todavia no esta activado, la pagina lo detecta
+  (`GET /openvas/status`) y redirige con un link a Escaneos en vez de
+  mostrar tablas vacias o errores 409 confusos.
+- Auto-apertura: Scans.tsx ahora ofrece un link a `/openvas` apenas
+  termina una activacion exitosa (ademas de uno persistente en el panel
+  normal una vez que OpenVAS ya esta listo), para que el usuario encuentre
+  la administracion avanzada sin tener que buscarla sola por el menu.
+- `Badge.tsx`: se agrego el estado nativo de gvmd "done" (equivalente a
+  "completed") a `STATUS_CLASS` -- los demas estados de task de gvmd sin
+  mapeo especifico (New/Requested/Queued/Stop Requested) caen al badge
+  neutral por defecto, que ya es correcto.
+- `/help`: tema nuevo "OpenVAS avanzado" con la misma guia en espanol
+  simple que el resto de las secciones.
+
+No hizo falta tocar nada de backend (los 18 endpoints y los tipos
+TypeScript ya existian). Verificacion: `npx tsc --noEmit` limpio,
+`npm run test -- --run` (41/41 verde, sin agregar tests nuevos --
+OpenvasDashboard.tsx es composicion de UI sobre endpoints ya testeados
+del lado del backend, sin logica pura nueva que valga la pena extraer) y
+`npm run build` limpio.
+
+**Nada pendiente para Manu de este lado.**

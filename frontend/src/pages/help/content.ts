@@ -101,6 +101,31 @@ export const HELP_TOPICS: HelpTopic[] = [
     ],
   },
   {
+    id: "openvas-dashboard",
+    label: "OpenVAS avanzado",
+    tagline: "Credenciales, targets reutilizables y reportes de OpenVAS",
+    overview:
+      "Una vez que activaste OpenVAS desde Escaneos, esta seccion te deja administrar sus recursos reutilizables: credenciales para escaneo autenticado (mas preciso), targets ya armados (para no volver a tipear los mismos hosts) y el historial de analisis con sus reportes completos para exportar.",
+    steps: [
+      {
+        title: "Credenciales de escaneo autenticado",
+        body: "Cargá un usuario y contraseña (SSH o SMB) de un equipo que quieras escanear por dentro -- OpenVAS encuentra bastante mas asi que escaneando \"desde afuera\". Quedan guardadas en el motor de OpenVAS, nunca en esta plataforma.",
+      },
+      {
+        title: "Targets reutilizables",
+        body: "Un target junta hosts + lista de puertos + (opcional) una credencial SSH/SMB en un solo lugar con nombre, para no tener que volver a cargar los mismos datos cada vez que lances un analisis parecido.",
+      },
+      {
+        title: "Analisis y reportes",
+        body: "Cada analisis OpenVAS que lances (desde Escaneos, eligiendo el scanner \"openvas\") aparece aca con su progreso real. Al terminar, podes exportar el reporte completo en PDF, CSV o XML con un click.",
+      },
+    ],
+    tips: [
+      "Si todavia no activaste OpenVAS, esta seccion te lo va a pedir primero -- el boton esta en Escaneos.",
+      "Borrar una credencial o un target no borra los analisis que ya se hicieron con ella.",
+    ],
+  },
+  {
     id: "vulnerabilities",
     label: "Vulnerabilidades",
     tagline: "Los fallos encontrados y como solucionarlos",
