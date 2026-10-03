@@ -31,12 +31,8 @@ Alcance (solo deteccion, igual que el resto de la plataforma)
 ---------------------------------------------------------------
 Este agente corre los mismos escaneres de SOLO DETECCION que scan-service,
 eligiendo cual por job (campo scanner_type):
-  - nmap   : descubrimiento de puertos/servicios (scripts 'default'/'safe').
   - trivy  : CVEs conocidos en imagenes/paquetes/filesystem.
   - nuclei : deteccion por plantillas (se excluyen dos/fuzz/intrusive).
-  - openvas: escaneo real de vulnerabilidades via GMP -- REQUIERE que esta
-             misma maquina tenga el stack GVM (gvmd + ospd-openvas + feed)
-             y gvm-cli; si no, el job falla con un mensaje claro.
 Usa exactamente los mismos comandos/normalizacion que los drivers dentro de
 scan-service (ver backend/services/scan-service/app/scanners/*.py). NUNCA
 ejecuta scripts de explotacion.
@@ -46,10 +42,8 @@ Requisitos
 - Python 3.9+ (solo libreria estandar -- no hace falta pip install nada)
 - El/los binarios de los escaneres que vayas a usar, en el PATH de esta
   maquina:
-    nmap    -> nmap (Windows: Nmap for Windows + Npcap; Linux/Mac: apt/brew install nmap)
     trivy   -> trivy (ver aquasecurity/trivy)
     nuclei  -> nuclei (ver projectdiscovery/nuclei)
-    openvas -> gvm-cli (paquete gvm-tools) + stack GVM corriendo en esta PC
   Al arrancar, el agente informa que escaneres detecto disponibles. Un job
   cuyo scanner no este instalado falla con un mensaje claro, sin colgar el
   resto.
@@ -85,46 +79,30 @@ import subprocess
 import sys
 import time
 import shutil
-import socket
 import ipaddress
 import urllib.error
 import urllib.request
-import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from xml.sax.saxutils import escape as _xml_escape
 
 SCAN_SERVICE_URL = os.environ.get("SCAN_SERVICE_URL", "http://localhost:8003").rstrip("/")
 AGENT_API_KEY = os.environ.get("AGENT_API_KEY", "")
 POLL_INTERVAL_SECONDS = int(os.environ.get("POLL_INTERVAL_SECONDS", "10"))
 # Cuantos jobs puede correr este agente EN PARALELO (ver _process_job/
-# run_once mas abajo) -- sin esto, un solo job lento (nuclei/openvas
-# contra un target que no responde) bloqueaba a todos los demas jobs ya
-# asignados en la misma corrida, aunque fueran rapidos (ej. nmap). No
-# hace falta que sea muy alto: max_jobs de poll_agent_jobs en el backend
-# ya limita a 5 jobs por poll.
+# run_once mas abajo) -- sin esto, un solo job lento (nuclei contra un
+# target que no responde) bloqueaba a todos los demas jobs ya asignados
+# en la misma corrida, aunque fueran rapidos. No hace falta que sea muy
+# alto: max_jobs de poll_agent_jobs en el backend ya limita a 5 jobs por
+# poll.
 _MAX_CONCURRENT_JOBS = int(os.environ.get("AGENT_MAX_CONCURRENT_JOBS", "8"))
 # Este agente corre DENTRO de un contenedor Docker (ver el servicio
 # remote-agent en docker-compose.yml) y por lo tanto detras del NAT de
-# Docker Desktop: nmap tiene un fallback propio para atravesarlo (ver
-# AGENT_FORCE_INTERNAL_NMAP/_run_python_portscan mas abajo), pero
-# trivy/nuclei/openvas NO -- corren tal cual el binario real, que para un
-# target de LAN (192.168.x.x, 10.x.x.x, etc.) puede quedarse
+# Docker Desktop: trivy/nuclei corren tal cual el binario real, que para
+# un target de LAN (192.168.x.x, 10.x.x.x, etc.) puede quedarse
 # intentando conectar varios minutos antes de fallar, en vez de fallar al
 # toque con un mensaje claro. El Agente LAN (agente-lan.ps1, que corre
 # FUERA de Docker en el host) no tiene este problema -- ve la LAN real
 # directo -- asi que se deja sin marcar (variable ausente/"0").
 AGENT_BEHIND_DOCKER_NAT = os.environ.get("AGENT_BEHIND_DOCKER_NAT", "0") == "1"
-
-# Mismos flags permitidos que el driver de nmap dentro de scan-service
-# (ver app/scanners/nmap.py) -- se mantiene la misma restriccion aca por
-# las mismas razones: options arbitrarias no deben poder inyectar flags
-# de explotacion.
-_ALLOWED_EXTRA_FLAGS = {"-p", "-Pn", "-6", "--top-ports"}
-
-# Timeouts iguales a los del driver in-container, para que el
-# comportamiento sea consistente sin importar donde corra el escaneo.
-_HOST_TIMEOUT = "30s"
-_PROCESS_TIMEOUT_SECONDS = 180
 
 
 def log(msg: str) -> None:
@@ -156,187 +134,6 @@ def submit_result(job_id: str, status: str, findings: list[dict], raw_output: st
     )
 
 
-# --------------------------------------------------------------------------
-# Escaner TCP interno (Python puro) -- fallback de nmap cuando el binario no
-# esta instalado (tipico en el Agente LAN de host). Descubre puertos abiertos
-# por connect() con threads. No reemplaza a nmap en profundidad (no hay
-# deteccion de version NSE) pero cubre lo esencial: que hay abierto en la LAN,
-# SIN requerir instalar nada.
-# --------------------------------------------------------------------------
-_PORT_SERVICE = {
-    21: "ftp", 22: "ssh", 23: "telnet", 25: "smtp", 53: "domain", 80: "http",
-    110: "pop3", 111: "rpcbind", 135: "msrpc", 139: "netbios-ssn", 143: "imap",
-    161: "snmp", 389: "ldap", 443: "https", 445: "microsoft-ds", 465: "smtps",
-    587: "submission", 636: "ldaps", 993: "imaps", 995: "pop3s", 1433: "ms-sql",
-    1521: "oracle", 1723: "pptp", 2049: "nfs", 2375: "docker", 3306: "mysql",
-    3389: "ms-wbt-server", 5060: "sip", 5432: "postgresql", 5900: "vnc",
-    5985: "wsman", 6379: "redis", 8000: "http-alt", 8080: "http-proxy",
-    8443: "https-alt", 9000: "http-alt", 9200: "opensearch", 27017: "mongodb",
-}
-_TOP_PORTS = sorted(set(list(_PORT_SERVICE.keys()) + [
-    7, 9, 13, 37, 79, 88, 113, 119, 179, 199, 427, 548, 554, 631, 646, 873,
-    990, 1025, 1026, 1027, 1080, 1110, 1900, 2000, 2121, 3000, 3128, 3260,
-    3690, 4444, 5000, 5222, 5800, 6000, 6001, 7070, 8008, 8081, 8888, 9090,
-    9999, 10000, 49152, 49153, 49154,
-]))
-
-
-def _parse_ports_option(options: dict) -> list[int]:
-    p = options.get("ports") if isinstance(options, dict) else None
-    if isinstance(p, str) and p.strip():
-        out = set()
-        for part in p.split(","):
-            part = part.strip()
-            if "-" in part:
-                try:
-                    a, b = part.split("-", 1)
-                    a, b = int(a), int(b)
-                    if 0 < a <= b <= 65535 and (b - a) <= 2000:
-                        out.update(range(a, b + 1))
-                except ValueError:
-                    pass
-            elif part.isdigit():
-                v = int(part)
-                if 0 < v <= 65535:
-                    out.add(v)
-        if out:
-            return sorted(out)
-    return _TOP_PORTS
-
-
-def _expand_hosts(target: str) -> list[str]:
-    t = target.strip()
-    if "/" in t:
-        net = ipaddress.ip_network(t, strict=False)
-        return [str(h) for h in net.hosts()][:256]
-    try:
-        return [socket.gethostbyname(t)]
-    except OSError:
-        return [t]
-
-
-def _check_port(host: str, port: int, timeout: float = 0.6):
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout)
-            if s.connect_ex((host, port)) == 0:
-                return port
-    except OSError:
-        return None
-    return None
-
-
-def _run_python_portscan(target: str, options: dict) -> tuple[str, list[dict], str]:
-    opts = options if isinstance(options, dict) else {}
-    ports = _parse_ports_option(opts)
-    try:
-        hosts = _expand_hosts(target)
-    except ValueError as exc:
-        return "", [], f"target invalido para el escaner interno: {exc}"
-    if not hosts:
-        return "", [], "no hay hosts para escanear en ese rango"
-    if len(hosts) > 4:
-        ports = [p for p in ports if p in _PORT_SERVICE]
-    findings: list[dict] = []
-    lines = [f"# escaner TCP interno (Python) -- {len(hosts)} host(s) x {len(ports)} puerto(s)"]
-    tasks = [(h, p) for h in hosts for p in ports]
-    with ThreadPoolExecutor(max_workers=200) as ex:
-        futs = {ex.submit(_check_port, h, p): (h, p) for (h, p) in tasks}
-        for fut in as_completed(futs):
-            h, p = futs[fut]
-            if fut.result() == p:
-                svc = _PORT_SERVICE.get(p, "")
-                findings.append({
-                    "title": f"Puerto abierto {p}/tcp ({svc}) en {h}",
-                    "description": "detectado por el escaner TCP interno del agente (sin nmap)",
-                    "severity": "info", "port": p, "service": svc,
-                })
-                lines.append(f"{h}:{p} abierto ({svc})")
-    findings.sort(key=lambda f: f["title"])
-    return "\n".join(lines), findings, ""
-
-
-def run_nmap(target: str, options: dict) -> tuple[str, list[dict], str]:
-    """Corre nmap en modo deteccion contra `target`. Devuelve
-    (raw_xml_output, findings, error). Mismo comando exacto que
-    app/scanners/nmap.py::NmapDriver.run, para que un escaneo hecho por
-    el agente remoto luzca igual (mismos findings normalizados) que uno
-    hecho por scan-service adentro del contenedor."""
-    if shutil.which("nmap") is None or os.getenv("AGENT_FORCE_INTERNAL_NMAP"):
-        # Escaner TCP por connect(): a diferencia del nmap normal (ping/ARP,
-        # que el NAT de Docker Desktop bloquea), un connect() TCP SI atraviesa
-        # el NAT, asi que el contenedor puede escanear la LAN real. Tambien es
-        # el fallback cuando no hay binario nmap (Agente LAN de host sin nmap).
-        log("uso el escaner TCP interno (connect) -- atraviesa el NAT de Docker para escanear la LAN")
-        return _run_python_portscan(target, options)
-    cmd = [
-        "nmap", "-T4", "--host-timeout", _HOST_TIMEOUT,
-        "-sV", "-sC", "--script", "default,safe", "-oX", "-", target,
-    ]
-    ports = options.get("ports") if isinstance(options, dict) else None
-    if isinstance(ports, str) and ports.replace(",", "").replace("-", "").isdigit():
-        cmd[1:1] = ["-p", ports]
-
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, timeout=_PROCESS_TIMEOUT_SECONDS,
-        )
-    except FileNotFoundError:
-        return "", [], "nmap no esta instalado o no esta en el PATH de esta maquina"
-    except subprocess.TimeoutExpired:
-        return "", [], f"timeout de escaneo ({_PROCESS_TIMEOUT_SECONDS}s) contra {target}"
-
-    raw = proc.stdout.decode(errors="replace")
-    if proc.returncode != 0:
-        return raw, [], proc.stderr.decode(errors="replace")[:2000]
-
-    return raw, _parse_nmap_xml(raw), ""
-
-
-def _parse_nmap_xml(xml_text: str) -> list[dict]:
-    """Copia deliberada de app/scanners/nmap.py::_parse_nmap_xml -- se
-    mantiene el mismo shape de finding exacto ({title, description,
-    severity, port, service}) para que vuln-service (que recibe estos
-    findings via /vulnerabilities/ingest) los trate igual sin importar
-    si vinieron de un scan-service in-container o de este agente."""
-    findings: list[dict] = []
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError:
-        return findings
-
-    for host in root.findall("host"):
-        addr_el = host.find("address")
-        address = addr_el.get("addr") if addr_el is not None else "desconocido"
-        ports_el = host.find("ports")
-        if ports_el is None:
-            continue
-        for port in ports_el.findall("port"):
-            state = port.find("state")
-            if state is None or state.get("state") != "open":
-                continue
-            service = port.find("service")
-            svc_name = service.get("name", "") if service is not None else ""
-            svc_product = service.get("product", "") if service is not None else ""
-            svc_version = service.get("version", "") if service is not None else ""
-            findings.append(
-                {
-                    "title": f"Puerto abierto {port.get('portid')}/{port.get('protocol')} ({svc_name}) en {address}",
-                    "description": f"{svc_product} {svc_version}".strip(),
-                    "severity": "info",
-                    "port": int(port.get("portid")),
-                    "service": svc_name,
-                }
-            )
-    return findings
-
-
-def check_nmap_available() -> bool:
-    try:
-        subprocess.run(["nmap", "--version"], capture_output=True, timeout=10)
-        return True
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False
 
 
 # ==========================================================================
@@ -474,260 +271,9 @@ def _parse_nuclei_jsonl(raw_jsonl: str) -> list[dict]:
     return findings
 
 
-# ==========================================================================
-# OPENVAS / GVM -- escaneo real de vulnerabilidades via protocolo GMP.
-# A diferencia de nmap/trivy/nuclei (binarios sueltos), openvas necesita el
-# MOTOR completo de Greenbone (gvmd + ospd-openvas + feed de NVTs) corriendo
-# en ESTA maquina y accesible por su socket. Si gvm-cli no esta instalado o
-# faltan credenciales, se devuelve un error claro en vez de colgarse.
-# Flujo GMP portado de app/scanners/openvas.py (misma logica, sincronica).
-# ==========================================================================
-_OV_SEVERITY_THRESHOLDS = ((9.0, "critical"), (7.0, "high"), (4.0, "medium"), (0.1, "low"))
-_OV_CONFIG_PREFS = ("full and fast",)
-_OV_SCANNER_PREFS = ("openvas default", "openvas")
-_OV_PORTLIST_PREFS = ("all iana assigned tcp and udp", "all iana assigned tcp", "all tcp")
-_OV_TERMINAL_STATUSES = {"Done", "Stopped", "Interrupted"}
-_OV_POLL_INTERVAL = 15
-_OV_SCAN_TIMEOUT = int(os.environ.get("GVM_SCAN_TIMEOUT_SECONDS", "1500"))
-
-
-def _ov_severity(cvss: float) -> str:
-    for threshold, label in _OV_SEVERITY_THRESHOLDS:
-        if cvss >= threshold:
-            return label
-    return "info"
-
-
-def _ov_find_id(xml_text: str, item_tag: str, prefs: tuple) -> str | None:
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError:
-        return None
-    items = []
-    for item in root.findall(f".//{item_tag}"):
-        item_id = item.get("id")
-        name_el = item.find("name")
-        name = name_el.text if name_el is not None and name_el.text else ""
-        if item_id:
-            items.append((item_id, name))
-    if not items:
-        return None
-    for pref in prefs:
-        for item_id, name in items:
-            if pref in name.lower():
-                return item_id
-    return items[0][0]
-
-
-def _ov_response_id(xml_text: str) -> str | None:
-    try:
-        return ET.fromstring(xml_text).get("id") or None
-    except ET.ParseError:
-        return None
-
-
-def _ov_status_ok(xml_text: str) -> bool:
-    try:
-        return (ET.fromstring(xml_text).get("status") or "").startswith("2")
-    except ET.ParseError:
-        return False
-
-
-def _ov_task_status(xml_text: str):
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError:
-        return None
-    task = root.find(".//task")
-    if task is None:
-        return None
-    status_el = task.find("status")
-    progress_el = task.find("progress")
-    status = status_el.text if status_el is not None and status_el.text else "Unknown"
-    try:
-        progress = int(progress_el.text) if progress_el is not None and progress_el.text else 0
-    except ValueError:
-        progress = 0
-    return status, progress
-
-
-def _ov_parse_results(xml_text: str) -> list[dict]:
-    findings: list[dict] = []
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError:
-        return findings
-    for result in root.findall(".//result"):
-        name_el = result.find("name")
-        severity_el = result.find("severity")
-        host_el = result.find("host")
-        port_el = result.find("port")
-        desc_el = result.find("description")
-        nvt_el = result.find("nvt")
-        cve_el = nvt_el.find("cve") if nvt_el is not None else None
-        try:
-            cvss = float(severity_el.text) if severity_el is not None and severity_el.text else 0.0
-        except ValueError:
-            cvss = 0.0
-        host = host_el.text if host_el is not None and host_el.text else ""
-        findings.append({
-            "title": name_el.text if name_el is not None and name_el.text else "hallazgo OpenVAS",
-            "description": (desc_el.text or "")[:1000] if desc_el is not None else "",
-            "severity": _ov_severity(cvss),
-            "cve_id": cve_el.text if cve_el is not None and cve_el.text and cve_el.text != "NOCVE" else None,
-            "service": f"{host}:{port_el.text}" if port_el is not None and port_el.text else host or None,
-        })
-    return findings
-
-
-def _ov_drop_priv_to_nobody() -> None:
-    """preexec_fn para bajar privilegios del subproceso gvm-cli ANTES del
-    exec -- mismo motivo y mecanismo que _drop_priv_to_nobody en
-    app/scanners/openvas.py (gvm-tools se niega EXPLICITAMENTE a correr
-    como root: gvmtools/helper.py::do_not_run_as_root, "This tool MUST
-    NOT be run as root user."). Encontrado recien al correr esto por
-    primera vez contra un gvmd real desde gvm-agent (el Dockerfile de
-    scan-service, que gvm-agent reusa, no tiene USER -> corre como root).
-
-    Noop en Windows (donde corre Agente LAN con este mismo agent.py: ahi
-    no existe el modulo pwd ni hace falta nada de esto) y noop si por
-    alguna razon este proceso YA no es root (setuid a otro uid sin serlo
-    tira PermissionError)."""
-    if sys.platform == "win32" or os.geteuid() != 0:
-        return
-    import pwd
-    nobody = pwd.getpwnam("nobody")
-    os.setgroups([])
-    os.setgid(nobody.pw_gid)
-    os.setuid(nobody.pw_uid)
-
-
-def _ov_query(socket_path: str, user: str, password: str, xml: str, timeout: int = 60):
-    # "--config ''" evita que gvm-cli busque ~/.config/gvm-tools.conf: con
-    # HOME=/root (heredado del proceso padre -- bajar privilegios con
-    # setuid/setgid no toca el entorno) y ya corriendo como "nobody", ese
-    # intento explota con PermissionError. Ver _gvm_cmd en
-    # app/scanners/openvas.py, mismo problema, mismo arreglo.
-    cmd = [
-        "gvm-cli", "--config", "", "--gmp-username", user, "--gmp-password", password,
-        "socket", "--socketpath", socket_path, "--xml", xml,
-    ]
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, timeout=timeout,
-            preexec_fn=_ov_drop_priv_to_nobody if sys.platform != "win32" else None,
-        )
-    except FileNotFoundError:
-        return -1, "", "gvm-cli no esta instalado en esta maquina"
-    except subprocess.TimeoutExpired:
-        return -1, "", f"timeout ({timeout}s) hablando con gvmd"
-    return proc.returncode, proc.stdout.decode(errors="replace"), proc.stderr.decode(errors="replace")
-
-
-def run_openvas(target: str, options: dict) -> tuple[str, list[dict], str]:
-    if shutil.which("gvm-cli") is None:
-        return "", [], (
-            "openvas no esta disponible en esta maquina: falta 'gvm-cli' (paquete gvm-tools) y el "
-            "stack GVM (gvmd + ospd-openvas + feed de NVTs). openvas necesita ese motor corriendo en "
-            "la PC del agente -- para escanear una LAN sin GVM, usa nmap o nuclei en el escaneo remoto."
-        )
-    opts = options if isinstance(options, dict) else {}
-    socket_path = opts.get("gvm_socket") or os.environ.get("GVM_SOCKET_PATH") or "/run/gvmd/gvmd.sock"
-    user = opts.get("gvm_user") or os.environ.get("GVM_USER") or ""
-    password = opts.get("gvm_password") or os.environ.get("GVM_PASSWORD") or ""
-    if not user or not password:
-        return "", [], "Faltan credenciales GMP: configura GVM_USER y GVM_PASSWORD en el entorno del agente."
-
-    rc, out, err = _ov_query(socket_path, user, password, "<get_configs/>")
-    if rc != 0:
-        return out, [], f"no se pudo consultar get_configs: {err[:1000]}"
-    config_id = _ov_find_id(out, "config", _OV_CONFIG_PREFS)
-    rc, out, err = _ov_query(socket_path, user, password, "<get_scanners/>")
-    if rc != 0:
-        return out, [], f"no se pudo consultar get_scanners: {err[:1000]}"
-    scanner_id = _ov_find_id(out, "scanner", _OV_SCANNER_PREFS)
-    rc, out, err = _ov_query(socket_path, user, password, "<get_port_lists/>")
-    if rc != 0:
-        return out, [], f"no se pudo consultar get_port_lists: {err[:1000]}"
-    port_list_id = _ov_find_id(out, "port_list", _OV_PORTLIST_PREFS)
-    if not (config_id and scanner_id and port_list_id):
-        return "", [], (
-            f"gvmd no tiene las entidades minimas (config={config_id}, scanner={scanner_id}, "
-            f"port_list={port_list_id}). Puede que el feed de NVTs aun no termino de sincronizar."
-        )
-
-    task_name = f"sentinelops-{target}-{int(time.time())}"
-    # alive_tests="Consider Alive" por default -- salta la fase de
-    # deteccion de host-vivo de gvmd/ospd-openvas (ICMP/ARP Ping, sockets
-    # raw/broadcast), que no atraviesa el NAT de Docker Desktop cuando
-    # este agente corre DENTRO de un contenedor (Agente Docker, ver
-    # AGENT_BEHIND_DOCKER_NAT mas arriba) -- mismo criterio que
-    # app/scanners/openvas.py::_build_create_target_xml en scan-service.
-    # Override opcional (options["gvm_alive_tests"]) para cuando este
-    # mismo agent.py corre con visibilidad de red real (ver remote-agent/
-    # openvas-agent/), donde el default de gvmd puede convenir mas
-    # (salta hosts caidos mas rapido).
-    alive_tests = (opts.get("gvm_alive_tests") or "").strip() or "Consider Alive"
-    create_target = (
-        f"<create_target><name>{_xml_escape(task_name)}</name>"
-        f"<hosts>{_xml_escape(target)}</hosts><port_list id='{port_list_id}'/>"
-        f"<alive_tests>{_xml_escape(alive_tests)}</alive_tests></create_target>"
-    )
-    rc, out, err = _ov_query(socket_path, user, password, create_target)
-    if rc != 0 or not _ov_status_ok(out):
-        return out, [], f"no se pudo crear el target GVM: {err[:1000] or out[:1000]}"
-    target_id = _ov_response_id(out)
-    if not target_id:
-        return out, [], "create_target no devolvio un id de target"
-
-    create_task = (
-        f"<create_task><name>{_xml_escape(task_name)}</name>"
-        f"<target id='{target_id}'/><config id='{config_id}'/><scanner id='{scanner_id}'/></create_task>"
-    )
-    rc, out, err = _ov_query(socket_path, user, password, create_task)
-    if rc != 0 or not _ov_status_ok(out):
-        return out, [], f"no se pudo crear el task GVM: {err[:1000] or out[:1000]}"
-    task_id = _ov_response_id(out)
-    if not task_id:
-        return out, [], "create_task no devolvio un id de task"
-
-    rc, out, err = _ov_query(socket_path, user, password, f"<start_task task_id='{task_id}'/>")
-    if rc != 0:
-        return out, [], f"no se pudo iniciar el task GVM: {err[:1000]}"
-
-    deadline = time.monotonic() + _OV_SCAN_TIMEOUT
-    last_status, last_progress = "Requested", 0
-    while time.monotonic() < deadline:
-        time.sleep(_OV_POLL_INTERVAL)
-        rc, out, err = _ov_query(socket_path, user, password, f"<get_tasks task_id='{task_id}'/>")
-        if rc != 0:
-            continue
-        parsed = _ov_task_status(out)
-        if parsed is None:
-            continue
-        last_status, last_progress = parsed
-        if last_status in _OV_TERMINAL_STATUSES:
-            break
-    else:
-        return "", [], (
-            f"timeout esperando que termine el escaneo GVM ({_OV_SCAN_TIMEOUT}s, ultimo estado: "
-            f"{last_status} {last_progress}%). Subir GVM_SCAN_TIMEOUT_SECONDS si el target es grande."
-        )
-    if last_status != "Done":
-        return "", [], f"el escaneo GVM termino en estado '{last_status}', no 'Done'"
-
-    rc, out, err = _ov_query(socket_path, user, password, f"<get_results task_id='{task_id}' filter='rows=1000'/>", timeout=120)
-    if rc != 0:
-        return out, [], f"no se pudieron obtener los resultados: {err[:1000]}"
-    return out, _ov_parse_results(out), ""
-
-
-# Dispatch por tipo de scanner. Cada runner devuelve (raw_output, findings, error).
 SCANNERS = {
-    "nmap": run_nmap,
     "trivy": run_trivy,
     "nuclei": run_nuclei,
-    "openvas": run_openvas,
 }
 
 
@@ -751,7 +297,7 @@ def _process_job(job: dict) -> None:
     jobs que este mismo agente ya se llevo en el mismo poll."""
     job_id = job["id"]
     target = job["target"]
-    scanner_type = job.get("scanner_type", "nmap")
+    scanner_type = job.get("scanner_type", "nuclei")
     options = job.get("options") or {}
     log(f"job {job_id}: escaneando {target} (scanner={scanner_type})...")
 
@@ -760,16 +306,16 @@ def _process_job(job: dict) -> None:
         submit_result(job_id, "failed", [], error_message=f"este agente no sabe correr el scanner '{scanner_type}'")
         return
 
-    if scanner_type != "nmap" and AGENT_BEHIND_DOCKER_NAT and _is_private_ip_target(target):
-        # Sin este chequeo, trivy/nuclei/openvas se quedaban varios
-        # minutos intentando conectar a una IP de LAN inalcanzable desde
-        # adentro de Docker Desktop antes de fallar por timeout -- mejor
-        # fallar al toque con un mensaje que diga que hacer.
+    if AGENT_BEHIND_DOCKER_NAT and _is_private_ip_target(target):
+        # Sin este chequeo, trivy/nuclei se quedaban varios minutos
+        # intentando conectar a una IP de LAN inalcanzable desde adentro de
+        # Docker Desktop antes de fallar por timeout -- mejor fallar al toque
+        # con un mensaje que diga que hacer.
         error_msg = (
             f"'{target}' parece una IP de LAN, y este agente (Agente Docker) corre DENTRO de Docker "
-            f"Desktop: el scanner '{scanner_type}' no tiene forma de atravesar su NAT hacia la red real "
-            "(a diferencia de nmap, que sí la tiene). Usa el Agente LAN (remote-agent/agente-lan.ps1, "
-            "corriendo en una PC con visibilidad real a esa red) para este target."
+            f"Desktop: el scanner '{scanner_type}' no tiene forma de atravesar su NAT hacia la red real. "
+            "Usa el Agente LAN (remote-agent/agente-lan.ps1, corriendo en una PC con visibilidad real a "
+            "esa red) para este target."
         )
         log(f"job {job_id}: rechazado -- {error_msg}")
         submit_result(job_id, "failed", [], error_message=error_msg)
@@ -801,8 +347,8 @@ def run_once() -> None:
     # a que terminen: el loop principal (ver main()) tiene que seguir
     # polleando cada POLL_INTERVAL_SECONDS por jobs NUEVOS aunque los de
     # esta tanda sigan corriendo (algunos pueden tardar varios minutos,
-    # ej. openvas). Cada uno reporta su resultado solo, de forma
-    # independiente, apenas termina.
+    # ej. nuclei contra un rango grande). Cada uno reporta su resultado
+    # solo, de forma independiente, apenas termina.
     for job in jobs:
         _job_executor.submit(_process_job, job)
 
@@ -812,15 +358,13 @@ def main() -> None:
         log("ERROR: falta la variable de entorno AGENT_API_KEY (la api key que te mostro la UI al registrar el agente).")
         sys.exit(1)
 
-    _binaries = {"trivy": "trivy", "nuclei": "nuclei", "openvas": "gvm-cli"}
-    _nmap_label = "nmap" if shutil.which("nmap") else "nmap (escaner interno Python, sin binario)"
-    presentes = [_nmap_label] + [s for s, b in _binaries.items() if shutil.which(b) is not None]
+    _binaries = {"trivy": "trivy", "nuclei": "nuclei"}
+    presentes = [s for s, b in _binaries.items() if shutil.which(b) is not None]
     faltantes = [s for s, b in _binaries.items() if shutil.which(b) is None]
-    log(f"escaneres disponibles en esta maquina: {', '.join(presentes)}")
+    log(f"escaneres disponibles en esta maquina: {', '.join(presentes) if presentes else '(ninguno)'}")
     if faltantes:
         log(
-            "NOTA: sin binario para: " + ", ".join(faltantes) + " -- esos jobs volveran con "
-            "un mensaje claro. nmap SIEMPRE funciona (si no esta el binario, usa el escaner interno)."
+            "NOTA: sin binario para: " + ", ".join(faltantes) + " -- esos jobs volveran con un mensaje claro."
         )
 
     log("SentinelOps - agente de escaneo remoto iniciado.")

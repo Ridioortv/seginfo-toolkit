@@ -1,8 +1,9 @@
 # ==========================================================================
 # SentinelOps - Agente LAN NATIVO (PowerShell puro).
-# NO requiere Python, ni nmap, ni instalar NADA: usa PowerShell + .NET, que
-# ya vienen con Windows. Corre en el host (ve la red real), escanea puertos
-# de la LAN y reporta a scan-service. Se autentica como el agente "Agente LAN".
+# NO requiere Python, ni instalar NADA: usa PowerShell + .NET, que ya
+# vienen con Windows. Corre en el host, ejecuta nuclei/trivy contra el
+# target del job y reporta a scan-service. Se autentica como el agente
+# "Agente LAN".
 #
 # Uso:
 #   .\agente-lan.ps1            arranca el agente en primer plano (Ctrl+C
@@ -133,14 +134,6 @@ $scanUrl = if ($env:SCAN_SERVICE_URL) { $env:SCAN_SERVICE_URL.TrimEnd('/') } els
 $pollInterval = if ($env:POLL_INTERVAL_SECONDS) { [int]$env:POLL_INTERVAL_SECONDS } else { 10 }
 $headers = @{ "X-Agent-Key" = $key }
 
-$ports = @(21,22,23,25,53,80,88,110,111,135,139,143,161,389,443,445,465,587,636,
-           993,995,1025,1433,1521,1723,2049,2375,3000,3128,3306,3389,5000,5060,
-           5432,5900,5985,6379,8000,8080,8081,8443,8888,9000,9090,9200,10000,27017)
-$svcNames = @{ 21="ftp";22="ssh";23="telnet";25="smtp";53="domain";80="http";110="pop3";
-  111="rpcbind";135="msrpc";139="netbios-ssn";143="imap";161="snmp";389="ldap";443="https";
-  445="microsoft-ds";993="imaps";995="pop3s";1433="ms-sql";3306="mysql";3389="ms-wbt-server";
-  5432="postgresql";5900="vnc";6379="redis";8080="http-proxy";8443="https-alt";9200="opensearch";27017="mongodb" }
-
 # --------------------------------------------------------------------------
 # nuclei/trivy: si estan instalados en ESTA PC (basta con que
 # `nuclei`/`trivy` respondan desde una consola cualquiera, no hace falta
@@ -150,9 +143,7 @@ $svcNames = @{ 21="ftp";22="ssh";23="telnet";25="smtp";53="domain";80="http";110
 # de seguridad (solo deteccion, nunca explotacion activa). Se chequea en
 # CADA job, no solo al arrancar, para que instalarlos mientras el agente
 # ya esta corriendo funcione sin tener que reiniciarlo. Si no estan, el
-# job vuelve con un mensaje claro en vez de intentarlo (openvas sigue sin
-# soporte aca: necesita el motor completo de Greenbone, no un binario
-# suelto).
+# job vuelve con un mensaje claro en vez de intentarlo.
 # --------------------------------------------------------------------------
 $NucleiSeverityMap = @{ critical="critical"; high="high"; medium="medium"; low="low"; info="info"; unknown="info" }
 $TrivySeverityMap  = @{ CRITICAL="critical"; HIGH="high"; MEDIUM="medium"; LOW="low"; UNKNOWN="info" }
@@ -188,10 +179,10 @@ function Invoke-ScannerBinary([string]$exe, [string[]]$scannerArgs, [int]$timeou
         # (la que corre este agente) la propiedad esta pero arranca en
         # $null, y .Add() sobre $null revienta con "No se puede llamar a
         # un metodo en una expresion con valor NULL". Se ve siempre en
-        # nuclei/trivy porque son los primeros scanners que arrancan un
-        # proceso externo con argumentos -- Puertos (nmap-style) no pasa
-        # por aca. Arreglo: armar el string de argumentos a mano, que
-        # funciona igual en .NET Framework y .NET moderno.
+        # nuclei/trivy porque son los primeros (y unicos) scanners que
+        # arrancan un proceso externo con argumentos. Arreglo: armar el
+        # string de argumentos a mano, que funciona igual en .NET
+        # Framework y .NET moderno.
         $psi.Arguments = ($scannerArgs | ForEach-Object {
             if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
         }) -join ' '
@@ -317,46 +308,6 @@ function Invoke-TrivyScan([string]$target, [string]$mode) {
     return @{ Raw = $result.Stdout; Findings = (Get-TrivyFindings $result.Stdout); Error = "" }
 }
 
-function Expand-Hosts([string]$target) {
-    if ($target -notmatch '/') { return @($target) }
-    try {
-        $parts  = $target.Split('/')
-        $ip     = [System.Net.IPAddress]::Parse($parts[0])
-        $prefix = [int]$parts[1]
-        $b = $ip.GetAddressBytes(); [Array]::Reverse($b)
-        $ipInt = [System.BitConverter]::ToUInt32($b, 0)
-        if ($prefix -le 0) { $mask = [uint32]0 } else { $mask = [uint32](([uint32]4294967295) -shl (32 - $prefix)) }
-        $net = $ipInt -band $mask
-        $count = [int][math]::Pow(2, 32 - $prefix)
-        $list = @(); $max = [Math]::Min($count, 258)
-        for ($i = 1; $i -lt ($max - 1); $i++) {
-            $cur = [uint32]($net + $i)
-            $cb = [System.BitConverter]::GetBytes($cur); [Array]::Reverse($cb)
-            $list += (New-Object System.Net.IPAddress(,$cb)).ToString()
-        }
-        if ($list.Count -eq 0) { return @($parts[0]) }
-        return $list
-    } catch { return @($target) }
-}
-
-function Scan-HostPorts([string]$h, [int[]]$portList, [int]$timeoutMs = 800) {
-    $clients = @{}; $iars = @{}; $open = @()
-    foreach ($p in $portList) {
-        try {
-            $c = New-Object System.Net.Sockets.TcpClient
-            $iars[$p] = $c.BeginConnect($h, $p, $null, $null); $clients[$p] = $c
-        } catch { if ($c) { $c.Close() } }
-    }
-    Start-Sleep -Milliseconds $timeoutMs
-    foreach ($p in $portList) {
-        $c = $clients[$p]; $iar = $iars[$p]
-        if (-not $c) { continue }
-        try { if ($iar.IsCompleted) { $c.EndConnect($iar); if ($c.Connected) { $open += $p } } } catch {}
-        try { $c.Close() } catch {}
-    }
-    return $open
-}
-
 function ConvertTo-JsonFindingsArray($items) {
     # ConvertTo-Json de PowerShell tiene un bug clasico y muy documentado:
     # un array de EXACTAMENTE un elemento se serializa como el objeto
@@ -364,9 +315,9 @@ function ConvertTo-JsonFindingsArray($items) {
     # [{...}]) -- eso rompe la validacion del backend (findings: list[dict],
     # Pydantic espera una lista) justo cuando nuclei/trivy encuentran UN
     # solo hallazgo. Con 0 (siempre serializa "[]" bien) o con 2+ (siempre
-    # serializa como lista bien) nunca se vio -- por eso nmap (3
-    # hallazgos) y los rechazos por binario faltante (0 hallazgos) andaban
-    # perfecto y nuclei/trivy tiraban 422 justo cuando encontraban algo.
+    # serializa como lista bien) nunca se vio -- por eso los rechazos por
+    # binario faltante (0 hallazgos) andaban perfecto y nuclei/trivy
+    # tiraban 422 justo cuando encontraban algo.
     # Serializamos cada elemento por separado y lo juntamos a mano entre
     # corchetes, evitando el bug de raiz en vez de esquivarlo.
     $arr = @($items)
@@ -407,7 +358,6 @@ $startupNucleiPath = Resolve-ScannerBinary "nuclei"
 $startupTrivyPath = Resolve-ScannerBinary "trivy"
 Write-Log "============================================================"
 Write-Log "SentinelOps - Agente LAN (PowerShell nativo) iniciado."
-Write-Log "Puertos (estilo nmap): siempre disponible, sin instalar nada."
 Write-Log "nuclei: $(if ($startupNucleiPath) { "disponible ($startupNucleiPath)" } else { "no instalado (ni en el PATH ni en $BundledBinDir) -- esos jobs van a fallar con un mensaje claro" })"
 Write-Log "trivy:  $(if ($startupTrivyPath) { "disponible ($startupTrivyPath)" } else { "no instalado (ni en el PATH ni en $BundledBinDir) -- esos jobs van a fallar con un mensaje claro" })"
 Write-Log "scan-service: $scanUrl   polling cada ${pollInterval}s   (Ctrl+C para detener)"
@@ -419,20 +369,6 @@ while ($true) {
         foreach ($job in @($resp.jobs)) {
             $jobId = $job.id; $target = $job.target; $scanner = $job.scanner_type
             Write-Log "job $($jobId.Substring(0,8)): $scanner -> $target ..."
-
-            if ($scanner -eq "nmap") {
-                $hostsList = Expand-Hosts $target
-                $findings = @()
-                foreach ($h in $hostsList) {
-                    foreach ($op in (Scan-HostPorts $h $ports)) {
-                        $svc = if ($svcNames.ContainsKey($op)) { $svcNames[$op] } else { "" }
-                        $findings += @{ title = "Puerto abierto $op/tcp ($svc) en $h"; description = "detectado por el Agente LAN (PowerShell, sin nmap)"; severity = "info"; port = $op; service = $svc }
-                    }
-                }
-                Submit-Result $jobId "completed" $findings ""
-                Write-Log "job $($jobId.Substring(0,8)): completado, $($findings.Count) hallazgo(s)"
-                continue
-            }
 
             if ($scanner -eq "nuclei") {
                 if (-not (Resolve-ScannerBinary "nuclei")) {
@@ -470,10 +406,8 @@ while ($true) {
                 continue
             }
 
-            # openvas u otro scanner desconocido: sigue sin soporte aca --
-            # openvas necesita el motor completo de Greenbone (gvmd), no
-            # un binario suelto que se pueda invocar como nuclei/trivy.
-            Submit-Result $jobId "failed" @() "El Agente LAN no puede correr '$scanner' -- necesita el motor completo de Greenbone (gvmd), que este agente PowerShell no corre. Si '$target' es alcanzable desde internet o desde la PC del Agente Docker, proba ese agente."
+            # Scanner desconocido: este agente solo sabe correr nuclei/trivy.
+            Submit-Result $jobId "failed" @() "El Agente LAN (PowerShell) no reconoce el scanner '$scanner'. Los unicos soportados son nuclei y trivy."
             Write-Log "job $($jobId.Substring(0,8)): rechazado -- '$scanner' no soportado por este agente"
         }
     } catch {

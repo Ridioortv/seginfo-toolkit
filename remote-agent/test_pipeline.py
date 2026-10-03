@@ -3,10 +3,10 @@
 
 Que hace
 --------
-Prueba TODO el ciclo de vida de un escaneo remoto, para los 4 scanners
-(nmap / trivy / nuclei / openvas), SIN necesidad de tener los binarios
-instalados ni de escanear nada real: simula al agente hablando con
-scan-service por HTTP, exactamente como lo hace remote-agent/agent.py.
+Prueba TODO el ciclo de vida de un escaneo remoto, para los 2 scanners
+(trivy / nuclei), SIN necesidad de tener los binarios instalados ni de
+escanear nada real: simula al agente hablando con scan-service por
+HTTP, exactamente como lo hace remote-agent/agent.py.
 
 Verifica, para cada scanner:
   1. POST /agent-scans           -> el job se crea en estado 'pending'
@@ -47,10 +47,8 @@ SCAN_URL = os.environ.get("SCAN_SERVICE_URL", "http://localhost:8003").rstrip("/
 AUTH_URL = os.environ.get("AUTH_SERVICE_URL", "http://localhost:8001").rstrip("/")
 
 SCANNERS = [
-    ("nmap", "host.docker.internal"),
     ("trivy", "alpine:3.18"),
     ("nuclei", "http://example.com"),
-    ("openvas", "host.docker.internal"),
 ]
 
 _passed = 0
@@ -189,7 +187,7 @@ def main() -> int:
     # -- Negativos: api key incorrecta ---------------------------------
     print("\n5) Seguridad: api key incorrecta debe ser rechazada")
     code, body = request("POST", f"{SCAN_URL}/agent-scans", token=token, payload={
-        "agent_id": agent_id, "scanner_type": "nmap", "name": "e2e badkey",
+        "agent_id": agent_id, "scanner_type": "nuclei", "name": "e2e badkey",
         "target": "host.docker.internal", "api_key": "key-totalmente-invalida",
     })
     check("lanzar con api key incorrecta -> 401", code == 401, f"HTTP {code}: {body}")
@@ -211,7 +209,7 @@ def main() -> int:
     print("=" * 50)
     if _failed == 0:
         print("\nEl pipeline de escaneos remotos funciona de punta a punta para")
-        print("los 4 scanners. Si un escaneo real 'queda en pending', es porque")
+        print("los 2 scanners. Si un escaneo real 'queda en pending', es porque")
         print("no hay un agente REAL corriendo que lo levante -- corre")
         print("remote-agent/agent.py en una maquina de la red a escanear.")
     return 0 if _failed == 0 else 1

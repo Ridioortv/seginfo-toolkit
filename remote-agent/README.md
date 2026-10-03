@@ -5,16 +5,16 @@
 `scan-service` corre dentro de un contenedor Docker. En Docker Desktop
 (Windows/Mac) los contenedores quedan aislados detras de NAT: no ven la
 LAN real de la oficina o del cliente, aunque Docker Desktop este
-instalado en una PC de esa misma red. Por eso un escaneo nmap contra un
-rango tipo `192.168.1.0/24` lanzado desde la UI de SentinelOps no
+instalado en una PC de esa misma red. Por eso un escaneo con nuclei o
+trivy contra un target de esa LAN lanzado desde la UI de SentinelOps no
 encuentra nada, aunque esa red exista y sea escaneable desde la propia
 PC "por fuera" de Docker.
 
-Este agente es un script Python chico que corre **fuera** de Docker
--- en la misma PC donde esta instalado SentinelOps, o en cualquier otra
-maquina de esa LAN con visibilidad real a la red que se quiere
-escanear -- y hace de "brazos y piernas" para los escaneos que scan-
-service no puede alcanzar el mismo.
+Este agente es un script chico que corre **fuera** de Docker -- en la
+misma PC donde esta instalado SentinelOps, o en cualquier otra maquina
+de esa LAN con visibilidad real a la red que se quiere escanear -- y
+hace de "brazos y piernas" para los escaneos que scan-service no puede
+alcanzar el mismo.
 
 ## Como funciona (modelo de seguridad)
 
@@ -36,31 +36,22 @@ service no puede alcanzar el mismo.
   en el momento de registrar el agente desde la UI, y despues no se
   puede volver a ver (si se pierde, hay que borrar el agente y crear uno
   nuevo).
-- El agente **solo sabe correr nmap en modo deteccion**: descubrimiento
-  de puertos/servicios (`-sV`) mas scripts de deteccion segura
-  (`-sC --script default,safe`). Nunca ejecuta `--script vuln` ni
-  scripts de las categorias `exploit`/`intrusive` -- es exactamente el
-  mismo comando (y las mismas restricciones) que usa `scan-service`
-  cuando escanea el mismo desde adentro del contenedor.
+- El agente **solo sabe correr en modo deteccion**: `nuclei` sin las
+  categorias de templates `dos`/`fuzz`/`intrusive`, y `trivy` solo lee
+  (nunca ejecuta nada del target). Es exactamente el mismo comando (y
+  las mismas restricciones) que usa `scan-service` cuando escanea el
+  mismo desde adentro del contenedor.
 
 ## Requisitos
 
 - Python 3.9 o mas nuevo. El script **no usa ninguna libreria externa**
   -- solo la libreria estandar de Python -- asi que no hace falta
   `pip install` nada.
-- El agente corre 4 scanners posibles (se elige por job, campo
+- El agente corre 2 scanners posibles (se elige por job, campo
   `scanner_type`). Solo hace falta instalar el/los binarios de los que
   vayas a usar en la maquina del agente -- si falta uno, ese job vuelve
-  con un mensaje de error claro en vez de colgarse; el resto sigue
+  con un mensaje de error claro en vez de colgarse; el otro sigue
   funcionando igual:
-  - **nmap** (puertos/servicios): si no esta instalado, el agente usa
-    automaticamente un escaner TCP interno en Python puro (por `connect()`,
-    sin dependencias) -- por eso nmap es el unico scanner que SIEMPRE
-    funciona, con o sin el binario.
-    - **Windows**: [Nmap para Windows](https://nmap.org/download.html#windows),
-      con **Npcap** tildado durante la instalacion.
-    - **Linux**: `sudo apt install nmap` (Debian/Ubuntu) o el equivalente.
-    - **macOS**: `brew install nmap`.
   - **trivy** (CVEs en imagenes/paquetes): instalar el binario `trivy`
     (ver [aquasecurity/trivy](https://github.com/aquasecurity/trivy)) y
     dejarlo en el `PATH`. Baja su propia base de CVEs la primera vez que
@@ -70,14 +61,6 @@ service no puede alcanzar el mismo.
     y dejarlo en el `PATH`. El agente refresca las templates solo al
     arrancar y despues cada 12hs en segundo plano -- no hace falta correr
     `nuclei -update-templates` a mano.
-  - **openvas** (escaneo real via GMP): requiere ademas `gvm-cli`
-    (paquete `gvm-tools`, `pip install gvm-tools`) Y un stack GVM
-    completo (gvmd + ospd-openvas + feed de NVTs) corriendo en esa misma
-    maquina, con las credenciales en `GVM_USER`/`GVM_PASSWORD`/
-    `GVM_SOCKET_PATH`. Es el requisito mas pesado de los 4 -- si la PC
-    del agente no tiene GVM propio, usa openvas solo desde "Escaneos"
-    normal (dentro de Docker, ver `openvas/LEEME.md` en la raiz del
-    repo) en vez del agente remoto.
 
 ## Paso 1: registrar el agente en SentinelOps
 
@@ -141,12 +124,12 @@ Linux/Mac, un servicio `systemd` o simplemente `nohup`/`screen`/`tmux`.
 ## Paso 3: lanzar escaneos remotos
 
 Desde la pagina **Escaneos** de SentinelOps, en el panel "Escaneos
-remotos", elegi el agente registrado y el target (host o rango CIDR de
-la LAN que el agente si puede ver) y crea el job. El agente lo va a
-recoger en su siguiente poll (dentro de `POLL_INTERVAL_SECONDS`), correr
-nmap, y mandar los resultados de vuelta -- los vas a ver aparecer en esa
-misma pagina, y los hallazgos se reenvian automaticamente a vuln-service
-para priorizacion (CVSS/EPSS/KEV), igual que un escaneo normal.
+remotos", elegi el agente registrado, el scanner (`nuclei` o `trivy`) y
+el target, y crea el job. El agente lo va a recoger en su siguiente poll
+(dentro de `POLL_INTERVAL_SECONDS`), correr el scanner elegido, y mandar
+los resultados de vuelta -- los vas a ver aparecer en esa misma pagina, y
+los hallazgos se reenvian automaticamente a vuln-service para
+priorizacion (CVSS/EPSS/KEV), igual que un escaneo normal.
 
 ## Si algo no funciona
 
@@ -158,22 +141,20 @@ para priorizacion (CVSS/EPSS/KEV), igual que un escaneo normal.
   necesitas la IP de la LAN de la PC donde esta SentinelOps, y que el
   firewall de esa PC permita conexiones entrantes al puerto 8003 desde
   esa otra maquina.
-- **Los jobs quedan en "failed" con "nmap no esta instalado o no esta en
-  el PATH"**: instala nmap (ver Requisitos arriba) y asegurate de poder
-  correr `nmap --version` desde la misma terminal donde corres
-  `agent.py`.
+- **Los jobs quedan en "failed" con "nuclei/trivy no esta instalado o no
+  esta en el PATH"**: instala el binario que falta (ver Requisitos
+  arriba) y asegurate de poder correrlo (`nuclei -version` / `trivy
+  --version`) desde la misma terminal donde corres `agent.py`.
 - **El escaneo tarda mucho o falla por timeout**: el agente usa los
-  mismos timeouts que scan-service (180s por escaneo, 30s por host que
-  no responde) -- si necesitas escanear rangos grandes, es mejor dividir
-  en varios jobs mas chicos que un solo `/24` entero.
+  mismos timeouts que scan-service -- si necesitas escanear muchos
+  targets, es mejor dividir en varios jobs mas chicos.
 - **Los jobs quedan "pending"/"assigned" mucho tiempo usando el Agente
   Docker contra una IP de LAN (192.168.x.x, 10.x.x.x)**: el Agente
-  Docker corre DENTRO de Docker Desktop, detras de su NAT. Solo nmap
-  tiene forma de atravesarlo (usa un escaner TCP interno en vez del
-  binario real -- ver `AGENT_FORCE_INTERNAL_NMAP`); trivy/nuclei/openvas
-  no, y con `AGENT_BEHIND_DOCKER_NAT=1` (ya seteado para el Agente
-  Docker en `docker-compose.yml`) esos 3 fallan al toque con un mensaje
-  claro en vez de quedarse varios minutos intentando conectar.
+  Docker corre DENTRO de Docker Desktop, detras de su NAT, y ni trivy
+  ni nuclei tienen forma de atravesarlo -- con
+  `AGENT_BEHIND_DOCKER_NAT=1` (ya seteado para el Agente Docker en
+  `docker-compose.yml`) esos jobs fallan al toque con un mensaje claro
+  en vez de quedarse varios minutos intentando conectar.
   **El Agente LAN (`agente-lan.ps1`) SI puede correr nuclei y trivy
   contra la LAN**, pero no de cero: si encuentra `nuclei.exe`/`trivy.exe`
   instalados (en el PATH, o en remote-agent\bin\) en la PC donde corre, los usa de verdad, con
@@ -181,15 +162,12 @@ para priorizacion (CVSS/EPSS/KEV), igual que un escaneo normal.
   deteccion, nunca explotacion activa). Si no los encuentra, ese job
   vuelve con un mensaje claro que dice que instalar -- y el PROXIMO job
   ya funciona, sin reiniciar el agente (se chequea en cada job, no solo
-  al arrancar). openvas sigue sin soporte aca (necesita el motor
-  completo de Greenbone, no un binario suelto); para eso la unica opcion
-  es correr `remote-agent/agent.py` (el agente Python completo) directo
-  en una PC con visibilidad real a esa red.
+  al arrancar).
 - **Varios jobs asignados a la vez, uno lento no debería trabar a los
   demas**: el agente los corre en threads separados (hasta
-  `AGENT_MAX_CONCURRENT_JOBS`, default 8) -- un openvas/nuclei que tarda
-  varios minutos no bloquea que un nmap rapido, asignado en el mismo
-  poll, se resuelva enseguida.
+  `AGENT_MAX_CONCURRENT_JOBS`, default 8) -- un escaneo que tarda varios
+  minutos no bloquea que otro mas rapido, asignado en el mismo poll, se
+  resuelva enseguida.
 
 ---
 
@@ -202,24 +180,23 @@ defecto se crean dos:
 
 - **Agente Docker (internet/host)** -> corre como el contenedor
   `remote-agent` dentro del stack (misma imagen que scan-service, ya trae
-  nmap/trivy/nuclei). Arranca solo con `docker compose up`. Por el NAT de
+  trivy/nuclei). Arranca solo con `docker compose up`. Por el NAT de
   Docker Desktop escanea internet y la propia PC (`host.docker.internal`),
   **no** la LAN.
 - **Agente LAN** -> corre en el **host** (fuera de Docker) para llegar a la
   red real (`192.168.x.x`). Es un script PowerShell nativo
-  (`remote-agent/agente-lan.ps1`) que **no requiere instalar nada** para
-  el descubrimiento de puertos (equivalente a nmap) -- lo hace con
-  PowerShell + .NET puro. Para nuclei/trivy busca el binario en dos
-  lugares, en este orden: el PATH del sistema, y despues
-  `remote-agent/bin/nuclei.exe` / `remote-agent/bin/trivy.exe` -- una
-  carpeta al lado del script (creala si no existe) donde alcanza con
-  poner el .exe descargado oficialmente, sin instalar nada de verdad ni
-  tocar el PATH de Windows. Cualquiera de los dos lugares funciona, y
-  el agente los detecta en el siguiente job sin reiniciarse. Esa
-  carpeta (`remote-agent/bin/`) esta en `.gitignore` (via `*.exe`) --
-  esos binarios NUNCA se commitean (GitHub bloquea archivos de mas de
-  100MB, y nuclei.exe/trivy.exe pesan bastante mas). openvas sigue sin
-  soporte aca (ver nota en "Si algo no funciona" arriba).
+  (`remote-agent/agente-lan.ps1`) que **no requiere instalar Python ni
+  nada mas**: usa PowerShell + .NET puro, que ya vienen con Windows.
+  Para nuclei/trivy busca el binario en dos lugares, en este orden: el
+  PATH del sistema, y despues `remote-agent/bin/nuclei.exe` /
+  `remote-agent/bin/trivy.exe` -- una carpeta al lado del script (creala
+  si no existe) donde alcanza con poner el .exe descargado oficialmente,
+  sin instalar nada de verdad ni tocar el PATH de Windows. Cualquiera de
+  los dos lugares funciona, y el agente los detecta en el siguiente job
+  sin reiniciarse. Esa carpeta (`remote-agent/bin/`) esta en
+  `.gitignore` (via `*.exe`) -- esos binarios NUNCA se commitean (GitHub
+  bloquea archivos de mas de 100MB, y nuclei.exe/trivy.exe pesan
+  bastante mas).
 
 Las api keys de ambos estan en `.env` (`REMOTE_AGENT_DOCKER_KEY` y
 `REMOTE_AGENT_LAN_KEY`) -- son las que se pegan en la UI al lanzar un
@@ -244,8 +221,8 @@ tu propio usuario -- no hace falta ser administrador. Otros comandos
 utiles (desde `remote-agent/`, en PowerShell):
 
 ```powershell
-.gente-lan.ps1 -Status      # esta instalado? corriendo? ver el log
-.gente-lan.ps1 -Uninstall   # sacarlo de los programas de inicio
+.gente-lan.ps1 -Status      # esta instalado? corriendo? ver el log
+.gente-lan.ps1 -Uninstall   # sacarlo de los programas de inicio
 ```
 
 El log queda en `remote-agent/agente-lan.log` -- util para revisar que
@@ -259,4 +236,4 @@ cambio -- se detiene si cerras esa ventana.
 ### Probar todo el pipeline sin escanear nada real
 
 `python remote-agent/test_pipeline.py` (ver cabecera del archivo) ejercita
-el ciclo completo para los 4 scanners y valida la seguridad de la api key.
+el ciclo completo para los 2 scanners y valida la seguridad de la api key.
