@@ -10,7 +10,7 @@ empresas como producto propio.
 Este proyecto cubre exclusivamente el lado DEFENSIVO de una plataforma de seguridad:
 
 - Inventario de activos (CMDB)
-- Orquestacion de escaneres de vulnerabilidades (Nmap, Trivy, Nuclei, OpenVAS) en modo
+- Orquestacion de escaneres de vulnerabilidades (Trivy, Nuclei) en modo
   deteccion — nunca explotacion
 - Priorizacion con CVSS / EPSS / CISA KEV
 - SIEM: ingesta, normalizacion, correlacion de reglas Sigma, alertas

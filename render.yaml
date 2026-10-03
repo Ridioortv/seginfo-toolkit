@@ -1,6 +1,6 @@
 # Blueprint de Render para licensing-server -- el UNICO servicio de este
 # repo pensado para la nube (ver licensing-server/README.md y STATUS.md):
-# el resto de SentinelOps (scan-service, openvas, frontend, etc.) se
+# el resto de SentinelOps (scan-service, frontend, etc.) se
 # distribuye como RAR para que cada cliente lo corra en su propia
 # infraestructura on-prem, no tiene sentido ni sirve desplegarlo aca.
 #

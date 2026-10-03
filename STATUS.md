@@ -1244,3 +1244,77 @@ el mismo en el paso de signup.
   -> elegir este repo. Te va a pedir `DATABASE_URL` (connection string
   de Neon) y `LICENSE_SIGNING_PRIVATE_KEY` (la que genera
   `generate_keys.py`) en el momento de crear el servicio.
+
+## Se sacaron nmap, Nessus Essentials y OpenVAS del producto: queda trivy + nuclei (2026-10-03)
+
+Manu pidio sacar nmap y Nessus Essentials enteros del programa ("no son
+aptos para vender"), revirtiendo ademas una migracion OpenVAS -> Nessus que
+estaba en curso en esta misma sesion. Confirmo explicitamente que el alcance
+final de escaneres queda en **trivy + nuclei unicamente** -- sin ningun
+scanner de puertos/red ni de vulnerabilidades de infraestructura.
+
+Se audito y limpio el repo completo, sin dejar nada roto ni mencionado:
+
+- **Backend (`scan-service`)**: se borraron `app/scanners/nmap.py`,
+  `app/scanners/nessus.py` y `app/nessus_manage.py`. `app/scanners/nuclei.py`
+  perdio su preflight interno que shelleaba a `nmap -sn`. `app/models.py` y
+  `app/schemas.py` quedaron con `ScannerType`/`scanner_type` limitados a
+  `trivy`/`nuclei` (se borro todo el modelo/schemas de `NessusCredentials`).
+  `app/services.py` perdio toda la logica de credenciales/tenancy de Nessus.
+  `app/main.py` perdio el bloque entero de endpoints `/nessus/*` -- de paso
+  se encontro y arreglo un bug preexistente (el decorador `@app.post("/scans"
+  ...)` faltaba sobre `create_scan`, dejando esa ruta inalcanzable). El
+  Dockerfile ya no instala `nmap`. Tests: se borraron
+  `test_nmap_driver.py`/`test_nessus_driver.py`, se reescribio
+  `test_target_ssrf_validation.py` sin mencionar nmap/nessus, y se
+  actualizaron referencias incidentales en otros tests. 102/102 tests en
+  verde.
+- **`remote-agent/`**: `agent.py` (829 -> 397 lineas) perdio el escaner TCP
+  interno, `run_nmap`, y todo el cliente REST de Nessus (`run_nessus` y sus
+  helpers). `agente-lan.ps1` perdio `Expand-Hosts`/`Scan-HostPorts` (su
+  escaner de puertos nativo) y el branch `scanner -eq "nmap"`, mas el
+  mensaje de fallback que mandaba a usar Nessus. `test_pipeline.py` y
+  `README.md` quedaron documentando solo trivy/nuclei (README tambien
+  perdio toda la tabla de variables `NESSUS_*`).
+- **`docker-compose.yml`**: se sacó `AGENT_FORCE_INTERNAL_NMAP` del servicio
+  `remote-agent` (agent.py ya no lo lee) y se reescribieron sus comentarios
+  (ya no mencionan nmap/Nessus).
+- **`.env`/`.env.example`**: se sacaron `GVM_*`, `REMOTE_AGENT_GVM_KEY` y la
+  entrada `"gvm"` de `BOOTSTRAP_AGENTS` -- resabios de la limpieza de
+  OpenVAS/GVM anterior a esta sesion que habian quedado sin sacar (el agente
+  bootstrap "gvm" se hubiera seguido auto-registrando en cada arranque de
+  scan-service sin que nada lo pudiera usar).
+- **Frontend**: se borro `NessusDashboard.tsx` y la ruta `/nessus` (`App.tsx`,
+  `Layout.tsx`). En `Scans.tsx` se sacaron el tipo `ScannerType` de 4 valores
+  (ahora solo `trivy`/`nuclei`), el modo nmap rapido/completo, el query de
+  `nessus/status` y toda la UI condicional de Nessus en los 3 paneles
+  ("Nuevo escaneo" ahora es nuclei-only contra WAN; "Escaneos programados" y
+  "Escaneos remotos" ofrecen trivy/nuclei); el aviso de aislamiento de red
+  por NAT de Docker ahora aplica por igual a los 2 scanners (antes nmap y
+  nessus quedaban exceptuados). De paso se encontro y arreglo una referencia
+  a una variable `openvasReady` que no existia en ningun lado (bug latente
+  de una limpieza de OpenVAS anterior que quedo a medio hacer) y un import
+  de `useEffect` sin usar. `Assets.tsx` (boton de escaneo rapido por activo)
+  y `Badge.tsx`/`RunningIndicator.tsx`/`theme.css` (comentarios y badges de
+  estados de Nessus) tambien quedaron limpios. `npx tsc --noEmit`, 41 tests
+  (`vitest run`) y `npm run build` -- los 3 en verde.
+- **Docs y varios**: se saco la seccion entera "Stack OpenVAS/GVM" de
+  `docs/architecture.md` (describia infraestructura que ya no existe en
+  `docker-compose.yml` desde antes de esta sesion) y las menciones a
+  nmap/OpenVAS en `docs/runbook.md`, `docs/security.md` (incluida la fila
+  STRIDE de `ospd-openvas`, un contenedor que tampoco existe mas),
+  `README.md`, `render.yaml`, el `Makefile` (target `test-openvas`, que
+  apuntaba a un servicio `openvas-orchestrator` inexistente en el compose) y
+  un par de strings de muestra en `siem-service`/`vuln-service`.
+
+**Resultado para Manu**: el producto queda enfocado en dos escaneres:
+**trivy** (CVEs en imagenes de contenedor/paquetes, via subida de archivo o
+en escaneos programados) y **nuclei** (deteccion por plantillas sobre
+hosts/URLs, sin las categorias `dos`/`fuzz`/`intrusive` -- solo deteccion,
+nunca explotacion). No queda ningun scanner de puertos/descubrimiento de red
+(lo que hacia nmap) ni ningun motor de vulnerabilidades de infraestructura
+tipo Nessus/OpenVAS. Esto es una reduccion real de alcance respecto de donde
+arranco el producto (OpenVAS) -- antes de llevarlo a mercado asi, vale la
+pena confirmar que trivy + nuclei cubre lo que tus clientes esperan, o si
+hace falta sumar otra capacidad de escaneo de red/infraestructura que sí
+este lista para vender.

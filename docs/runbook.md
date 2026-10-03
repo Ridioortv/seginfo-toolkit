@@ -231,21 +231,16 @@ Linux con `network_mode: host`, que Docker Desktop no soporta igual). Para
 escanear la red real de una empresa en produccion, este servicio tiene que
 correr en una maquina (o un agente) que este efectivamente conectado a esa
 red -- no alcanza con apuntar el target a un rango LAN desde una laptop con
-Docker Desktop. El driver de nmap (`app/scanners/nmap.py`) usa `-T4` y
-`--host-timeout 30s` para que un rango inalcanzable falle rapido (unos
-minutos) en vez de comerse el timeout entero por cada host que no
-responde.
+Docker Desktop. El driver de nuclei (`app/scanners/nuclei.py`) usa sus
+propios timeouts para que un target inalcanzable falle rapido en vez de
+comerse el timeout entero.
 
 **"SCANNER_UNAVAILABLE" en un job**: el binario de ese scanner no esta en
-la imagen de scan-service. nmap, trivy y nuclei se instalan en el
-Dockerfile (trivy y nuclei via su release oficial, no hay paquete apt);
-openvas/gvm-cli NO se instala a proposito -- es un producto completo
-(gvmd + su propia base de datos + feed de NVTs), no un CLI suelto, asi que
-queda marcado como no disponible en vez de intentar empaquetarlo. Notar
-tambien que trivy espera un nombre de imagen o una ruta de filesystem como
-target (no una IP), y nuclei espera un host/URL alcanzable por HTTP -- un
-target de IP/CIDR pensado para nmap no necesariamente tiene sentido para
-esos otros dos scanners.
+la imagen de scan-service. trivy y nuclei se instalan en el Dockerfile via
+su release oficial (no hay paquete apt). Notar tambien que trivy espera un
+nombre de imagen o una ruta de filesystem como target (no una IP/host), y
+nuclei espera un host/URL alcanzable por HTTP -- un target pensado para uno
+no necesariamente tiene sentido para el otro.
 
 ## Reportes programados por email
 
@@ -339,14 +334,16 @@ el ticket en Jira / mandar el mensaje a Slack) se ejecute.
 **Para que sirve.** Docker Desktop (Windows/Mac) aisla a los contenedores
 detras de NAT: scan-service, corriendo adentro de Docker, no ve la LAN
 real de la oficina/cliente aunque Docker este instalado en una PC de esa
-misma red. Un escaneo nmap contra `192.168.1.0/24` lanzado desde la UI
-no encuentra nada en ese caso -- no es un bug, es una limitacion de red
-del propio Docker Desktop.
+misma red. Un escaneo de nuclei o trivy contra `192.168.1.0/24` lanzado
+desde la UI no encuentra nada en ese caso -- no es un bug, es una
+limitacion de red del propio Docker Desktop.
 
 **Como se resuelve.** `remote-agent/agent.py` (en la raiz del repo) es un
 script Python que corre FUERA de Docker -- en la misma PC donde esta
 SentinelOps, o en cualquier otra maquina de la LAN con visibilidad real
-a la red que se quiere escanear. El agente hace **polling** hacia
+a la red que se quiere escanear (tambien existe `remote-agent/agente-lan.ps1`,
+un equivalente nativo en PowerShell para Windows que no requiere instalar
+Python). El agente hace **polling** hacia
 scan-service (siempre el agente inicia la conexion, nunca al reves), asi
 que no hace falta abrir ningun puerto de entrada en la red del cliente:
 alcanza con que el agente pueda llegar, de salida, al puerto ya publicado
@@ -363,11 +360,10 @@ servidor, no una contraseña elegida por una persona -- y el poll ocurre
 cada pocos segundos, asi que un hash costoso ahi si seria un problema de
 performance real.
 
-**Alcance.** El agente solo sabe correr nmap en modo deteccion
-(descubrimiento de puertos/servicios + scripts `default,safe`) -- el
-mismo comando exacto y las mismas restricciones que usa scan-service
-adentro del contenedor. Nunca ejecuta `--script vuln` ni scripts de las
-categorias `exploit`/`intrusive`.
+**Alcance.** El agente solo sabe correr en modo deteccion: nuclei sin las
+categorias de templates `dos`/`fuzz`/`intrusive`, y trivy solo lee (nunca
+ejecuta nada del target) -- las mismas restricciones que usa scan-service
+adentro del contenedor.
 
 **Como se usa.**
 1. Pagina Escaneos -> "Agentes de escaneo remoto" -> "Registrar agente"
@@ -377,9 +373,9 @@ categorias `exploit`/`intrusive`.
    `AGENT_API_KEY` (la key del paso 1) y `SCAN_SERVICE_URL` (si el agente
    corre en otra maquina de la LAN, usar la IP de la PC de SentinelOps
    en vez de `localhost`) como variables de entorno, y correr
-   `python remote-agent/agent.py` (requiere Python 3.9+ y nmap instalado
-   -- ver `remote-agent/README.md` para el detalle completo, incluyendo
-   Windows).
+   `python remote-agent/agent.py` (requiere Python 3.9+ y el binario de
+   trivy y/o nuclei instalado -- ver `remote-agent/README.md` para el
+   detalle completo, incluyendo Windows).
 3. Pagina Escaneos -> "Escaneos remotos" -> elegir el agente y el target,
    lanzar el escaneo. El agente lo recoge en su siguiente poll y manda el
    resultado solo; los hallazgos se reenvian automaticamente a
