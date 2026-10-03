@@ -1413,3 +1413,32 @@ PowerShell real durante esta sesion (solo revision manual linea por linea)
 -- probalo a mano con un job de cada uno de los 4 scanners nuevos que
 soporta (zap/semgrep/gitleaks/yara) antes de darlo por funcionando en
 produccion.
+
+### Verificacion post-deploy en la maquina de Manu (2026-10-03)
+
+El build real de `docker compose build scan-service remote-agent` fallo en
+el primer intento por un conflicto de dependencias de pip (`pydantic==2.9.2`
+fijado antes de sumar semgrep es incompatible con `semgrep==1.86.0`, que
+pide `pydantic~=2.8.2`) -- corregido bajando el pin a `2.8.2` (commit
+`caa84da`, ver seccion de arriba). Despues de ese fix, build y
+`docker compose up -d` completos. `scan-service` quedo "unhealthy" en el
+primerisimo arranque (primera vez que los volumenes `trivy_cache`/
+`nuclei_templates` existian, Docker tuvo que copiarles el contenido
+horneado en la imagen -- mas lento que el `start-period` del
+`HEALTHCHECK`, que no tiene gracia explicita) pero quedo sano al
+reintentar `docker compose up -d` una segunda vez, sin cambiar nada mas.
+
+Confirmado dentro del contenedor (`docker compose exec scan-service sh -c
+"which trivy nuclei zap.sh semgrep gitleaks yara zeek falco"`): los 8
+binarios estan instalados y responden. `zeek --version` -> 9.0.0.
+`falco --version` corrio limpio sobre el kernel WSL2 de Docker Desktop de
+Manu (`6.18.33.2-microsoft-standard-WSL2`) -- soporta lo que el driver
+eBPF "moderno" de falco necesita, asi que la preocupacion de licenciamiento
+original sobre si WSL2 iba a alcanzar quedo resuelta: alcanza.
+
+**Pendiente real, ahora si acotado**: falta lanzar un job de cada scanner
+nuevo desde la UI (Escaneos programados y Escaneos remotos) contra un
+target de prueba real, para confirmar que cada driver -- no solo el
+binario -- anda de punta a punta (parseo de resultados, severidades,
+reenvio a vuln-service). Los binarios ya estan confirmados; falta probar
+los 6 flujos completos.
