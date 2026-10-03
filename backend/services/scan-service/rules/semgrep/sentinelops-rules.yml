@@ -147,7 +147,7 @@ rules:
     patterns:
       - pattern-either:
           - pattern: DEBUG = True
-          - pattern: DEBUG: bool = True
+          - pattern: "DEBUG: bool = True"
 
   - id: sentinelops-requests-tls-verify-disabled
     languages: [python]
@@ -181,7 +181,7 @@ rules:
     patterns:
       - pattern-either:
           - pattern: jwt.decode(..., verify=False, ...)
-          - pattern: jwt.decode($TOKEN, $KEY, options={"verify_signature": False})
+          - pattern: 'jwt.decode($TOKEN, $KEY, options={"verify_signature": False})'
 
   - id: sentinelops-js-eval-newfunction
     languages: [javascript, typescript]
