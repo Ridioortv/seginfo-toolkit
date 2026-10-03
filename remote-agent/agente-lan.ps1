@@ -527,10 +527,14 @@ function Invoke-YaraScan([string]$targetValue) {
     }
     $findings = @()
     foreach ($line in ($result.Stdout -split "`n")) {
-        if (-not $line) { continue }
-        if ($line -match '^[ \t]') { continue }
         $trimmed = $line.Trim()
         if (-not $trimmed) { continue }
+        # "0xOFFSET:$id: contenido" -- linea de detalle de -s, SIN indentar
+        # en esta version de yara (bug real: se asumia indentada con
+        # tab/espacio y nunca se filtraba). Un nombre de regla YARA nunca
+        # empieza con un digito, asi que este patron nunca se confunde con
+        # una linea real "REGLA archivo".
+        if ($trimmed -match '^0x[0-9a-fA-F]+:') { continue }
         $parts = $trimmed -split '\s+', 2
         if ($parts.Count -lt 2) { continue }
         $ruleName = $parts[0]; $filePath = $parts[1]

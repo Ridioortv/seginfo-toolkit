@@ -19,10 +19,14 @@ from app.scanners.base import ScannerDriver, ScanResult
 
 YARA_RULES_FILE = os.getenv("YARA_RULES_FILE", "/opt/sentinelops-yara-rules/sentinelops.yar")
 
-# Con -s, debajo de cada linea "REGLA archivo" YARA imprime (indentadas)
-# las cadenas que matchearon -- esas lineas se ignoran, solo nos importa
-# la primera linea de cada match.
+# Con -s, debajo de cada linea "REGLA archivo" YARA imprime una linea de
+# detalle por cada cadena que matcheo, formato "0xOFFSET:$id: contenido"
+# -- SIN indentacion (a diferencia de lo que un vistazo rapido a la doc
+# sugeriria). Un nombre de regla YARA nunca puede empezar con un digito,
+# asi que este patron nunca puede confundirse con una linea real
+# "REGLA archivo".
 _MATCH_LINE_RE = re.compile(r"^(\S+)\s+(.+)$")
+_MATCH_DETAIL_RE = re.compile(r"^0x[0-9a-fA-F]+:")
 
 _SEVERITY_BY_RULE = {
     "SentinelOps_EICAR_Test_File": "info",
@@ -36,9 +40,10 @@ _SEVERITY_BY_RULE = {
 def parse_yara_output(raw: str) -> list[dict]:
     findings: list[dict] = []
     for line in raw.splitlines():
-        if not line or line[0] in (" ", "\t"):
+        stripped = line.strip()
+        if not stripped or _MATCH_DETAIL_RE.match(stripped):
             continue
-        m = _MATCH_LINE_RE.match(line.strip())
+        m = _MATCH_LINE_RE.match(stripped)
         if not m:
             continue
         rule_name, file_path = m.group(1), m.group(2)

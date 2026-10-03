@@ -69,7 +69,7 @@ class FalcoDriver(ScannerDriver):
 
     async def run(self, target: str, options: dict) -> ScanResult:
         duration_seconds = resolve_duration_seconds(options or {})
-        cmd = ["falco", "-M", str(duration_seconds), "-o", "engine.kind=modern_ebpf", "--json-output"]
+        cmd = ["falco", "-M", str(duration_seconds), "-o", "engine.kind=modern_ebpf", "-o", "json_output=true"]
         proc = None
         try:
             proc = await asyncio.create_subprocess_exec(

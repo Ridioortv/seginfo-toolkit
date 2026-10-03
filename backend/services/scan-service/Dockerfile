@@ -11,7 +11,7 @@ WORKDIR /app
 # tiene paquete apt en Debian -- se instala directo aca, sin pasos
 # propios.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        gcc libpq-dev curl unzip git gnupg yara \
+        gcc libpq-dev curl unzip git gnupg yara libcap2-bin \
     && rm -rf /var/lib/apt/lists/*
 
 # Trivy (CVEs conocidos en imagenes de contenedor / filesystems): script
@@ -111,6 +111,18 @@ RUN . /etc/os-release \
         && rm -rf /var/lib/apt/lists/*) \
     || echo "ADVERTENCIA (build): no se pudo instalar zeek -- el scanner 'zeek' va a quedar reportado como no disponible hasta que se resuelva esto."
 ENV PATH="/opt/zeek/bin:${PATH}"
+
+# Capability de archivo para que zeek pueda abrir sockets raw (captura de
+# paquetes) corriendo como el usuario NO-root "sentinelops" (ver USER mas
+# abajo) -- docker-compose.yml le da NET_RAW/NET_ADMIN al CONTENEDOR via
+# cap_add, pero eso solo las agrega al "bounding set"; un proceso no-root
+# NO las tiene en su set efectivo a menos que el binario las tenga
+# marcadas asi (bug real encontrado en produccion: zeek fallaba con
+# "pcap_activate: Operation not permitted" pese al cap_add). No-fatal: si
+# el binario no existe (el paso de arriba fallo) o setcap no esta
+# disponible, zeek sigue quedando "no disponible" en vez de romper el build.
+RUN setcap cap_net_raw,cap_net_admin+eip /opt/zeek/bin/zeek 2>/dev/null \
+    || echo "ADVERTENCIA (build): no se pudo aplicar setcap a zeek (el binario puede no existir todavia) -- va a fallar en runtime con 'Operation not permitted' al capturar."
 
 # Falco (monitoreo de runtime via eBPF, Apache 2.0): repo apt oficial de
 # falcosecurity. Igual que zeek arriba, envuelto en un fallback no-fatal

@@ -507,6 +507,8 @@ _YARA_SEVERITY_BY_RULE = {
     "SentinelOps_Python_Reverse_Shell_Oneliner": "critical",
 }
 _YARA_MATCH_LINE_RE = re.compile(r"^(\S+)\s+(.+)$")
+# "0xOFFSET:$id: contenido" -- linea de detalle de -s, SIN indentar en esta version de yara (bug real: se asumia indentada). Un nombre de regla YARA nunca empieza con un digito, asi que este patron nunca se confunde con una linea real "REGLA archivo".
+_YARA_MATCH_DETAIL_RE = re.compile(r"^0x[0-9a-fA-F]+:")
 
 
 def run_yara(target: str, options: dict) -> tuple[str, list[dict], str]:
@@ -527,9 +529,10 @@ def run_yara(target: str, options: dict) -> tuple[str, list[dict], str]:
         return raw, [], proc.stderr.decode(errors="replace")[:2000]
     findings = []
     for line in raw.splitlines():
-        if not line or line[0] in (" ", "\t"):
+        stripped = line.strip()
+        if not stripped or _YARA_MATCH_DETAIL_RE.match(stripped):
             continue
-        m = _YARA_MATCH_LINE_RE.match(line.strip())
+        m = _YARA_MATCH_LINE_RE.match(stripped)
         if not m:
             continue
         rule_name, file_path = m.group(1), m.group(2)
@@ -684,7 +687,7 @@ _FALCO_PRIORITY_SEVERITY_MAP = {
 
 def run_falco(target: str, options: dict) -> tuple[str, list[dict], str]:
     duration_seconds = _resolve_duration_seconds(options or {})
-    cmd = ["falco", "-M", str(duration_seconds), "-o", "engine.kind=modern_ebpf", "--json-output"]
+    cmd = ["falco", "-M", str(duration_seconds), "-o", "engine.kind=modern_ebpf", "-o", "json_output=true"]
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=duration_seconds + 30)
     except FileNotFoundError:
