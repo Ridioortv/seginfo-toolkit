@@ -94,6 +94,28 @@ services:
       # una vez (ver Dockerfile y app/scanners/{trivy,nuclei}.py).
       - trivy_cache:/root/.cache/trivy
       - nuclei_templates:/root/nuclei-templates
+    # Capabilities elevadas, SOLO para zeek/falco (ver app/scanners/zeek.py
+    # y app/scanners/falco.py) -- ningun otro scanner de esta plataforma
+    # las necesita. NET_RAW/NET_ADMIN: captura de paquetes en modo
+    # promiscuo (zeek). SYS_PTRACE/SYS_ADMIN/SYS_RESOURCE + BPF/PERFMON:
+    # cargar y correr el driver eBPF "moderno" de falco (requiere un
+    # kernel con soporte BTF -- en Docker Desktop depende de la version/
+    # el backend WSL2 vs Hyper-V; si el kernel del host no alcanza, falco
+    # termina con un error claro al arrancar en vez de degradarse en
+    # silencio, ver FalcoDriver.run). Decision de producto que acepta
+    # este riesgo/complejidad de despliegue extra (Manu, 2026) a cambio
+    # de sumar estos dos scanners -- si BPF/PERFMON no son reconocidos
+    # por tu version de Docker Engine (nombres de capability mas nuevos,
+    # Docker 20.10+), sacalos de esta lista; zeek sigue funcionando con
+    # solo NET_RAW/NET_ADMIN.
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+      - SYS_PTRACE
+      - SYS_ADMIN
+      - SYS_RESOURCE
+      - BPF
+      - PERFMON
     depends_on:
       postgres:
         condition: service_healthy
@@ -126,6 +148,37 @@ services:
       # claro en vez de quedarse varios minutos intentando conectar.
       # Ver remote-agent/agent.py::_process_job.
       AGENT_BEHIND_DOCKER_NAT: "1"
+      # Este agente corre con la MISMA imagen que scan-service (ver el
+      # build de arriba), que ya trae horneadas las reglas propias de
+      # semgrep/yara (ver Dockerfile, COPY rules/{semgrep,yara}) -- se
+      # los apunta ahi en vez del default relativo "./rules/..." de
+      # agent.py (pensado para cuando este script corre SUELTO en una
+      # maquina sin ese build, ver remote-agent/README.md).
+      SENTINELOPS_SEMGREP_RULES_DIR: /opt/sentinelops-semgrep-rules
+      SENTINELOPS_YARA_RULES_FILE: /opt/sentinelops-yara-rules/sentinelops.yar
+      SENTINELOPS_ZAP_HOME_DIR: /home/sentinelops/.ZAP
+    # Capabilities elevadas, SOLO para zeek/falco (ver app/scanners/zeek.py
+    # y app/scanners/falco.py) -- ningun otro scanner de esta plataforma
+    # las necesita. NET_RAW/NET_ADMIN: captura de paquetes en modo
+    # promiscuo (zeek). SYS_PTRACE/SYS_ADMIN/SYS_RESOURCE + BPF/PERFMON:
+    # cargar y correr el driver eBPF "moderno" de falco (requiere un
+    # kernel con soporte BTF -- en Docker Desktop depende de la version/
+    # el backend WSL2 vs Hyper-V; si el kernel del host no alcanza, falco
+    # termina con un error claro al arrancar en vez de degradarse en
+    # silencio, ver FalcoDriver.run). Decision de producto que acepta
+    # este riesgo/complejidad de despliegue extra (Manu, 2026) a cambio
+    # de sumar estos dos scanners -- si BPF/PERFMON no son reconocidos
+    # por tu version de Docker Engine (nombres de capability mas nuevos,
+    # Docker 20.10+), sacalos de esta lista; zeek sigue funcionando con
+    # solo NET_RAW/NET_ADMIN.
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+      - SYS_PTRACE
+      - SYS_ADMIN
+      - SYS_RESOURCE
+      - BPF
+      - PERFMON
     # No es un servidor web (corre agent.py, no uvicorn), asi que el
     # healthcheck de la imagen no aplica -> lo desactivamos para que no
     # figure "unhealthy".

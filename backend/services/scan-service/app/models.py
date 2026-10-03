@@ -19,6 +19,17 @@ def _now() -> datetime:
 class ScannerType(str, enum.Enum):
     trivy = "trivy"
     nuclei = "nuclei"
+    # Sumados por directiva de expansion comercial (Manu, 2026) --
+    # unicamente herramientas con licencia que permite venderlas como
+    # parte de este producto (ver app/scanners/__init__.py y el
+    # docstring de cada driver para el detalle de licencia/alcance por
+    # herramienta).
+    zap = "zap"
+    semgrep = "semgrep"
+    gitleaks = "gitleaks"
+    yara = "yara"
+    zeek = "zeek"
+    falco = "falco"
 
 
 class ScanStatus(str, enum.Enum):

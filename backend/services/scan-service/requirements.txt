@@ -11,5 +11,10 @@ prometheus-client==0.20.0
 python-multipart==0.0.9
 httpx==0.27.2
 apscheduler==3.10.4
+# Semgrep (SAST): motor LGPL-2.1, se invoca como CLI (nunca se
+# importa como libreria python) -- ver app/scanners/semgrep.py, que
+# ademas fija --config a reglas PROPIAS (rules/semgrep/), nunca a
+# 'auto'/'p/...' (ver ese archivo para el porque).
+semgrep==1.86.0
 
 pytest==8.3.3  # solo se usa para correr backend/services/scan-service/tests/ (make test / CI); no se importa en produccion

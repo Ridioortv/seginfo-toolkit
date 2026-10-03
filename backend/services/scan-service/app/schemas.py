@@ -7,6 +7,23 @@ from app.target_validation import validate_target, reject_dangerous_network_targ
 
 ScanFrequency = Literal["daily", "weekly"]
 
+# Scanner types cuyo `target` NUNCA es un host/URL de red -- el
+# denylist de SSRF de reject_dangerous_network_target (nombres de
+# servicio internos de la plataforma + metadata/link-local/loopback)
+# no tiene sentido aplicado a ellos:
+#   - trivy: referencia de imagen/filesystem (ej. "postgres:16" es una
+#     imagen legitima, no el contenedor postgres de la plataforma).
+#   - yara: path de archivo/directorio local.
+#   - zeek: nombre de interfaz de red (ej. "eth0") o "auto".
+#   - falco: etiqueta libre, ni se usa en el comando (monitorea todo
+#     el nodo/contenedor).
+# nuclei/zap/semgrep/gitleaks SI pueden recibir una URL/host de red
+# (zap siempre; semgrep/gitleaks cuando el target es una URL git
+# clonable en vez de un path local) y por eso SI se validan.
+_NON_NETWORK_SCANNER_TYPES = frozenset({
+    ScannerType.trivy, ScannerType.yara, ScannerType.zeek, ScannerType.falco,
+})
+
 
 class ScanJobCreate(BaseModel):
     name: str = ""
@@ -28,7 +45,7 @@ class ScanJobCreate(BaseModel):
         # (ver target_validation.reject_dangerous_network_target). nuclei SI
         # corre dentro de la red docker de la plataforma, asi que su target
         # se valida contra ese denylist.
-        if self.scanner_type != ScannerType.trivy:
+        if self.scanner_type not in _NON_NETWORK_SCANNER_TYPES:
             reject_dangerous_network_target(self.target)
         return self
 
@@ -88,7 +105,7 @@ class ScanScheduleCreate(BaseModel):
         # ese caso lo ejecuta un agente remoto FUERA de la red docker de la
         # plataforma (en la LAN real del cliente), asi que el denylist de
         # nombres de servicio internos no aplica (ver AgentScanJobCreate).
-        if self.scanner_type != ScannerType.trivy and not self.agent_id:
+        if self.scanner_type not in _NON_NETWORK_SCANNER_TYPES and not self.agent_id:
             reject_dangerous_network_target(self.target)
         return self
 
@@ -192,10 +209,12 @@ AgentJobStatus = Literal["pending", "assigned", "completed", "failed"]
 class AgentScanJobCreate(BaseModel):
     agent_id: str = Field(..., min_length=1)
     name: str = ""
-    # El agente remoto (remote-agent/agent.py) sabe correr trivy y nuclei --
-    # binarios sueltos que corre localmente en la maquina del agente. Ver
-    # remote-agent/agent.py.
-    scanner_type: Literal["trivy", "nuclei"] = "nuclei"
+    # El agente remoto (remote-agent/agent.py / remote-agent/agente-lan.ps1)
+    # sabe correr estos binarios localmente en la maquina del agente --
+    # zeek/falco solo en agent.py (requieren Linux + permisos elevados, ver
+    # sus drivers); agente-lan.ps1 (Windows nativo) los rechaza con un
+    # mensaje claro si se le mandan. Ver remote-agent/agent.py.
+    scanner_type: Literal["trivy", "nuclei", "zap", "semgrep", "gitleaks", "yara", "zeek", "falco"] = "nuclei"
     target: str = Field(..., min_length=1)
     options: dict = Field(default_factory=dict)
     # Al LANZAR un escaneo remoto desde la UI se exige tambien la api key del

@@ -18,11 +18,22 @@ import ipaddress
 import re
 
 # Letras/numeros, '.', ':', '/', '@', '_', '-' -- alcanza para hostnames,
-# IPv4/IPv6, CIDR, URLs de nuclei y referencias de imagen de trivy
-# (registry/repo:tag o repo@sha256:digest). Tiene que empezar y terminar
-# con un caracter alfanumerico, asi que un target no puede empezar con
-# "-" (se interpretaria como flag) ni terminar en un separador colgante.
-_SAFE_TARGET_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._:/@-]{0,498}[A-Za-z0-9])?$")
+# IPv4/IPv6, CIDR, URLs de nuclei/zap y referencias de imagen de trivy
+# (registry/repo:tag o repo@sha256:digest). Se agrega ademas espacio,
+# '\' y '()' -- sin esto, un path local de Windows (ej.
+# "C:\Users\manu\mi repo" o "C:\Program Files (x86)\...", target
+# valido para semgrep/gitleaks/yara cuando corren en el agente remoto
+# nativo -- agente-lan.ps1, ver remote-agent/) queda bloqueado por este
+# chequeo de SINTAXIS antes de llegar al driver. Sigue siendo seguro
+# ampliarlo: ningun driver usa shell=True (todos corren con
+# asyncio.create_subprocess_exec/subprocess.run con una lista de
+# argumentos), asi que un espacio o '\' en un argumento nunca habilita
+# inyeccion de comandos, solo pasa tal cual como parte de ese argumento.
+# Tiene que empezar y terminar con un caracter alfanumerico (o ')' al
+# terminar, por el caso "...(x86)"), asi que un target no puede empezar
+# con "-" (se interpretaria como flag) ni terminar en un separador
+# colgante.
+_SAFE_TARGET_RE = re.compile(r"^[A-Za-z0-9/](?:[A-Za-z0-9._:/@\\ ()-]{0,498}[A-Za-z0-9)])?$")
 
 
 def validate_target(target: str) -> str:

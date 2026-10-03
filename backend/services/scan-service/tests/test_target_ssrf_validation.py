@@ -105,3 +105,48 @@ def test_agent_scan_job_create_never_blocks_network_denylist():
 def test_validate_target_still_rejects_flag_like_targets():
     with pytest.raises(ValueError):
         validate_target("--script=exploit")
+
+
+# --- Nuevos scanner_type (zap/semgrep/gitleaks/yara/zeek/falco) -----------
+# Ver app/schemas.py::_NON_NETWORK_SCANNER_TYPES para el criterio exacto:
+# zap/semgrep/gitleaks pueden recibir un host/URL de red (igual que
+# nuclei) y por eso SI se validan contra el denylist; yara/zeek/falco
+# nunca reciben un host de red (path de archivo, interfaz, etiqueta
+# libre) y por eso estan exentos, igual que trivy.
+
+def test_scan_job_create_rejects_internal_target_for_zap():
+    with pytest.raises(ValidationError):
+        ScanJobCreate(scanner_type="zap", target="http://auth-service:8000/")
+
+
+def test_scan_job_create_rejects_metadata_target_for_semgrep():
+    with pytest.raises(ValidationError):
+        ScanJobCreate(scanner_type="semgrep", target="http://169.254.169.254/repo.git")
+
+
+def test_scan_job_create_allows_lan_url_for_gitleaks():
+    job = ScanJobCreate(scanner_type="gitleaks", target="https://192.168.1.50/repo.git")
+    assert job.target == "https://192.168.1.50/repo.git"
+
+
+def test_scan_job_create_allows_local_path_for_yara():
+    # yara nunca recibe un host de red -- un path local arbitrario pasa
+    # sin tocar el denylist de SSRF, aunque "parezca" raro sintacticamente.
+    job = ScanJobCreate(scanner_type="yara", target="/tmp/uploads/archivo.bin")
+    assert job.target == "/tmp/uploads/archivo.bin"
+
+
+def test_scan_job_create_allows_interface_name_for_zeek():
+    job = ScanJobCreate(scanner_type="zeek", target="eth0")
+    assert job.target == "eth0"
+
+
+def test_scan_job_create_allows_free_label_for_falco():
+    job = ScanJobCreate(scanner_type="falco", target="host-produccion")
+    assert job.target == "host-produccion"
+
+
+def test_agent_scan_job_create_accepts_all_new_scanner_types():
+    for scanner in ("zap", "semgrep", "gitleaks", "yara", "zeek", "falco"):
+        job = AgentScanJobCreate(agent_id="agent-1", scanner_type=scanner, target="algo", api_key="k")
+        assert job.scanner_type == scanner

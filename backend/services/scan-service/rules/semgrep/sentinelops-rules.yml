@@ -1,0 +1,235 @@
+# Reglas de Semgrep 100% AUTORADAS por SentinelOps (ninguna copiada del
+# registro publico de Semgrep ni de ningun paquete de terceros).
+#
+# POR QUE existen como archivo propio en vez de usar `--config auto` o
+# `--config p/...` (los registros de reglas por defecto de Semgrep):
+# el ruleset publico "semgrep-rules"/registry se distribuye bajo la
+# "Semgrep Rules License v1.0", que prohibe EXPLICITAMENTE ofrecerlo
+# "as part of a service to third parties" -- exactamente lo que haria
+# SentinelOps si lo usara para escanear el codigo de un cliente y
+# vender eso como parte del producto. El motor de Semgrep en si (CLI,
+# LGPL 2.1) se puede invocar como binario externo sin problema (igual
+# que trivy/nuclei, nunca linkeado), pero las REGLAS que corre tienen
+# que ser propias. Ver app/scanners/semgrep.py: el driver fija
+# --config a ESTE archivo (o a este directorio) y jamas usa
+# `--config auto`/`p/...`/`--registry` para nada.
+#
+# Alcance: deteccion de patrones de codigo insegunros conocidos y
+# genericos (no CVEs puntuales) en Python/JavaScript/TypeScript. Igual
+# que el resto de la plataforma, esto es SOLO deteccion -- ningun rule
+# de este archivo ejecuta ni modifica codigo del repositorio escaneado.
+rules:
+  - id: sentinelops-python-eval-exec
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Uso de eval()/exec() sobre datos que podrian no ser confiables.
+      Ejecutar codigo arbitrario construido en runtime es una de las
+      vias mas directas a RCE si el valor de entrada se origina, aunque
+      sea indirectamente, en el usuario.
+    metadata:
+      category: security
+      cwe: "CWE-95: Eval Injection"
+      owasp: "A03:2021 - Injection"
+      author: SentinelOps
+    patterns:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: exec(...)
+
+  - id: sentinelops-python-subprocess-shell-true
+    languages: [python]
+    severity: ERROR
+    message: >-
+      subprocess con shell=True concatena el comando a traves de una
+      shell real -- si cualquier parte del comando viene de un input
+      externo, esto es inyeccion de comandos. Preferir pasar el comando
+      como lista de argumentos (shell=False, el default) sin shell de
+      por medio.
+    metadata:
+      category: security
+      cwe: "CWE-78: OS Command Injection"
+      owasp: "A03:2021 - Injection"
+      author: SentinelOps
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.run(..., shell=True, ...)
+          - pattern: subprocess.call(..., shell=True, ...)
+          - pattern: subprocess.Popen(..., shell=True, ...)
+          - pattern: os.system(...)
+
+  - id: sentinelops-python-insecure-deserialization
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Deserializacion insegura: pickle.load/loads (y marshal) ejecutan
+      codigo arbitrario con solo deserializar un payload armado a
+      mano -- nunca deben usarse sobre datos que no sean 100% de
+      confianza (ej. que lleguen por red o de un archivo subido por un
+      usuario).
+    metadata:
+      category: security
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      author: SentinelOps
+    patterns:
+      - pattern-either:
+          - pattern: pickle.load(...)
+          - pattern: pickle.loads(...)
+          - pattern: marshal.loads(...)
+
+  - id: sentinelops-python-yaml-load-unsafe
+    languages: [python]
+    severity: WARNING
+    message: >-
+      yaml.load() sin especificar Loader (o con yaml.Loader/
+      yaml.UnsafeLoader) puede ejecutar codigo arbitrario al parsear un
+      YAML armado a mano -- usar yaml.safe_load() o
+      yaml.load(..., Loader=yaml.SafeLoader).
+    metadata:
+      category: security
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+      author: SentinelOps
+    patterns:
+      - pattern-either:
+          - pattern: yaml.load($DATA)
+          - pattern: yaml.load($DATA, Loader=yaml.Loader)
+          - pattern: yaml.load($DATA, Loader=yaml.UnsafeLoader)
+
+  - id: sentinelops-weak-hash-for-secrets
+    languages: [python]
+    severity: WARNING
+    message: >-
+      MD5/SHA1 no son aptos para guardar contraseñas ni para firmar
+      datos sensibles (son rapidos de fuerza-brutear y SHA1 tiene
+      colisiones conocidas) -- usar bcrypt/scrypt/argon2 para
+      contraseñas, y SHA-256+ para integridad.
+    metadata:
+      category: security
+      cwe: "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
+      author: SentinelOps
+    patterns:
+      - pattern-either:
+          - pattern: hashlib.md5(...)
+          - pattern: hashlib.sha1(...)
+
+  - id: sentinelops-flask-debug-true
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Flask con debug=True en produccion expone el debugger interactivo
+      de Werkzeug -- permite ejecucion de codigo arbitrario a quien
+      pueda llegar a una pagina de error (no hace falta login).
+    metadata:
+      category: security
+      cwe: "CWE-489: Active Debug Code"
+      author: SentinelOps
+    patterns:
+      - pattern-either:
+          - pattern: $APP.run(..., debug=True, ...)
+          - pattern: app.config["DEBUG"] = True
+          - pattern: app.config['DEBUG'] = True
+
+  - id: sentinelops-django-debug-true
+    languages: [python]
+    severity: ERROR
+    message: >-
+      DEBUG=True en settings.py de Django filtra tracebacks completos
+      (variables locales, paths del servidor, a veces hasta secretos de
+      configuracion) a cualquier visitante cuando algo falla. Nunca debe
+      quedar en True en un despliegue real.
+    metadata:
+      category: security
+      cwe: "CWE-209: Generation of Error Message Containing Sensitive Information"
+      author: SentinelOps
+    paths:
+      include:
+        - "*settings*.py"
+    patterns:
+      - pattern-either:
+          - pattern: DEBUG = True
+          - pattern: DEBUG: bool = True
+
+  - id: sentinelops-requests-tls-verify-disabled
+    languages: [python]
+    severity: ERROR
+    message: >-
+      verify=False desactiva la validacion del certificado TLS del
+      servidor remoto -- la conexion queda expuesta a ataques
+      man-in-the-middle sin que el cliente note nada raro.
+    metadata:
+      category: security
+      cwe: "CWE-295: Improper Certificate Validation"
+      author: SentinelOps
+    patterns:
+      - pattern-either:
+          - pattern: requests.get(..., verify=False, ...)
+          - pattern: requests.post(..., verify=False, ...)
+          - pattern: requests.request(..., verify=False, ...)
+          - pattern: httpx.Client(..., verify=False, ...)
+
+  - id: sentinelops-jwt-verify-disabled
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Decodificar un JWT con verify=False (o sin especificar algorithms,
+      segun la libreria) acepta tokens con firma invalida o sin firmar
+      -- cualquiera puede armarse un token con el claim que quiera.
+    metadata:
+      category: security
+      cwe: "CWE-347: Improper Verification of Cryptographic Signature"
+      author: SentinelOps
+    patterns:
+      - pattern-either:
+          - pattern: jwt.decode(..., verify=False, ...)
+          - pattern: jwt.decode($TOKEN, $KEY, options={"verify_signature": False})
+
+  - id: sentinelops-js-eval-newfunction
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      eval() / new Function(str) ejecutan codigo arbitrario construido
+      en runtime -- misma clase de riesgo que eval() en Python (CWE-95),
+      critico si el string viene (aunque sea parcialmente) de un input
+      externo.
+    metadata:
+      category: security
+      cwe: "CWE-95: Eval Injection"
+      author: SentinelOps
+    patterns:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: new Function(...)
+
+  - id: sentinelops-js-innerhtml-assignment
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      Asignar directamente a innerHTML con contenido que podria venir
+      de un usuario abre la puerta a XSS (el navegador interpreta el
+      string como HTML/JS, no como texto). Preferir textContent, o
+      sanitizar explicitamente (ej. DOMPurify) antes de asignar HTML.
+    metadata:
+      category: security
+      cwe: "CWE-79: Cross-site Scripting"
+      author: SentinelOps
+    patterns:
+      - pattern-either:
+          - pattern: $EL.innerHTML = $VALUE
+          - pattern: $EL.outerHTML = $VALUE
+
+  - id: sentinelops-hardcoded-secret-assignment
+    languages: [python, javascript, typescript]
+    severity: WARNING
+    message: >-
+      Variable con nombre de secreto/credencial (password/secret/token/
+      api_key) asignada a un literal de texto en el codigo fuente --
+      si esto termina commiteado, el secreto queda expuesto en el
+      historial de git para siempre (ver tambien el escaneo de
+      gitleaks, que cubre este mismo riesgo buscando directamente en el
+      historial en vez de en el AST).
+    metadata:
+      category: security
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+      author: SentinelOps
+    patterns:
+      - pattern-regex: (?i)^\s*(password|secret|api_key|apikey|access_token|private_key)\s*[=:]\s*["'][^"'\s]{6,}["']\s*$
