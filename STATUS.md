@@ -1442,3 +1442,53 @@ target de prueba real, para confirmar que cada driver -- no solo el
 binario -- anda de punta a punta (parseo de resultados, severidades,
 reenvio a vuln-service). Los binarios ya estan confirmados; falta probar
 los 6 flujos completos.
+
+### Los 6 scanners nuevos, confirmados de punta a punta (2026-10-03)
+
+Se encontraron y arreglaron 3 bugs reales corriendo los binarios de
+verdad (no mocks) contra la maquina de Manu -- ninguno lo habia
+agarrado la suite de tests automatizada porque sus mocks reproducian
+la misma suposicion incorrecta que el codigo real:
+
+- **yara**: el parseo de `yara -s` asumia la linea de detalle de cada
+  cadena matcheada indentada con tab/espacio; en la version real no
+  viene indentada (`0xOFFSET:$id: contenido`), asi que esa linea se
+  colaba como un hallazgo falso. Arreglado en los 3 lugares que repiten
+  este parseo (`app/scanners/yara.py`, `agent.py`, `agente-lan.ps1`).
+- **falco**: `--json-output` no existe como flag en la version real
+  (0.45.0) -- Falco lo saca a favor de `-o json_output=true`. Arreglado
+  en `app/scanners/falco.py` y `agent.py`.
+- **zeek**: fallaba con `pcap_activate: Operation not permitted` pese al
+  `cap_add` del contenedor -- esas capabilities no las hereda un
+  proceso no-root a menos que el BINARIO las tenga marcadas. Arreglado
+  con `setcap cap_net_raw,cap_net_admin+eip` sobre el binario de zeek
+  durante el build.
+- **semgrep**: devolvia 0 findings en TODOS los escaneos sin reportar
+  error -- `sentinelops-rules.yml` tenia 2 patterns con un `:` sin
+  comillas que rompian el parser de YAML, tumbando el archivo ENTERO
+  (sus 12 reglas), no solo esas 2. Arreglado entre comillas.
+
+gitleaks y zap funcionaron bien de entrada, sin bugs.
+
+Confirmado el ciclo completo (gitleaks, semgrep, yara, zap, zeek, falco)
+corriendo cada driver de verdad -- no mocks -- contra targets reales
+chicos, directamente dentro del contenedor `scan-service` (sin pasar por
+la UI/login): los 4 primeros detectaron exactamente el hallazgo
+esperado; zeek y falco corrieron limpios sus 60 segundos sin ningun
+error de permisos/driver (0 hallazgos ahi es el resultado correcto para
+una ventana sin actividad sospechosa real que capturar).
+
+De paso se encontraron y se le avisaron a Manu 2 problemas de
+infraestructura sin relacion con este trabajo: Docker Desktop tuvo un
+hiccup transitorio del engine (resuelto con un reinicio normal) y habia
+7 contenedores huerfanos de la vieja stack OpenVAS/GVM (uno en loop de
+reinicio) que quedaron de una limpieza anterior sin terminar -- se le
+indico `docker compose up -d --remove-orphans` para sacarlos.
+
+**Pendiente real, ahora si de verdad acotado**: falta lanzar al menos un
+escaneo de cada uno de los 6 desde la UI (Escaneos programados y
+Escaneos remotos), no solo invocando el driver directo -- para confirmar
+el camino completo API -> DB -> reenvio a vuln-service. Y falta copiar
+los binarios de zap/semgrep/gitleaks/yara a `remote-agent/bin/` (o al
+PATH) de la PC donde corre el Agente LAN, si se lo quiere usar para
+estos 4 scanners ahi tambien (hoy solo el Agente Docker los tiene).
