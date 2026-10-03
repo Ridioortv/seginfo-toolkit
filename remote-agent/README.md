@@ -93,7 +93,9 @@ del contenedor, que ya trae los permisos de kernel necesarios).
   - **gitleaks** (secretos en un repo/path, MIT): instalar el binario
     `gitleaks` (ver [gitleaks/gitleaks](https://github.com/gitleaks/gitleaks#installing))
     y dejarlo en el `PATH`. Mismo target que semgrep (URL git o path
-    local).
+    local). **Ya viene listo en `remote-agent/bin/gitleaks.exe`**
+    (binario oficial de la release de GitHub) -- no hace falta instalar
+    nada para este.
   - **yara** (patrones/indicadores conocidos en archivos, BSD-3-Clause):
     instalar el binario `yara` (ver
     [VirusTotal/yara](https://virustotal.github.io/yara/)) y dejarlo en
@@ -101,6 +103,14 @@ del contenedor, que ya trae los permisos de kernel necesarios).
     ya existente en la maquina del agente. Usa SIEMPRE las reglas
     propias del repo (`SENTINELOPS_YARA_RULES_FILE`, default
     `backend/services/scan-service/rules/yara/sentinelops.yar`).
+    **Ojo en Windows**: el proyecto YARA no publica un `yara.exe`
+    precompilado en sus releases de GitHub (solo codigo fuente) --
+    para usarlo desde el Agente LAN hay que compilarlo a mano
+    (ver la guia de compilacion en el link de arriba) o instalarlo via
+    un gestor de paquetes como Chocolatey (`choco install yara`) o
+    vcpkg, y despues poner ese `.exe` en el `PATH` o en
+    `remote-agent/bin/yara.exe`. Mientras tanto ese job va a fallar con
+    un mensaje claro en vez de romper el agente.
   - **zeek** y **falco**: **no soportados en el Agente LAN nativo de
     Windows** -- necesitan captura de paquetes / eBPF de Linux. Usa el
     Agente Docker para estos dos (ver "Produccion" mas abajo).

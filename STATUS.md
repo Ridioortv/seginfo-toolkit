@@ -1492,3 +1492,30 @@ el camino completo API -> DB -> reenvio a vuln-service. Y falta copiar
 los binarios de zap/semgrep/gitleaks/yara a `remote-agent/bin/` (o al
 PATH) de la PC donde corre el Agente LAN, si se lo quiere usar para
 estos 4 scanners ahi tambien (hoy solo el Agente Docker los tiene).
+
+### Cierre de los pendientes del cierre anterior (2026-10-03)
+
+- Confirmado que el push de `bc3efda` llego bien a `origin/main`.
+- Manu confirmo que ya corrio `docker compose up -d --remove-orphans` --
+  los 7 contenedores huerfanos de OpenVAS/GVM quedaron limpios.
+- Se bajo `gitleaks.exe` (binario oficial de la release de GitHub,
+  `v8.30.1`, MIT) a `remote-agent/bin/gitleaks.exe` -- el Agente LAN ya
+  lo puede usar sin instalar nada en esa PC, igual que ya pasaba con
+  `nuclei.exe`/`trivy.exe`.
+- **yara NO se pudo bundlear igual**: el proyecto no publica un
+  `yara.exe` precompilado en sus releases de GitHub (solo codigo
+  fuente) -- documentado en el README (seccion de Requisitos) con las
+  alternativas (compilar a mano, o `choco install yara`/vcpkg) para
+  cuando se quiera usar yara desde el Agente LAN. zap y semgrep tampoco
+  se pueden bundlear como un solo `.exe` (zap necesita un JRE instalado
+  completo, semgrep es un paquete de Python) -- hay que instalarlos de
+  verdad en esa PC si se los quiere usar ahi.
+- La prueba end-to-end desde la UI real (Escaneos programados/remotos,
+  no solo el driver directo) la va a hacer Manu el mismo lanzando un
+  escaneo de cada uno; queda fuera del alcance de Claude por no manejar
+  su sesion/credenciales de usuario.
+
+Con esto, de los 3 pendientes que quedaban abiertos al cierre anterior,
+2 estan resueltos (orphans, binario de gitleaks) y 1 queda
+explicitamente a cargo de Manu (prueba UI-level) por la restriccion de
+credenciales -- no porque falte algo del lado del codigo.
