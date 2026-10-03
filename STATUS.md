@@ -1142,3 +1142,47 @@ del lado del backend, sin logica pura nueva que valga la pena extraer) y
 `npm run build` limpio.
 
 **Nada pendiente para Manu de este lado.**
+
+## Aviso previo de "LAN detras del NAT de Docker" en Escaneos remotos (2026-10-02)
+
+Manu reporto un escaneo OpenVAS fallido via el agente "gvm" (Agente
+Docker) contra `192.168.0.143`, con un error en la fila del job. Reves
+el codigo (`remote-agent/agent.py::_process_job` + `_is_private_ip_target`,
+flag `AGENT_BEHIND_DOCKER_NAT`): esto es un guardrail YA EXISTENTE y
+correcto, no un bug -- el "Agente Docker" corre dentro de Docker Desktop
+y queda detras de su NAT, entonces nuclei/trivy/openvas no pueden llegar
+a una IP de LAN real (nmap si puede, tiene fallback propio). El agente
+ya detecta esto ANTES de intentar el escaneo (para no perder minutos en
+un timeout) y falla rapido con un mensaje que dice exactamente que
+hacer: usar el Agente LAN (`remote-agent/agente-lan.ps1`, corriendo en
+una PC con visibilidad real a esa red) para targets de LAN con estos
+scanners.
+
+Lo que SI faltaba: la UI de "Escaneos remotos" (Scans.tsx) dejaba elegir
+esa combinacion (Agente Docker + scanner distinto de nmap + target de
+LAN) sin avisar nada hasta despues de crear el job y esperar el poll del
+agente para recien ahi leer el error. Se agrego un aviso previo, no
+bloqueante, en el mismo formulario: si el agente elegido tiene "docker"
+en el nombre (mismo criterio ya usado para la etiqueta de "Escaneos
+programados"), el scanner no es nmap, y el target matchea una IP
+RFC1918/loopback/link-local (`isLikelyPrivateIpTarget`, espejo en
+TypeScript de `_is_private_ip_target` del agente), se muestra un parrafo
+de advertencia con el mismo texto que el agente va a devolver, antes de
+que Manu tenga que lanzar el escaneo y esperar para enterarse. No se
+bloquea el boton (un hostname interno igual se deja pasar, por ejemplo)
+-- es solo para ahorrar la vuelta.
+
+Verificacion: `npx tsc --noEmit` limpio, `npm run test -- --run` (41/41
+verde, sin tests nuevos -- es una funcion pura chica, el valor de
+testearla aislada es bajo comparado con el resto de la suite) y
+`npm run build` limpio.
+
+**Para Manu: el error que viste es esperado -- "Agente Docker" nunca va
+a poder escanear tu LAN real con nmap/nuclei/openvas salvo nmap. Para
+`192.168.0.143` con openvas, corre `remote-agent/Instalar-Agente-LAN.bat`
++ `Iniciar-Agente-LAN.bat` en una PC con visibilidad real a esa red (puede
+ser la misma PC donde corre SentinelOps) y elegi ese agente ("Agente
+LAN") en el selector en vez de "Agente Docker" (el que probablemente
+elegiste, llamado "gvm" o similar en tu lista de agentes). Si "Agente
+LAN" no aparece en el selector, es que agente-lan.ps1 no esta corriendo
+en ninguna PC todavia.**

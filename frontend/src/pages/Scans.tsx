@@ -68,6 +68,32 @@ function packageLine(v: VulnerabilityOut): string | null {
   return line;
 }
 
+// Misma idea que _is_private_ip_target en remote-agent/agent.py (y el
+// chequeo AGENT_BEHIND_DOCKER_NAT que lo usa): un agente que corre DENTRO
+// de Docker Desktop (tipicamente "Agente Docker") no puede llegar con
+// nuclei/trivy/openvas a una IP de LAN (nmap si tiene un fallback propio).
+// Esto NO bloquea el envio -- el agente ya rechaza ese job al toque con un
+// mensaje claro -- es solo un aviso ANTES de lanzar, para no tener que
+// esperar el poll del agente y leer el error recien ahi. Deteccion simple
+// (RFC1918 + loopback + link-local), solo IPv4 literal: un hostname (ej.
+// intranet.miempresa.local) se deja pasar sin avisar, igual que del lado
+// del agente.
+function isLikelyPrivateIpTarget(target: string): boolean {
+  const host = target.trim().split("/")[0];
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const parts = m.slice(1, 5).map(Number);
+  if (parts.some((p) => p > 255)) return false;
+  const [a, b] = parts;
+  return (
+    a === 10 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    a === 127 ||
+    (a === 169 && b === 254)
+  );
+}
+
 // Resultados enriquecidos (severidad, CVSS/EPSS/KEV, remediacion sugerida)
 // de UN escaneo puntual -- vuln-service ya hace todo ese trabajo (ver
 // pagina Vulnerabilidades); esto solo lo consulta filtrado por
@@ -1315,6 +1341,19 @@ export default function Scans() {
             {createAgentScan.isPending ? "Creando..." : "Lanzar escaneo remoto"}
           </button>
         </div>
+        {(() => {
+          const selectedJobAgent = (agents.data ?? []).find((a) => a.id === agentJobAgentId);
+          const dockerAgent = selectedJobAgent?.name.toLowerCase().includes("docker") ?? false;
+          const warn = dockerAgent && agentJobScannerType !== "nmap" && isLikelyPrivateIpTarget(agentJobTarget);
+          return warn ? (
+            <p className="empty-hint" style={{ color: "#d9a900" }}>
+              Atencion: "{selectedJobAgent?.name}" corre DENTRO de Docker Desktop y {agentJobScannerType} no puede
+              atravesar su NAT hacia una IP de LAN como "{agentJobTarget.trim()}" (nmap si puede). El escaneo va a
+              fallar al toque -- usa el Agente LAN (remote-agent/agente-lan.ps1, corriendo en una PC con
+              visibilidad real a esa red) para este target.
+            </p>
+          ) : null;
+        })()}
         {createAgentScan.isError && (
           <p className="error-text">
             No se pudo crear el escaneo remoto.{" "}
