@@ -746,6 +746,15 @@ SCANNERS = {
 # usuario pone una IP ahi, zeek la resuelve a la interfaz local (ver
 # run_zeek) y falco la ignora.
 _TARGETLESS_SCANNERS = {"zeek", "falco"}
+_CODE_SCANNERS = {"semgrep", "gitleaks", "yara"}
+
+
+def _is_ip_literal(target: str) -> bool:
+    try:
+        ipaddress.ip_address((target or "").strip())
+        return True
+    except ValueError:
+        return False
 
 
 def _is_private_ip_target(target: str) -> bool:
@@ -782,6 +791,19 @@ def _process_job(job: dict) -> None:
     runner = SCANNERS.get(scanner_type)
     if runner is None:
         submit_result(job_id, "failed", [], error_message=f"este agente no sabe correr el scanner '{scanner_type}'")
+        return
+
+    if scanner_type in _CODE_SCANNERS and _is_ip_literal(target):
+        # semgrep/gitleaks/yara analizan CODIGO/ARCHIVOS, no hosts: una IP
+        # pelada nunca es un target valido (ni en el Agente LAN), y el
+        # mensaje de "IP de LAN / NAT de Docker" de mas abajo confunde.
+        error_msg = (
+            f"'{target}' es una direccion IP, pero '{scanner_type}' analiza codigo o archivos, no hosts de red. "
+            "Usa como target una URL git (https://github.com/usuario/repo.git) o la ruta de una carpeta/archivo "
+            "que exista en la maquina donde corre el agente."
+        )
+        log(f"job {job_id}: rechazado -- {error_msg}")
+        submit_result(job_id, "failed", [], error_message=error_msg)
         return
 
     if scanner_type not in _TARGETLESS_SCANNERS and AGENT_BEHIND_DOCKER_NAT and _is_private_ip_target(target):
