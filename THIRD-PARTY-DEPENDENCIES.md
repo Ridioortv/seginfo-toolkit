@@ -19,6 +19,10 @@ propio paquete instalado y en su sitio oficial (PyPI / npm).
 | redis:7.2-alpine | BSD-3-Clause (version 7.2.x; las 7.4 y posteriores NO son BSD, por eso se fija) |
 | opensearchproject/opensearch:2.16.0 | Apache-2.0 |
 
+## Launcher de Windows (`SentinelOps - Iniciar.exe` / `Detener.exe`)
+
+Estan escritos en Go sin librerias externas; incluyen la libreria estandar y el runtime de Go, bajo BSD-3-Clause, Copyright The Go Authors (texto en `licenses/go-BSD-3-Clause.txt`).
+
 ## Resumen Python (120 paquetes)
 
 | Licencia | Cantidad |
