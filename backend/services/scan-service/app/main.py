@@ -111,6 +111,20 @@ async def lifespan(app: FastAPI):
         # backfill -- a diferencia de organization_id/packages, que no
         # podian quedar NULL.
         await conn.execute(text("ALTER TABLE scan_schedules ADD COLUMN IF NOT EXISTS agent_id VARCHAR(36)"))
+        # scanner_type/status son SAEnum(native_enum=False): SQLAlchemy crea la
+        # columna como VARCHAR(largo del nombre mas largo del enum EN ESE
+        # MOMENTO). En instalaciones creadas cuando el enum solo tenia
+        # trivy/nuclei, quedo VARCHAR(6) y guardar 'gitleaks' (8) o
+        # 'semgrep' (7) revienta con un 500 -- que el navegador ve como
+        # "Network Error" (la respuesta 500 no lleva cabeceras CORS).
+        # create_all no altera columnas existentes, asi que se ensanchan
+        # aca (idempotente: ampliar a VARCHAR(30) nunca pierde datos).
+        for table, column in (
+            ("scan_schedules", "scanner_type"),
+            ("scan_jobs", "scanner_type"),
+            ("scan_jobs", "status"),
+        ):
+            await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE VARCHAR(30)"))
     async with SessionLocal() as db:
         for schedule in await services.list_schedules(db):
             if schedule.enabled:
