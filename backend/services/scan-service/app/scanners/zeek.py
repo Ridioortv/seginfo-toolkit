@@ -21,8 +21,10 @@ primera interfaz que no sea loopback.
 Licencia: BSD-3-Clause (Zeek Project / ICSI) -- invocado como binario
 externo via subprocess, igual que trivy/nuclei."""
 import asyncio
+import ipaddress
 import json
 import os
+import re
 import shutil
 import tempfile
 from app.scanners.base import ScannerDriver, ScanResult
@@ -49,14 +51,48 @@ def classify_zeek_notice(note_type: str) -> str:
     return "low"
 
 
-def resolve_interface(target: str, list_interfaces=None) -> str | None:
-    """Funcion pura (list_interfaces inyectable para tests): si target
-    no es 'auto', se usa tal cual. Si es 'auto', se devuelve la primera
-    interfaz distinta de 'lo' que reporte list_interfaces (por defecto,
-    os.listdir sobre /sys/class/net)."""
+def _interface_for_ip(ip: str) -> str | None:
+    """Busca, entre las interfaces de ESTE contenedor, la que tiene esa
+    IP asignada (via `ip -o -4 addr`). None si no esta o si el comando
+    no existe."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["ip", "-o", "-4", "addr", "show"], capture_output=True, text=True, timeout=5
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        m = re.match(r"\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)", line)
+        if m and m.group(2) == ip:
+            return m.group(1).split("@")[0]
+    return None
+
+
+def _is_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def resolve_interface(target: str, list_interfaces=None, interface_for_ip=None) -> str | None:
+    """Funcion pura (list_interfaces e interface_for_ip inyectables para
+    tests): si target es el nombre de una interfaz se usa tal cual. Si
+    es 'auto' -- o una DIRECCION IP, que Zeek no acepta como interfaz
+    (el usuario suele poner la IP de su PC/LAN, que dentro del
+    contenedor no existe) -- se usa la interfaz de este contenedor que
+    tenga esa IP, o si no existe, la primera distinta de 'lo' que
+    reporte list_interfaces (por defecto, os.listdir sobre
+    /sys/class/net)."""
     target = (target or "").strip()
-    if target and target.lower() != "auto":
+    if target and target.lower() != "auto" and not _is_ip(target):
         return target
+    if target and _is_ip(target):
+        found = (interface_for_ip or _interface_for_ip)(target)
+        if found:
+            return found
     lister = list_interfaces or (lambda: os.listdir("/sys/class/net"))
     try:
         candidates = [d for d in lister() if d != "lo"]
@@ -146,13 +182,20 @@ class ZeekDriver(ScannerDriver):
                     # real (permisos insuficientes, interfaz invalida,
                     # etc.), nunca "termino de capturar".
                     if proc.returncode != 0:
+                        err_text = stderr.decode(errors="replace")[:1800]
+                        if "No such device" in err_text:
+                            hint = (
+                                f"la interfaz '{interface}' no existe dentro del contenedor. Usa 'auto' o el "
+                                "nombre de una interfaz del contenedor (ej. 'eth0'), no una IP de tu red"
+                            )
+                        else:
+                            hint = (
+                                "zeek termino antes de completar la ventana de captura (probablemente sin "
+                                "permisos NET_RAW/NET_ADMIN en este contenedor, ver docker-compose.yml)"
+                            )
                         return ScanResult(
                             raw_output=stdout.decode(errors="replace")[:5000],
-                            error=(
-                                "zeek termino antes de completar la ventana de captura (probablemente sin "
-                                "permisos NET_RAW/NET_ADMIN en este contenedor, ver docker-compose.yml): "
-                                + stderr.decode(errors="replace")[:1800]
-                            ),
+                            error=f"{hint}: {err_text}",
                         )
                 except asyncio.TimeoutError:
                     # Fin ESPERADO de la ventana fija -- ver docstring del
@@ -175,6 +218,8 @@ class ZeekDriver(ScannerDriver):
             notice_findings = parse_notice_log(os.path.join(workdir, "notice.log"))
             summary = summarize_conn_log(os.path.join(workdir, "conn.log"))
             raw_output = f"Captura en interfaz '{interface}' durante {duration_seconds // 60} minuto(s).\n{summary}"
+            if (target or "").strip() and (target or "").strip().lower() not in ("auto", interface):
+                raw_output = f"(target '{target}' no es una interfaz del contenedor; se uso '{interface}')\n" + raw_output
             return ScanResult(raw_output=raw_output[:200_000], findings=notice_findings)
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
