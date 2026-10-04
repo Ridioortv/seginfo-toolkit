@@ -108,6 +108,41 @@ async def create_uploaded_scan_job(db: AsyncSession, display_name: str, actor: s
     return job
 
 
+async def create_uploaded_yara_job(db: AsyncSession, display_name: str, actor: str, organization_id: str) -> ScanJob:
+    """Crea el ScanJob de uno o varios archivos subidos para analizar con
+    YARA (ver POST /scans/upload-yara en main.py). `display_name` es lo que
+    ve el usuario en "Escaneos realizados" (nombre del archivo, o "N
+    archivos (...)") -- el path temporal real donde quedaron guardados en
+    disco NUNCA se persiste: se le pasa a execute_scan_job (target_override)
+    y se borra al terminar."""
+    job = ScanJob(
+        organization_id=organization_id,
+        name=f"yara (archivo): {display_name}"[:255],
+        scanner_type=ScannerType.yara,
+        target=display_name[:500],
+        options={"mode": "upload"},
+        created_by=actor,
+        status=ScanStatus.pending,
+    )
+    db.add(job)
+    await db.flush()
+    await db.refresh(job)
+    return job
+
+
+def strip_upload_dir(result, upload_dir: str) -> None:
+    """Saca el path temporal de la carpeta de subida de los findings y del
+    raw_output de un ScanResult, para que el usuario vea "eicar.txt" y no
+    "/tmp/yara-upload-ab12cd/eicar.txt" (un detalle interno del contenedor
+    que no le sirve de nada). Modifica `result` en el lugar."""
+    prefix = upload_dir.rstrip("/") + "/"
+    result.raw_output = (result.raw_output or "").replace(prefix, "")
+    for finding in result.findings or []:
+        for key, value in list(finding.items()):
+            if isinstance(value, str) and prefix in value:
+                finding[key] = value.replace(prefix, "")
+
+
 async def execute_uploaded_scan_job(session_factory, job_id: str, file_path: str, tmpdir: str) -> None:
     """Corre trivy sobre el archivo subido (ver create_uploaded_scan_job) en
     background -- mismo patron de auto-registro/cancelacion que
@@ -523,10 +558,19 @@ def driver_exception_error_message(exc: Exception) -> str:
     return f"Error inesperado del driver de escaneo: {exc}"[:2000]
 
 
-async def execute_scan_job(session_factory, job_id: str) -> None:
+async def execute_scan_job(
+    session_factory, job_id: str, target_override: str | None = None, cleanup_dir: str | None = None
+) -> None:
     """Corre en background (via BackgroundTasks, o desde run_scheduled_scan
     para las reglas programadas). Usa su propia sesion de DB porque la
     request original ya termino cuando esto se ejecuta.
+
+    target_override / cleanup_dir: SOLO para archivos subidos por el usuario
+    (ver create_uploaded_yara_job): `target_override` es el path temporal
+    real que se le pasa al driver en vez de job.target (que guarda solo el
+    nombre para mostrar), y `cleanup_dir` se borra al terminar pase lo que
+    pase (completado, fallado, cancelado) para no dejar archivos subidos
+    tirados en disco.
 
     Se auto-registra en _RUNNING_SCAN_TASKS mientras corre (via
     asyncio.current_task()) para que POST /scans/{id}/cancel pueda pedirle
@@ -584,7 +628,7 @@ async def execute_scan_job(session_factory, job_id: str) -> None:
             # estado terminal, asi que ni se puede reintentar a mano ni se puede
             # borrar (is_deletable_status exige un estado terminal).
             try:
-                result = await driver.run(job.target, job.options or {})
+                result = await driver.run(target_override or job.target, job.options or {})
             except Exception as exc:  # noqa: BLE001 -- nunca debe dejar el job colgado en "running"
                 job = await db.get(ScanJob, job_id)
                 job.status = ScanStatus.failed
@@ -594,6 +638,8 @@ async def execute_scan_job(session_factory, job_id: str) -> None:
                 logger.error("scan fallo con excepcion no manejada", extra={"job_id": job_id, "error": str(exc)})
                 return
 
+            if cleanup_dir:
+                strip_upload_dir(result, cleanup_dir)
             job = await db.get(ScanJob, job_id)
             job.raw_result = (result.raw_output or "")[:200_000]
             job.finished_at = _now()
@@ -643,6 +689,8 @@ async def execute_scan_job(session_factory, job_id: str) -> None:
         logger.info("scan cancelado", extra={"job_id": job_id})
     finally:
         unregister_running_scan(job_id)
+        if cleanup_dir:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
 async def _forward_findings_to_vuln_service(job: ScanJob) -> None:

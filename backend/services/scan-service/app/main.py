@@ -3,6 +3,7 @@
 app/scanners/base.py y docs/architecture.md para el alcance."""
 import os
 import asyncio
+import shutil
 from contextlib import asynccontextmanager
 import tempfile
 from fastapi import FastAPI, Depends, HTTPException, status, BackgroundTasks, UploadFile, File, Form, Response
@@ -242,6 +243,64 @@ async def upload_scan(
     scan_jobs_total.labels(scanner_type="trivy").inc()
     logger.info("scan de archivo subido creado", extra={"job_id": job.id, "archivo": display_name})
     background_tasks.add_task(services.execute_uploaded_scan_job, SessionLocal, job.id, dest, tmpdir)
+    return job
+
+
+_YARA_MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB en total, sumando todos los archivos
+_YARA_MAX_FILES = 50
+
+
+@app.post("/scans/upload-yara", response_model=ScanJobOut, status_code=status.HTTP_201_CREATED)
+async def upload_yara_scan(
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(...),
+    name: str = Form(""),
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sube uno o varios archivos y los analiza con YARA (reglas propias de
+    SentinelOps) dentro de scan-service. Los archivos se guardan en una
+    carpeta temporal, SOLO se leen como bytes (YARA nunca ejecuta lo que
+    analiza), y la carpeta se borra al terminar el analisis, pase lo que
+    pase. Mismo patron que POST /scans/upload (trivy): crea el job y
+    devuelve al toque, el analisis corre en background."""
+    if not files:
+        raise HTTPException(status_code=400, detail="Subi al menos un archivo")
+    if len(files) > _YARA_MAX_FILES:
+        raise HTTPException(status_code=400, detail=f"Maximo {_YARA_MAX_FILES} archivos por analisis")
+
+    tmpdir = tempfile.mkdtemp(prefix="yara-upload-")
+    saved: list[str] = []
+    try:
+        total = 0
+        for index, upload in enumerate(files, start=1):
+            # basename: un nombre tipo "../../etc/x" nunca puede escapar de tmpdir.
+            safe_name = os.path.basename((upload.filename or "").replace("\\", "/")) or f"archivo-{index}"
+            dest = os.path.join(tmpdir, safe_name)
+            if os.path.exists(dest):
+                dest = os.path.join(tmpdir, f"{index}-{safe_name}")
+            with open(dest, "wb") as fh:
+                while chunk := await upload.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > _YARA_MAX_UPLOAD_BYTES:
+                        raise HTTPException(status_code=413, detail="Los archivos superan el limite de 200 MB en total")
+                    fh.write(chunk)
+            saved.append(os.path.basename(dest))
+    except BaseException:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
+
+    display_name = name.strip() or (saved[0] if len(saved) == 1 else f"{len(saved)} archivos ({', '.join(saved)})")
+    target_path = os.path.join(tmpdir, saved[0]) if len(saved) == 1 else tmpdir
+    try:
+        job = await services.create_uploaded_yara_job(db, display_name, claims.get("sub", ""), org_id_from_claims(claims))
+        await db.commit()
+    except BaseException:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
+    scan_jobs_total.labels(scanner_type="yara").inc()
+    logger.info("scan yara de archivos subidos creado", extra={"job_id": job.id, "archivos": len(saved)})
+    background_tasks.add_task(services.execute_scan_job, SessionLocal, job.id, target_path, tmpdir)
     return job
 
 

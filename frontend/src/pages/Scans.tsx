@@ -196,6 +196,9 @@ export default function Scans() {
   const [lastResult, setLastResult] = useState<{ ok: number; failed: number } | null>(null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadName, setUploadName] = useState("");
+  // Panel "Analizar archivos con YARA (subir archivos)": uno o varios archivos.
+  const [yaraFiles, setYaraFiles] = useState<File[]>([]);
+  const [yaraName, setYaraName] = useState("");
 
   const [schedName, setSchedName] = useState("");
   const [schedScannerType, setSchedScannerType] = useState<ScannerType>("nuclei");
@@ -416,6 +419,21 @@ export default function Scans() {
     },
   });
 
+  const uploadYara = useMutation({
+    mutationFn: async () => {
+      if (yaraFiles.length === 0) throw new Error("Elegi al menos un archivo primero.");
+      const form = new FormData();
+      for (const file of yaraFiles) form.append("files", file);
+      form.append("name", yaraName);
+      return (await scanApi.post<ScanJobOut>("/scans/upload-yara", form)).data;
+    },
+    onSuccess: () => {
+      setYaraFiles([]);
+      setYaraName("");
+      queryClient.invalidateQueries({ queryKey: ["scans"] });
+    },
+  });
+
   const createScans = useMutation({
     mutationFn: async () => {
       const targets = targetsText
@@ -537,6 +555,46 @@ export default function Scans() {
             Archivo subido -- trivy lo esta escaneando en background. Segui el progreso en "Escaneos realizados"
             mas abajo, o revisa el inventario completo de paquetes en{" "}
             <Link to="/scan-images">Imagenes y Paquetes</Link> cuando termine.
+          </p>
+        )}
+      </div>
+
+      <div className="panel">
+        <h2>Analizar archivos con YARA (subir archivos)</h2>
+        <p className="empty-hint">
+          Subi uno o varios archivos sospechosos (un ejecutable, un script, un documento, un .zip...) y YARA los
+          revisa buscando patrones de malware conocidos (webshells, PowerShell ofuscado, reverse shells, ejecutables
+          escondidos dentro de otro archivo, etc.), con las reglas propias de SentinelOps. Los archivos{" "}
+          <strong>nunca se ejecutan</strong>: solo se leen, y se borran del servidor apenas termina el analisis. Hasta
+          50 archivos y 200 MB en total. El resultado aparece abajo en "Escaneos realizados".
+        </p>
+        <div className="inline-form">
+          <input type="file" multiple onChange={(e) => setYaraFiles(Array.from(e.target.files ?? []))} />
+          <input placeholder="Nombre (opcional)" value={yaraName} onChange={(e) => setYaraName(e.target.value)} />
+          <button
+            className="btn-primary"
+            onClick={() => uploadYara.mutate()}
+            disabled={uploadYara.isPending || yaraFiles.length === 0}
+          >
+            {uploadYara.isPending ? "Subiendo..." : "Subir y analizar con YARA"}
+          </button>
+        </div>
+        {yaraFiles.length > 0 && (
+          <p className="empty-hint">
+            {yaraFiles.length} archivo(s): {yaraFiles.map((f) => f.name).join(", ")} (
+            {Math.round(yaraFiles.reduce((sum, f) => sum + f.size, 0) / 1024)} KB en total)
+          </p>
+        )}
+        {uploadYara.isError && (
+          <p className="error-text">
+            No se pudo analizar el archivo.{" "}
+            <span className="error-detail">{connectionErrorDetail(uploadYara.error)}</span>
+          </p>
+        )}
+        {uploadYara.isSuccess && (
+          <p className="empty-hint">
+            Archivos subidos -- YARA los esta analizando en background. Segui el resultado en "Escaneos realizados"
+            mas abajo: si encuentra algo sospechoso, aparece como hallazgo (y tambien en Vulnerabilidades y SIEM).
           </p>
         )}
       </div>
