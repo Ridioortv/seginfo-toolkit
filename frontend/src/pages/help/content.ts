@@ -80,7 +80,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       },
       {
         title: "Escaneos programados",
-        body: "Si queres que un escaneo se repita solo (por ejemplo, todas las noches), completa el formulario de \"Escaneos programados\" con nombre, tipo de escaneo, objetivo, frecuencia (diaria o semanal) y hora. SentinelOps lo ejecuta automaticamente en cada horario, sin que vuelvas a apretar nada. Se borra con \"Eliminar\" cuando ya no lo necesites.",
+        body: "Si queres que un escaneo se repita solo (por ejemplo, todas las noches), completa el formulario de \"Escaneos programados\" con nombre, tipo de escaneo, objetivo, frecuencia (diaria o semanal) y hora. Tipos disponibles: trivy (contenedores e imagenes), nuclei (vulnerabilidades web), zap (analisis pasivo de una pagina web, objetivo = URL), semgrep (revisa codigo fuente con reglas propias, objetivo = repositorio o carpeta), gitleaks (busca claves y contrasenas olvidadas en un repositorio), yara (busca patrones sospechosos en archivos, objetivo = ruta de archivo o carpeta), y zeek / falco (vigilancia de red y del sistema durante una ventana de 1 a 60 minutos que elegis vos; el campo \"Duracion (min)\" aparece solo con esos dos). SentinelOps lo ejecuta automaticamente en cada horario, sin que vuelvas a apretar nada. Se borra con \"Eliminar\" cuando ya no lo necesites.",
       },
       {
         title: "Agentes de escaneo remoto",
