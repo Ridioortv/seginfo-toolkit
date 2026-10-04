@@ -1,5 +1,8 @@
 # Licencias de terceros
 
+Los textos completos de cada licencia estan en la carpeta `licenses/`. Las librerias
+de Python/JavaScript estan en `THIRD-PARTY-DEPENDENCIES.md`.
+
 SentinelOps invoca los siguientes motores de escaneo como **binarios
 externos** (via subprocess, nunca importados ni enlazados como libreria
 dentro del codigo de SentinelOps). Cada uno conserva su propia licencia
@@ -18,7 +21,7 @@ que se actualice una de estas dependencias.
 
 ## Trivy
 
-- **Licencia:** Apache License 2.0
+- **Licencia:** Apache License 2.0 (texto en `licenses/APACHE-2.0.txt`; aviso NOTICE en `licenses/trivy-NOTICE.txt`)
 - **Copyright:** Aqua Security Software Ltd. y contribuyentes del proyecto
   Trivy.
 - **Repositorio:** https://github.com/aquasecurity/trivy
@@ -102,39 +105,9 @@ SOFTWARE.
 ## YARA
 
 - **Licencia:** BSD 3-Clause License
-- **Copyright:** Copyright (c) 2007-presente, The YARA Authors. Todos los
-  derechos reservados.
+- **Copyright:** Copyright (c) 2007-2016, The YARA Authors. All Rights Reserved.
 - **Repositorio:** https://github.com/VirusTotal/yara
-
-```
-BSD 3-Clause License
-
-Copyright (c) 2007-present, The YARA Authors. All Rights Reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-1. Redistributions of source code must retain the above copyright notice,
-   this list of conditions and the following disclaimer.
-2. Redistributions in binary form must reproduce the above copyright notice,
-   this list of conditions and the following disclaimer in the documentation
-   and/or other materials provided with the distribution.
-3. Neither the name of the copyright holder nor the names of its
-   contributors may be used to endorse or promote products derived from this
-   software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
-LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-POSSIBILITY OF SUCH DAMAGE.
-```
+- **Texto completo:** `licenses/yara-BSD-3-Clause.txt` (copia del archivo COPYING oficial).
 
 - **Importante -- reglas:** SentinelOps usa UNICAMENTE reglas propias,
   escritas por el equipo de SentinelOps
@@ -145,9 +118,10 @@ POSSIBILITY OF SUCH DAMAGE.
 ## Zeek
 
 - **Licencia:** BSD 3-Clause License
-- **Copyright:** Copyright (c) 1995-presente, The Regents of the
-  University of California, el International Computer Science Institute
-  (ICSI), y los contribuyentes del proyecto Zeek.
+- **Copyright:** Copyright (c) 1995-now, The Regents of the University of
+  California through the Lawrence Berkeley National Laboratory and the
+  International Computer Science Institute. All rights reserved.
+- **Texto completo:** `licenses/zeek-BSD-3-Clause.txt`.
 - **Repositorio:** https://github.com/zeek/zeek
 - **Texto completo de la licencia:** https://github.com/zeek/zeek/blob/master/COPYING
 - SentinelOps lo corre como job de **duracion fija** (ventana

@@ -1,15 +1,104 @@
-Apache License 2.0
+SENTINELOPS - LICENCIA DE USO DE SOFTWARE (EULA)
+Copyright (c) 2026 Manu Angiulli. Todos los derechos reservados.
 
-Copyright 2026 Manu Angiulli
+Este es un contrato entre Manu Angiulli, Rosario, Santa Fe, Argentina
+("el Licenciante") y la persona o empresa que adquiere SentinelOps ("el
+Cliente"). Al instalar o usar SentinelOps, el Cliente acepta estos
+terminos. Si no los acepta, no debe instalarlo ni usarlo.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
+1. DEFINICIONES
+   "Software": SentinelOps, incluyendo su codigo, documentacion y
+   actualizaciones que el Licenciante entregue al Cliente, EXCLUYENDO los
+   Componentes de Terceros.
+   "Componentes de Terceros": los programas de terceros que se distribuyen
+   o invocan junto al Software (por ejemplo Trivy, Nuclei, OWASP ZAP,
+   Semgrep, Gitleaks, YARA, Zeek, Falco, PostgreSQL, Redis, OpenSearch y
+   las librerias de Python/JavaScript usadas). Cada uno se rige por su
+   propia licencia, listada en THIRD-PARTY-LICENSES.md,
+   THIRD-PARTY-DEPENDENCIES.md y la carpeta licenses/.
 
-    http://www.apache.org/licenses/LICENSE-2.0
+2. LICENCIA OTORGADA
+   El Licenciante otorga al Cliente una licencia no exclusiva,
+   intransferible y no sublicenciable para instalar y usar el Software
+   para las operaciones internas de seguridad de su organizacion, dentro
+   de los limites (cantidad de instalaciones, usuarios, activos o plazo)
+   acordados en la orden de compra o factura. Todo derecho no otorgado
+   expresamente queda reservado por el Licenciante.
 
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+3. RESTRICCIONES
+   Salvo autorizacion escrita del Licenciante, el Cliente no puede:
+   a) copiar, redistribuir, revender, alquilar, prestar ni sublicenciar el
+      Software, ni ofrecerlo como servicio a terceros;
+   b) eludir, desactivar o alterar los mecanismos de licenciamiento;
+   c) quitar o modificar los avisos de copyright o de licencia;
+   d) descompilar, hacer ingenieria inversa o crear obras derivadas del
+      Software, salvo en la medida en que la ley aplicable lo permita
+      pese a esta restriccion.
+   Estas restricciones se aplican solo al Software del Licenciante y NO a
+   los Componentes de Terceros (ver clausula 4).
+
+4. COMPONENTES DE TERCEROS
+   Los Componentes de Terceros se licencian al Cliente bajo sus propias
+   licencias, no bajo este contrato. Nada en este contrato limita los
+   derechos que esas licencias le otorgan al Cliente; en particular, para
+   los componentes bajo LGPL (por ejemplo Semgrep) el Cliente conserva el
+   derecho de modificarlos y de hacer ingenieria inversa para depurar sus
+   modificaciones. El codigo fuente de esos componentes esta disponible
+   segun se indica en licenses/SEMGREP-LGPL-SOURCE-OFFER.txt y en los
+   repositorios publicos de cada proyecto.
+
+5. USO AUTORIZADO DE LAS HERRAMIENTAS DE ESCANEO
+   El Software incluye herramientas de escaneo de seguridad. El Cliente
+   se compromete a escanear unicamente sistemas, redes, aplicaciones y
+   repositorios de su propiedad o para los que tenga autorizacion escrita
+   del titular. El Cliente es el unico responsable de contar con esa
+   autorizacion y de cumplir la legislacion aplicable. El Licenciante no
+   responde por escaneos realizados sin autorizacion.
+
+6. DATOS DEL CLIENTE
+   El Cliente conserva la titularidad de todos los datos que ingrese o
+   genere con el Software (activos, hallazgos, casos, reportes, etc.).
+
+7. PROPIEDAD INTELECTUAL
+   El Software y sus derechos de propiedad intelectual pertenecen al
+   Licenciante. Este contrato no transfiere ninguna titularidad.
+
+8. GARANTIA
+   El Software se entrega "TAL CUAL", sin garantias de ningun tipo, ni
+   expresas ni implicitas, incluyendo comerciabilidad o idoneidad para un
+   fin particular, en la maxima medida que permita la ley. Ninguna
+   herramienta de seguridad detecta todas las vulnerabilidades o
+   amenazas: el Licenciante no garantiza que el Software encuentre todos
+   los problemas ni que funcione sin errores o interrupciones.
+
+9. LIMITACION DE RESPONSABILIDAD
+   En la maxima medida que permita la ley, la responsabilidad total del
+   Licenciante frente al Cliente por cualquier reclamo relacionado con el
+   Software no excedera el monto efectivamente pagado por el Cliente por
+   la licencia en los 12 meses anteriores al hecho. El Licenciante no
+   responde por danos indirectos, lucro cesante, perdida de datos ni
+   interrupcion de actividades. Esta limitacion no se aplica en caso de
+   dolo o culpa grave del Licenciante ni a lo que la ley no permita
+   limitar.
+
+10. SOPORTE Y ACTUALIZACIONES
+    Se prestan solo si fueron acordados por escrito, en las condiciones
+    alli indicadas.
+
+11. PLAZO Y TERMINACION
+    La licencia dura el plazo acordado en la orden de compra (o es
+    perpetua si asi se acordo). El Licenciante puede terminarla si el
+    Cliente incumple este contrato y no lo corrige en 15 dias desde el
+    aviso. Al terminar, el Cliente debe dejar de usar el Software y
+    eliminar sus copias.
+
+12. LEY APLICABLE Y JURISDICCION
+    Este contrato se rige por las leyes de la Republica Argentina. Para
+    cualquier controversia, las partes se someten a los tribunales
+    ordinarios de la ciudad de Rosario, Provincia de Santa Fe.
+
+13. ACUERDO COMPLETO
+    Este contrato, junto con la orden de compra o factura, es el acuerdo
+    completo entre las partes sobre el Software y reemplaza cualquier
+    acuerdo anterior. Si una clausula fuera invalida, las demas siguen
+    vigentes.

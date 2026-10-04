@@ -1,0 +1,17 @@
+CARPETA licenses/ - TEXTOS DE LICENCIA DE COMPONENTES DE TERCEROS
+
+SentinelOps (codigo propio) se rige por el archivo LICENSE de la raiz.
+Los programas de terceros que usa conservan su propia licencia:
+
+  Trivy ............ Apache-2.0 ... APACHE-2.0.txt + trivy-NOTICE.txt
+  OWASP ZAP ........ Apache-2.0 ... APACHE-2.0.txt
+  Falco ............ Apache-2.0 ... APACHE-2.0.txt
+  OpenSearch ....... Apache-2.0 ... APACHE-2.0.txt
+  Nuclei ........... MIT ......... nuclei-MIT.txt
+  Gitleaks ......... MIT ......... gitleaks-MIT.txt
+  YARA ............. BSD-3-Clause  yara-BSD-3-Clause.txt
+  Zeek ............. BSD-3-Clause  zeek-BSD-3-Clause.txt
+  Semgrep .......... LGPL-2.1 .... LGPL-2.1.txt + SEMGREP-LGPL-SOURCE-OFFER.txt
+
+Detalle de cada uno: THIRD-PARTY-LICENSES.md (raiz).
+Librerias de Python/JavaScript: THIRD-PARTY-DEPENDENCIES.md (raiz).

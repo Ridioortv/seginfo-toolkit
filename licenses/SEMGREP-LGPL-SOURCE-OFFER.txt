@@ -1,0 +1,30 @@
+SEMGREP - AVISO DE LICENCIA LGPL-2.1 Y OFERTA DE CODIGO FUENTE
+
+SentinelOps incluye / invoca Semgrep (version 1.86.0), un programa de
+Semgrep, Inc. y contribuyentes, distribuido bajo la GNU Lesser General
+Public License version 2.1 (LGPL-2.1). El texto completo de esa licencia
+esta en licenses/LGPL-2.1.txt.
+
+Semgrep se usa sin modificaciones, como programa independiente invocado
+por linea de comandos; no esta enlazado dentro del codigo de SentinelOps.
+
+Codigo fuente: el codigo fuente completo y correspondiente de Semgrep
+1.86.0 esta disponible publicamente en:
+
+    https://github.com/semgrep/semgrep/tree/v1.86.0
+    https://pypi.org/project/semgrep/1.86.0/#files  (paquete fuente)
+
+Si por cualquier motivo ese sitio no estuviera disponible, el
+Licenciante de SentinelOps (Manu Angiulli, manuelangiulli11@gmail.com)
+entregara una copia del codigo fuente a cualquiera que la pida, durante
+al menos tres anios desde la entrega del producto.
+
+Derechos del usuario bajo la LGPL: el usuario puede reemplazar Semgrep
+por una version propia o modificada (por ejemplo instalando otra version
+con pip en la imagen de scan-service) y puede modificarlo y hacer
+ingenieria inversa para depurar esas modificaciones. Nada en la licencia
+de SentinelOps restringe esos derechos.
+
+Reglas: SentinelOps usa unicamente reglas de Semgrep escritas por el
+propio autor (backend/services/scan-service/rules/semgrep/). No incluye
+ni usa el registro publico de reglas de Semgrep.
