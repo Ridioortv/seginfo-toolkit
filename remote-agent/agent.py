@@ -623,6 +623,12 @@ def _classify_zeek_notice(note_type: str) -> str:
 
 def run_zeek(target: str, options: dict) -> tuple[str, list[dict], str]:
     interface = target.strip() if target and target.strip().lower() != "auto" else None
+    if interface is not None:
+        try:
+            ipaddress.ip_address(interface)
+            interface = None  # una IP no es una interfaz: se autodetecta
+        except ValueError:
+            pass
     if interface is None:
         try:
             candidates = [d for d in os.listdir("/sys/class/net") if d != "lo"]
@@ -734,6 +740,14 @@ SCANNERS = {
 }
 
 
+# zeek/falco NO escanean una direccion de red: su "target" es el nombre de una
+# interfaz o una etiqueta descriptiva (ver sus docstrings), asi que el
+# chequeo de "IP de LAN inalcanzable desde Docker" no aplica -- si el
+# usuario pone una IP ahi, zeek la resuelve a la interfaz local (ver
+# run_zeek) y falco la ignora.
+_TARGETLESS_SCANNERS = {"zeek", "falco"}
+
+
 def _is_private_ip_target(target: str) -> bool:
     """True si `target` es una IP o CIDR de rango privado (LAN/RFC1918 o
     link-local) -- lo unico que nos importa distinguir aca es "esto es una
@@ -770,7 +784,7 @@ def _process_job(job: dict) -> None:
         submit_result(job_id, "failed", [], error_message=f"este agente no sabe correr el scanner '{scanner_type}'")
         return
 
-    if AGENT_BEHIND_DOCKER_NAT and _is_private_ip_target(target):
+    if scanner_type not in _TARGETLESS_SCANNERS and AGENT_BEHIND_DOCKER_NAT and _is_private_ip_target(target):
         # Sin este chequeo, trivy/nuclei se quedaban varios minutos
         # intentando conectar a una IP de LAN inalcanzable desde adentro de
         # Docker Desktop antes de fallar por timeout -- mejor fallar al toque
