@@ -195,6 +195,11 @@ function Invoke-ScannerBinary([string]$exe, [string[]]$scannerArgs, [int]$timeou
         $stderrTask = $proc.StandardError.ReadToEndAsync()
         $exited = $proc.WaitForExit($timeoutSeconds * 1000)
         if (-not $exited) {
+            # Matar el ARBOL de procesos, no solo el proceso lanzado: zap.bat
+            # (y otros wrappers) lanzan un java/otro hijo que sobrevivia al
+            # Kill() del padre, seguia corriendo en segundo plano y dejaba
+            # bloqueado el directorio de estado de ZAP para los jobs siguientes.
+            try { & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null } catch {}
             try { $proc.Kill() } catch {}
             return @{ TimedOut = $true; Stdout = ""; Stderr = ""; ExitCode = -1 }
         }
@@ -550,8 +555,11 @@ function Invoke-YaraScan([string]$targetValue) {
 }
 
 # --- OWASP ZAP (DAST pasivo, Apache 2.0) ---------------------------------
-# -quickurl/-quickout: Quick Start de linea de comandos de ZAP, spider +
-# analisis PASIVO unicamente -- NUNCA -quickattack (escaneo activo real).
+# Automation Framework (-autorun plan): spider acotado + analisis PASIVO +
+# reporte traditional-json. NO se usa -quickurl: verificado con ZAP 2.16, ese
+# modo lanza el escaneo ACTIVO completo (lentisimo y con payloads de ataque),
+# que era lo que dejaba los jobs de ZAP "assigned" por muchisimo tiempo. Con
+# este plan el job termina en ~4 minutos como maximo.
 function Invoke-ZapScan([string]$targetValue) {
     if (-not ($targetValue.StartsWith("http://") -or $targetValue.StartsWith("https://"))) {
         return @{ Raw = ""; Findings = @(); Error = "target invalido para ZAP: debe ser una URL http:// o https://" }
@@ -561,17 +569,29 @@ function Invoke-ZapScan([string]$targetValue) {
     if (-not $zapExe) {
         return @{ Raw = ""; Findings = @(); Error = "ZAP no esta instalado (ni 'zap'/'zap.bat' en el PATH ni en $BundledBinDir) -- instalalo desde https://www.zaproxy.org/download/" }
     }
-    $reportPath = Join-Path $env:TEMP ("zap-report-" + [guid]::NewGuid().ToString("N") + ".json")
-    $zapArgs = @("-cmd", "-dir", $ZapHomeDir, "-quickurl", $targetValue, "-quickout", $reportPath, "-quickprogress")
-    $result = Invoke-ScannerBinary -exe $zapExe -scannerArgs $zapArgs -timeoutSeconds 600
-    if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (600s)" } }
+    $zapWorkDir = Join-Path $env:TEMP ("zap-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $zapWorkDir -Force | Out-Null
+    $reportPath = Join-Path $zapWorkDir "zap-report.json"
+    $planPath = Join-Path $zapWorkDir "zap-plan.yaml"
+    # JSON es YAML valido; ConvertTo-Json solo se usa para escapar strings.
+    $urlJson = ($targetValue | ConvertTo-Json -Compress)
+    $dirJson = ($zapWorkDir | ConvertTo-Json -Compress)
+    $planJson = '{"env":{"contexts":[{"name":"sentinelops","urls":[' + $urlJson + ']}],"parameters":{"failOnError":false,"failOnWarning":false,"progressToStdout":false}},"jobs":[{"type":"spider","parameters":{"maxDuration":2,"maxDepth":5}},{"type":"passiveScan-wait","parameters":{"maxDuration":2}},{"type":"report","parameters":{"template":"traditional-json","reportDir":' + $dirJson + ',"reportFile":"zap-report.json"}}]}'
+    [System.IO.File]::WriteAllText($planPath, $planJson, (New-Object System.Text.UTF8Encoding($false)))
+    $zapArgs = @("-cmd", "-dir", $ZapHomeDir, "-autorun", $planPath)
+    $result = Invoke-ScannerBinary -exe $zapExe -scannerArgs $zapArgs -timeoutSeconds 420
+    if ($result.TimedOut) {
+        Remove-Item $zapWorkDir -Recurse -Force -ErrorAction SilentlyContinue
+        return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (420s)" }
+    }
     if (-not (Test-Path $reportPath)) {
         $errText = $result.Stderr
         if (-not $errText) { $errText = "ZAP no genero un reporte" }
+        Remove-Item $zapWorkDir -Recurse -Force -ErrorAction SilentlyContinue
         return @{ Raw = $result.Stdout; Findings = @(); Error = $errText.Substring(0, [Math]::Min(2000, $errText.Length)) }
     }
     $rawJson = Get-Content $reportPath -Raw -ErrorAction SilentlyContinue
-    Remove-Item $reportPath -ErrorAction SilentlyContinue
+    Remove-Item $zapWorkDir -Recurse -Force -ErrorAction SilentlyContinue
     $findings = @()
     if ($rawJson) {
         try { $data = $rawJson | ConvertFrom-Json } catch { $data = $null }

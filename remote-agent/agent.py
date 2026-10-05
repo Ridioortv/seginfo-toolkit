@@ -560,14 +560,34 @@ def run_zap(target: str, options: dict) -> tuple[str, list[dict], str]:
         return "", [], "target invalido para ZAP: debe ser una URL http:// o https://"
     tmpdir = tempfile.mkdtemp(prefix="zap-report-")
     report_path = os.path.join(tmpdir, "zap-report.json")
+    plan_path = os.path.join(tmpdir, "zap-plan.yaml")
     try:
-        cmd = ["zap.sh", "-cmd", "-dir", ZAP_HOME_DIR, "-quickurl", target, "-quickout", report_path, "-quickprogress"]
+        # Plan del Automation Framework: spider acotado + analisis PASIVO +
+        # reporte. NO se usa -quickurl: verificado con ZAP 2.16, ese modo
+        # lanza el escaneo ACTIVO completo (lentisimo y con payloads de
+        # ataque). JSON es YAML valido. Ver backend/.../scanners/zap.py.
+        plan = {
+            "env": {
+                "contexts": [{"name": "sentinelops", "urls": [target]}],
+                "parameters": {"failOnError": False, "failOnWarning": False, "progressToStdout": False},
+            },
+            "jobs": [
+                {"type": "spider", "parameters": {"maxDuration": 2, "maxDepth": 5}},
+                {"type": "passiveScan-wait", "parameters": {"maxDuration": 2}},
+                {"type": "report", "parameters": {
+                    "template": "traditional-json", "reportDir": tmpdir, "reportFile": "zap-report.json",
+                }},
+            ],
+        }
+        with open(plan_path, "w", encoding="utf-8") as fh:
+            json.dump(plan, fh)
+        cmd = ["zap.sh", "-cmd", "-dir", ZAP_HOME_DIR, "-autorun", plan_path]
         try:
-            proc = subprocess.run(cmd, capture_output=True, timeout=600)
+            proc = subprocess.run(cmd, capture_output=True, timeout=420)
         except FileNotFoundError:
             return "", [], "ZAP (zap.sh) no esta instalado o no esta en el PATH de esta maquina"
         except subprocess.TimeoutExpired:
-            return "", [], "timeout de escaneo (600s)"
+            return "", [], "timeout de escaneo (420s)"
         if not os.path.exists(report_path):
             return proc.stdout.decode(errors="replace")[:5000], [], (
                 proc.stderr.decode(errors="replace")[:2000] or "ZAP no genero un reporte"

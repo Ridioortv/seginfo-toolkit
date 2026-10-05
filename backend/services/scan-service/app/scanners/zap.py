@@ -1,8 +1,11 @@
 """Driver de OWASP ZAP: DAST (deteccion dinamica) contra una URL -- 
-spider + analisis PASIVO unicamente, via el modo "Quick Start" de
-linea de comandos de ZAP (zap.sh -cmd -quickurl ... -quickout ...).
-NUNCA se agrega -quickattack ni ningun flag que habilite el escaneo
-ACTIVO (el que de verdad envia payloads de ataque contra el target) --
+spider + analisis PASIVO unicamente, via el Automation Framework de
+ZAP (zap.sh -cmd -autorun plan.yaml, plan armado por build_zap_plan:
+spider acotado + passiveScan-wait + reporte traditional-json).
+IMPORTANTE: NO se usa -quickurl -- verificado corriendo ZAP 2.16, ese
+modo imprime "Active scanning" y lanza el escaneo ACTIVO completo (muy
+lento y con payloads de ataque). NUNCA se agrega ningun job
+"activeScan" ni flag que habilite el escaneo ACTIVO (el que de verdad envia payloads de ataque contra el target) --
 misma postura de "solo deteccion, nunca explotacion" que nuclei (ver
 app/scanners/nuclei.py, que excluye las tags dos/fuzz/intrusive por el
 mismo motivo). Si en algun momento se evalua agregar escaneo activo,
@@ -22,6 +25,32 @@ from app.scanners.base import ScannerDriver, ScanResult
 # Directorio de configuracion/estado de ZAP -- tiene que ser escribible
 # por el usuario no-root del contenedor (ver chown en el Dockerfile).
 ZAP_HOME_DIR = os.getenv("ZAP_HOME_DIR", "/home/sentinelops/.ZAP")
+
+# Tope de cada etapa del plan (minutos) -- el escaneo completo termina en
+# ~4 min como maximo (+ arranque de la JVM), en vez de depender del timeout.
+ZAP_SPIDER_MINUTES = 2
+ZAP_PASSIVE_WAIT_MINUTES = 2
+ZAP_TOTAL_TIMEOUT_SECONDS = 420
+
+
+def build_zap_plan(target: str, report_dir: str, report_file: str) -> str:
+    """Plan del Automation Framework de ZAP. JSON es YAML valido, asi que
+    se serializa con json.dumps (sin escapar nada a mano)."""
+    plan = {
+        "env": {
+            "contexts": [{"name": "sentinelops", "urls": [target]}],
+            "parameters": {"failOnError": False, "failOnWarning": False, "progressToStdout": False},
+        },
+        "jobs": [
+            {"type": "spider", "parameters": {"maxDuration": ZAP_SPIDER_MINUTES, "maxDepth": 5}},
+            {"type": "passiveScan-wait", "parameters": {"maxDuration": ZAP_PASSIVE_WAIT_MINUTES}},
+            {"type": "report", "parameters": {
+                "template": "traditional-json", "reportDir": report_dir, "reportFile": report_file,
+            }},
+        ],
+    }
+    return json.dumps(plan)
+
 
 _RISK_SEVERITY_MAP = {
     "high": "high",
@@ -72,26 +101,23 @@ class ZapDriver(ScannerDriver):
 
         tmpdir = tempfile.mkdtemp(prefix="zap-report-")
         report_path = os.path.join(tmpdir, "zap-report.json")
+        plan_path = os.path.join(tmpdir, "zap-plan.yaml")
         try:
-            cmd = [
-                "zap.sh", "-cmd",
-                "-dir", ZAP_HOME_DIR,
-                "-quickurl", target,
-                "-quickout", report_path,
-                "-quickprogress",
-            ]
+            with open(plan_path, "w", encoding="utf-8") as fh:
+                fh.write(build_zap_plan(target, tmpdir, "zap-report.json"))
+            cmd = ["zap.sh", "-cmd", "-dir", ZAP_HOME_DIR, "-autorun", plan_path]
             proc = None
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=ZAP_TOTAL_TIMEOUT_SECONDS)
             except FileNotFoundError:
                 return ScanResult(raw_output="", error="ZAP (zap.sh) no esta instalado en este contenedor")
             except asyncio.TimeoutError:
                 proc.kill()
                 await proc.wait()
-                return ScanResult(raw_output="", error="timeout de escaneo (600s)")
+                return ScanResult(raw_output="", error=f"timeout de escaneo ({ZAP_TOTAL_TIMEOUT_SECONDS}s)")
             except asyncio.CancelledError:
                 if proc is not None:
                     proc.kill()
