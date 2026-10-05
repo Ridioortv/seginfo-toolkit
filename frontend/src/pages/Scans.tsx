@@ -56,12 +56,6 @@ function scannerTargetHint(type: ScannerType): string | null {
         "como target usa la URL de un repositorio (ej. https://github.com/usuario/repo.git). " +
         "No sirve con una IP, un host ni una URL de sitio web."
       );
-    case "yara":
-      return (
-        "YARA analiza archivos, no equipos de red: como target usa la ruta de un archivo o carpeta que exista " +
-        "donde corre el escaneo (ej. /app). No sirve con una IP ni un host. Para analizar archivos tuyos, " +
-        "usa el panel \"Analizar archivos con YARA (subir archivos)\" de esta pantalla."
-      );
     default:
       return null;
   }
@@ -709,7 +703,6 @@ export default function Scans() {
             <option value="zap">zap (OWASP ZAP -- DAST pasivo contra una URL)</option>
             <option value="semgrep">semgrep (SAST -- analiza la URL de un repositorio git)</option>
             <option value="gitleaks">gitleaks (secretos en la URL de un repositorio git)</option>
-            <option value="yara">yara (patrones conocidos en archivos/carpetas)</option>
             <option value="zeek">zeek (captura de red por tiempo fijo)</option>
             <option value="falco">falco (eventos de runtime por tiempo fijo)</option>
           </select>
@@ -997,7 +990,6 @@ export default function Scans() {
             <option value="zap">zap (OWASP ZAP -- DAST pasivo contra una URL)</option>
             <option value="semgrep">semgrep (SAST -- analiza la URL de un repositorio git)</option>
             <option value="gitleaks">gitleaks (secretos en la URL de un repositorio git)</option>
-            <option value="yara">yara (patrones conocidos en archivos/carpetas)</option>
             <option value="zeek">zeek (captura de red por tiempo fijo)</option>
             <option value="falco">falco (eventos de runtime por tiempo fijo)</option>
           </select>
