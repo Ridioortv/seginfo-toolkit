@@ -845,6 +845,67 @@ async def ensure_bootstrap_agent(db: AsyncSession, name: str, api_key: str, orga
     return True
 
 
+def stale_bootstrap_agent_ids(agents, bootstrap_agents_raw: str) -> list[str]:
+    """Ids de los agentes creados como bootstrap que YA NO figuran en
+    BOOTSTRAP_AGENTS (ej. el viejo agente "gvm" que sobrevivio en la base
+    despues de sacar OpenVAS de .env). Estos quedaban para siempre en la UI
+    como "Protegido" -- sin boton de borrar -- porque ensure_bootstrap_agent
+    solo CREA agentes, nunca borra. Devuelve [] si el JSON esta vacio, no se
+    puede leer o no trae ninguna key valida: un .env roto nunca debe hacer
+    que se borren todos los agentes."""
+    if not (bootstrap_agents_raw or "").strip():
+        return []
+    try:
+        entries = json.loads(bootstrap_agents_raw)
+    except json.JSONDecodeError:
+        return []
+    valid_hashes = {
+        _hash_agent_key(entry["key"])
+        for entry in (entries or [])
+        if isinstance(entry, dict) and entry.get("key")
+    }
+    if not valid_hashes:
+        return []
+    return [
+        a.id for a in agents
+        if is_protected_agent(a) and a.key_hash not in valid_hashes
+    ]
+
+
+async def prune_stale_bootstrap_agents(db: AsyncSession, bootstrap_agents_raw: str) -> list[str]:
+    """Borra los agentes bootstrap que ya no estan en BOOTSTRAP_AGENTS,
+    junto con sus escaneos remotos y reglas programadas (quedarian
+    huerfanos: nadie los puede ejecutar). Devuelve los ids borrados."""
+    agents = list((await db.execute(select(ScanAgent))).scalars().all())
+    stale = stale_bootstrap_agent_ids(agents, bootstrap_agents_raw)
+    for agent_id in stale:
+        await db.execute(text("DELETE FROM agent_scan_jobs WHERE agent_id = :i"), {"i": agent_id})
+        await db.execute(text("DELETE FROM scan_schedules WHERE agent_id = :i"), {"i": agent_id})
+        await db.execute(text("DELETE FROM scan_agents WHERE id = :i"), {"i": agent_id})
+    await db.flush()
+    return stale
+
+
+# Escaneres que ya no existen en el producto (nmap, OpenVAS, Nessus). Si
+# quedaron filas viejas en la base con esos tipos, ScanJob/ScanSchedule ya
+# no pueden cargarlas (ScannerType no tiene esos valores) y se muestran
+# como restos en las listas -- se borran al arrancar.
+LEGACY_SCANNER_TYPES = ("nmap", "openvas", "nessus")
+
+
+async def purge_legacy_scanner_rows(db: AsyncSession) -> int:
+    """Borra escaneos y reglas de los escaneres eliminados. Devuelve la
+    cantidad de filas borradas."""
+    total = 0
+    for table in ("scan_jobs", "scan_schedules", "agent_scan_jobs"):
+        result = await db.execute(
+            text(f"DELETE FROM {table} WHERE scanner_type IN ('nmap', 'openvas', 'nessus')")
+        )
+        total += result.rowcount or 0
+    await db.flush()
+    return total
+
+
 async def detect_primary_organization(db: AsyncSession, fallback: str) -> str:
     """Devuelve el organization_id 'real' de este deployment: el de los
     agentes o jobs que ya creo un usuario. Sirve para que los agentes

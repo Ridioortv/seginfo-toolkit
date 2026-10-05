@@ -157,15 +157,10 @@ RUN touch backend/__init__.py
 
 ENV PYTHONPATH=/app
 
-# A diferencia del resto de este Dockerfile hasta ahora: scan-service
-# corria como root porque gvm-cli (gvm-tools) necesitaba arrancar como
-# root para poder bajar sus propios privilegios a 'nobody' via setuid/
-# setgid antes del exec (gvmtools/helper.py se niega EXPLICITAMENTE a
-# correr como root, pero SI necesitaba serlo un instante antes). Sin GVM
-# ya no hay ningun subproceso que necesite ese truco por ese motivo --
-# trivy/nuclei/gitleaks/zap/semgrep/yara nunca lo necesitaron -- asi que
-# este contenedor pasa al mismo patron no-root que los demas servicios
-# del backend. zeek/falco SI necesitan privilegios de kernel en runtime,
+# Este contenedor corre como usuario no-root, el mismo patron que los demas
+# servicios del backend: ninguno de los scanners (trivy/nuclei/gitleaks/zap/
+# semgrep/yara) necesita ser root. zeek/falco SI necesitan privilegios de
+# kernel en runtime,
 # pero eso se resuelve via capabilities de Linux otorgadas al
 # CONTENEDOR (ver docker-compose.yml, cap_add) -- un usuario no-root
 # DENTRO del contenedor puede usar esas capabilities igual, no hace

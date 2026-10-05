@@ -130,6 +130,64 @@ _MAX_CONCURRENT_JOBS = int(os.environ.get("AGENT_MAX_CONCURRENT_JOBS", "8"))
 # FUERA de Docker en el host) no tiene este problema -- ve la LAN real
 # directo -- asi que se deja sin marcar (variable ausente/"0").
 AGENT_BEHIND_DOCKER_NAT = os.environ.get("AGENT_BEHIND_DOCKER_NAT", "0") == "1"
+# "wan" = Agente WAN (internet): escanea SOLO objetivos publicos de internet
+# (ver el servicio remote-agent-wan en docker-compose.yml). Rechaza al toque
+# cualquier objetivo privado/interno (192.168.x.x, 10.x.x.x, localhost,
+# host.docker.internal, *.local...) -- para la red local esta el Agente LAN --
+# y los scanners que no tienen sentido contra internet (zeek/falco monitorean
+# el propio equipo; yara analiza archivos locales).
+AGENT_ROLE = os.environ.get("AGENT_ROLE", "").strip().lower()
+_WAN_UNSUPPORTED_SCANNERS = {"zeek", "falco", "yara"}
+_NON_PUBLIC_HOSTNAMES = {"localhost", "host.docker.internal", "gateway.docker.internal", "kubernetes.docker.internal"}
+_NON_PUBLIC_SUFFIXES = (".local", ".localhost", ".internal", ".lan", ".home.arpa", ".intranet", ".corp")
+
+
+def _target_host(target: str) -> str:
+    """Host de un target: de una URL (https://usuario@host:8080/x), de un
+    host:puerto o de una IP/CIDR pelada. Vacio si es un path local."""
+    t = (target or "").strip()
+    m = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://(?:[^@/]*@)?(\[[^\]]+\]|[^/:?#]+)", t)
+    if m:
+        host = m.group(1)
+    else:
+        host = t.split("/")[0]
+        if host.count(":") == 1:
+            host = host.split(":")[0]
+    return host.strip("[]").lower()
+
+
+def _is_non_public_host(host: str) -> bool:
+    if not host:
+        return False
+    if host in _NON_PUBLIC_HOSTNAMES or host.endswith(_NON_PUBLIC_SUFFIXES):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return (
+        ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+        or ip.is_multicast or ip.is_unspecified
+    )
+
+
+def _wan_rejection(scanner_type: str, target: str) -> str | None:
+    """Mensaje de rechazo si el Agente WAN no debe correr este job; None si
+    puede correrlo. Solo aplica con AGENT_ROLE=wan."""
+    if AGENT_ROLE != "wan":
+        return None
+    if scanner_type in _WAN_UNSUPPORTED_SCANNERS:
+        return (
+            f"el Agente WAN (internet) no corre '{scanner_type}': ese scanner analiza el propio equipo o "
+            "archivos locales, no objetivos de internet. Usa el Agente Docker para ese scanner."
+        )
+    if _is_non_public_host(_target_host(target)):
+        return (
+            f"'{target}' es una direccion privada o interna, y el Agente WAN (internet) solo escanea "
+            "objetivos publicos de internet. Para tu red local usa el Agente LAN "
+            "(remote-agent/agente-lan.ps1, en una PC con visibilidad real a esa red)."
+        )
+    return None
 
 
 def log(msg: str) -> None:
@@ -813,6 +871,12 @@ def _process_job(job: dict) -> None:
         submit_result(job_id, "failed", [], error_message=f"este agente no sabe correr el scanner '{scanner_type}'")
         return
 
+    wan_error = _wan_rejection(scanner_type, target)
+    if wan_error:
+        log(f"job {job_id}: rechazado -- {wan_error}")
+        submit_result(job_id, "failed", [], error_message=wan_error)
+        return
+
     if scanner_type in _CODE_SCANNERS and _is_ip_literal(target):
         # semgrep/gitleaks/yara analizan CODIGO/ARCHIVOS, no hosts: una IP
         # pelada nunca es un target valido (ni en el Agente LAN), y el
@@ -884,6 +948,8 @@ def main() -> None:
     }
     presentes = [s for s, b in _binaries.items() if shutil.which(b) is not None]
     faltantes = [s for s, b in _binaries.items() if shutil.which(b) is None]
+    if AGENT_ROLE == "wan":
+        log("rol: Agente WAN (internet) -- solo escanea objetivos publicos; rechaza IPs privadas/internas")
     log(f"escaneres disponibles en esta maquina: {', '.join(presentes) if presentes else '(ninguno)'}")
     if faltantes:
         log(

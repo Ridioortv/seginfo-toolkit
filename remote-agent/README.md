@@ -235,8 +235,16 @@ hallazgos se reenvian automaticamente a vuln-service para priorizacion
 Ya no hace falta registrar el agente a mano ni correr comandos sueltos.
 scan-service **auto-registra** los agentes definidos en `BOOTSTRAP_AGENTS`
 (en `.env`) al arrancar -- es idempotente, reiniciar no duplica nada. Por
-defecto se crean dos:
+defecto se crean tres:
 
+- **Agente WAN (internet)** -> corre como el contenedor `remote-agent-wan`
+  dentro del stack (misma imagen que scan-service). Escanea **solo
+  objetivos publicos de internet**: rechaza al toque cualquier IP privada o
+  interna (`192.168.x.x`, `10.x.x.x`, `localhost`, `host.docker.internal`,
+  `*.local`...) con un mensaje que manda al Agente LAN, y no corre
+  `zeek`/`falco`/`yara` (analizan el propio equipo o archivos locales, no
+  internet). Corre sin las capabilities elevadas de zeek/falco (minimo
+  privilegio). Se activa con `AGENT_ROLE=wan` (ver `docker-compose.yml`).
 - **Agente Docker (internet/host)** -> corre como el contenedor
   `remote-agent` dentro del stack (misma imagen que scan-service, ya trae
   los 8 scanners -- trivy/nuclei/zap/semgrep/gitleaks/yara/zeek/falco --
@@ -260,11 +268,13 @@ defecto se crean dos:
   y varios de estos pesan bastante). `zeek` y `falco` quedan afuera de
   este agente -- ver la salvedad al principio de este README.
 
-Las api keys de ambos estan en `.env` (`REMOTE_AGENT_DOCKER_KEY` y
-`REMOTE_AGENT_LAN_KEY`) -- son las que se pegan en la UI al lanzar un
-escaneo remoto (o se autocompletan solas si elegis uno de estos dos
-agentes bootstrap, ver la tabla de agentes en `/scans`). Cambialas por
-valores propios en un despliegue real.
+Las api keys de los tres estan en `.env` (`REMOTE_AGENT_DOCKER_KEY`,
+`REMOTE_AGENT_LAN_KEY` y `REMOTE_AGENT_WAN_KEY`) -- son las que se pegan en
+la UI al lanzar un escaneo remoto (o se autocompletan solas si elegis uno de
+estos agentes bootstrap, ver la tabla de agentes en `/scans`). Cambialas por
+valores propios en un despliegue real. Si sacas un agente de
+`BOOTSTRAP_AGENTS`, scan-service lo borra solo (con sus escaneos remotos) en
+el siguiente arranque.
 
 ### Instalar el Agente LAN (un solo paso, sin ser administrador)
 

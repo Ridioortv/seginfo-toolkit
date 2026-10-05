@@ -125,6 +125,23 @@ async def lifespan(app: FastAPI):
             ("scan_jobs", "status"),
         ):
             await conn.execute(text(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE VARCHAR(30)"))
+    # Limpieza de restos de lo que ya no existe en el producto, ANTES de
+    # registrar las reglas programadas (asi no se agenda una regla que
+    # esta por borrarse): (1) escaneos/reglas de nmap/openvas/nessus que
+    # quedaron en la base, (2) agentes bootstrap que ya no figuran en
+    # BOOTSTRAP_AGENTS (ej. el viejo "gvm"). Nunca debe tumbar el arranque.
+    try:
+        async with SessionLocal() as db:
+            _purged = await services.purge_legacy_scanner_rows(db)
+            _pruned = await services.prune_stale_bootstrap_agents(db, os.getenv("BOOTSTRAP_AGENTS", ""))
+            await db.commit()
+            if _purged or _pruned:
+                logger.info(
+                    "restos de escaneres/agentes eliminados borrados",
+                    extra={"filas_escaneres_viejos": _purged, "agentes_bootstrap_viejos": len(_pruned)},
+                )
+    except Exception as _exc:  # noqa: BLE001 -- la limpieza nunca tumba el arranque
+        logger.warning("no se pudo limpiar restos de escaneres/agentes viejos", extra={"error": str(_exc)})
     async with SessionLocal() as db:
         for schedule in await services.list_schedules(db):
             if schedule.enabled:

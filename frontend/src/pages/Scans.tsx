@@ -647,9 +647,10 @@ export default function Scans() {
                 Sin agente, la regla corre DENTRO del contenedor de scan-service: nuclei siempre (trivy no escanea
                 IPs/hosts, usa el panel de arriba para imagenes/paquetes) -- por el aislamiento de red de Docker
                 Desktop, sin agente nuclei solo alcanza WAN/internet, nunca tu LAN real. Para nuclei contra tu red
-                real elegi <strong>Agente LAN</strong> (visibilidad real de LAN) o <strong>Agente Docker</strong>{" "}
-                (misma visibilidad que corriendo sin agente: internet/host). La api key de estos dos se carga sola
-                -- no hace falta pegarla. Para un agente registrado a mano hay que pegar su api key aca.
+                real elegi <strong>Agente LAN</strong> (visibilidad real de LAN). Para objetivos publicos de internet
+                podes usar <strong>Agente WAN (internet)</strong> (solo acepta objetivos publicos, rechaza IPs
+                privadas) o <strong>Agente Docker</strong> (misma visibilidad que corriendo sin agente:
+                internet/host). La api key de estos agentes se carga sola -- no hace falta pegarla. Para un agente registrado a mano hay que pegar su api key aca.
               </p>
               <div className="inline-form">
                 <select
@@ -1032,7 +1033,26 @@ export default function Scans() {
         )}
         {(() => {
           const selectedJobAgent = (agents.data ?? []).find((a) => a.id === agentJobAgentId);
-          const dockerAgent = selectedJobAgent?.name.toLowerCase().includes("docker") ?? false;
+          const agentNameLower = selectedJobAgent?.name.toLowerCase() ?? "";
+          const wanAgent = agentNameLower.includes("wan");
+          const dockerAgent = agentNameLower.includes("docker");
+          if (wanAgent && isLikelyPrivateIpTarget(agentJobTarget)) {
+            return (
+              <p className="empty-hint" style={{ color: "#d9a900" }}>
+                Atencion: "{selectedJobAgent?.name}" solo escanea objetivos publicos de internet, y
+                "{agentJobTarget.trim()}" es una IP privada. El escaneo va a fallar al toque -- usa el Agente LAN
+                (remote-agent/agente-lan.ps1, corriendo en una PC con visibilidad real a esa red) para este target.
+              </p>
+            );
+          }
+          if (wanAgent && ["zeek", "falco", "yara"].includes(agentJobScannerType)) {
+            return (
+              <p className="empty-hint" style={{ color: "#d9a900" }}>
+                Atencion: "{selectedJobAgent?.name}" no corre {agentJobScannerType} (analiza el propio equipo o
+                archivos locales, no objetivos de internet). Usa el Agente Docker para ese scanner.
+              </p>
+            );
+          }
           const warn = dockerAgent && isLikelyPrivateIpTarget(agentJobTarget);
           return warn ? (
             <p className="empty-hint" style={{ color: "#d9a900" }}>

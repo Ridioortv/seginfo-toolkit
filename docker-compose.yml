@@ -190,6 +190,38 @@ services:
       scan-service:
         condition: service_healthy
 
+  # Agente WAN (internet): tercer agente "siempre encendido" del stack, junto
+  # al Agente Docker y al Agente LAN. Escanea SOLO objetivos publicos de
+  # internet (AGENT_ROLE=wan): rechaza al toque IPs privadas/internas
+  # (192.168.x.x, 10.x.x.x, localhost, host.docker.internal...) y los scanners
+  # que no aplican a internet (zeek/falco/yara) -- ver
+  # remote-agent/agent.py::_wan_rejection. Por eso NO lleva las capabilities
+  # elevadas de zeek/falco que si tiene remote-agent: minimo privilegio.
+  # Misma imagen que scan-service (trae trivy/nuclei/zap/semgrep/gitleaks).
+  # Se auto-registra via BOOTSTRAP_AGENTS (ver .env, REMOTE_AGENT_WAN_KEY).
+  remote-agent-wan:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: backend/services/scan-service/Dockerfile
+    command: ["python", "/agent.py"]
+    environment:
+      SCAN_SERVICE_URL: http://scan-service:8000
+      AGENT_API_KEY: ${REMOTE_AGENT_WAN_KEY}
+      POLL_INTERVAL_SECONDS: "10"
+      AGENT_ROLE: wan
+      AGENT_BEHIND_DOCKER_NAT: "1"
+      SENTINELOPS_SEMGREP_RULES_DIR: /opt/sentinelops-semgrep-rules
+      SENTINELOPS_YARA_RULES_FILE: /opt/sentinelops-yara-rules/sentinelops.yar
+      SENTINELOPS_ZAP_HOME_DIR: /home/sentinelops/.ZAP
+    healthcheck:
+      disable: true
+    volumes:
+      - ./remote-agent/agent.py:/agent.py:ro
+    depends_on:
+      scan-service:
+        condition: service_healthy
+
   vuln-service:
     restart: unless-stopped
     build:

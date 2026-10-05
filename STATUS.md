@@ -1519,3 +1519,31 @@ Con esto, de los 3 pendientes que quedaban abiertos al cierre anterior,
 2 estan resueltos (orphans, binario de gitleaks) y 1 queda
 explicitamente a cargo de Manu (prueba UI-level) por la restriccion de
 credenciales -- no porque falte algo del lado del codigo.
+
+## Agente WAN (internet) + limpieza de restos de OpenVAS/GVM/nmap (2026-10-05)
+
+Pedido de Manu: sacar "del todo" los rastros de OpenVAS (agente GVM) y nmap,
+y sumar a "Agentes de escaneo remoto" un agente WAN (internet).
+
+- **Restos en la base**: el codigo de OpenVAS/GVM/nmap/Nessus ya estaba
+  borrado, pero en la base quedaba (a) el agente bootstrap "gvm" -- siempre
+  "Protegido" en la UI porque `ensure_bootstrap_agent` solo crea, nunca
+  borra -- y (b) posibles escaneos/reglas con scanner_type nmap/openvas/
+  nessus, que `ScanJob` ya no puede ni cargar. `scan-service` ahora, al
+  arrancar y ANTES de registrar las reglas programadas: borra esas filas
+  (`purge_legacy_scanner_rows`) y borra los agentes bootstrap que ya no
+  figuran en `BOOTSTRAP_AGENTS` junto con sus escaneos remotos y reglas
+  (`prune_stale_bootstrap_agents`; un `BOOTSTRAP_AGENTS` vacio o roto nunca
+  borra nada). Los agentes creados a mano no se tocan. Tests:
+  `tests/test_stale_bootstrap_agents.py`.
+- **Agente WAN (internet)**: tercer agente bootstrap, servicio
+  `remote-agent-wan` en `docker-compose.yml` (misma imagen, sin capabilities
+  elevadas, `AGENT_ROLE=wan`). `remote-agent/agent.py::_wan_rejection`
+  rechaza objetivos privados/internos (IPs RFC1918, loopback, link-local,
+  `localhost`, `host.docker.internal`, `*.local`/`.internal`/`.lan`...) y los
+  scanners zeek/falco/yara. Key nueva `REMOTE_AGENT_WAN_KEY` + entrada en
+  `BOOTSTRAP_AGENTS` (`.env` y `.env.example`). La UI (`Scans.tsx`) avisa
+  antes de lanzar si se elige el Agente WAN con una IP privada o con un
+  scanner no soportado. Tests: `remote-agent/test_wan_agent.py`.
+- Se quito de `scan-service/Dockerfile` el comentario que seguia mencionando
+  gvm-cli.
