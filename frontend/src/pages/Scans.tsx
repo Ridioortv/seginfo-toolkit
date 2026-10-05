@@ -40,6 +40,32 @@ type ScannerType =
 // el backend) y reportan lo que detectaron en ese lapso. Ver
 // app/scanners/_duration.py en scan-service.
 const FIXED_DURATION_SCANNERS = new Set<ScannerType>(["zeek", "falco"]);
+
+// Aviso debajo del formulario segun el scanner elegido: que tipo de target
+// acepta (varios escaneres NO analizan hosts/IPs y es facil equivocarse).
+function scannerTargetHint(type: ScannerType): string | null {
+  switch (type) {
+    case "semgrep":
+      return (
+        "Semgrep analiza codigo fuente: como target usa solo la URL de un repositorio git " +
+        "(ej. https://github.com/usuario/repo.git). No sirve con una IP, un host ni una URL de sitio web."
+      );
+    case "gitleaks":
+      return (
+        "Gitleaks busca secretos (claves, tokens, contrasenas) en el historial de un repositorio git: " +
+        "como target usa la URL de un repositorio (ej. https://github.com/usuario/repo.git). " +
+        "No sirve con una IP, un host ni una URL de sitio web."
+      );
+    case "yara":
+      return (
+        "YARA analiza archivos, no equipos de red: como target usa la ruta de un archivo o carpeta que exista " +
+        "donde corre el escaneo (ej. /app). No sirve con una IP ni un host. Para analizar archivos tuyos, " +
+        "usa el panel \"Analizar archivos con YARA (subir archivos)\" de esta pantalla."
+      );
+    default:
+      return null;
+  }
+}
 type NetworkScope = "lan" | "man" | "wan" | "custom";
 
 const SCOPE_LABELS: Record<NetworkScope, string> = {
@@ -681,9 +707,9 @@ export default function Scans() {
             <option value="nuclei">nuclei</option>
             <option value="trivy">trivy</option>
             <option value="zap">zap (OWASP ZAP -- DAST pasivo contra una URL)</option>
-            <option value="semgrep">semgrep (SAST, reglas propias)</option>
-            <option value="gitleaks">gitleaks (secretos en un repo/path)</option>
-            <option value="yara">yara (patrones conocidos en archivos)</option>
+            <option value="semgrep">semgrep (SAST -- analiza la URL de un repositorio git)</option>
+            <option value="gitleaks">gitleaks (secretos en la URL de un repositorio git)</option>
+            <option value="yara">yara (patrones conocidos en archivos/carpetas)</option>
             <option value="zeek">zeek (captura de red por tiempo fijo)</option>
             <option value="falco">falco (eventos de runtime por tiempo fijo)</option>
           </select>
@@ -705,6 +731,9 @@ export default function Scans() {
             </label>
           )}
         </div>
+        {scannerTargetHint(schedScannerType) && (
+          <p className="empty-hint" style={{ marginTop: 8 }}>{scannerTargetHint(schedScannerType)}</p>
+        )}
         <div className="inline-form" style={{ marginTop: 8 }}>
           <select value={schedFrequency} onChange={(e) => setSchedFrequency(e.target.value as "daily" | "weekly")}>
             <option value="daily">Todos los dias</option>
@@ -966,9 +995,9 @@ export default function Scans() {
             <option value="nuclei">nuclei (plantillas de deteccion)</option>
             <option value="trivy">trivy (CVEs en imagenes/paquetes)</option>
             <option value="zap">zap (OWASP ZAP -- DAST pasivo contra una URL)</option>
-            <option value="semgrep">semgrep (SAST, reglas propias)</option>
-            <option value="gitleaks">gitleaks (secretos en un repo/path)</option>
-            <option value="yara">yara (patrones conocidos en archivos)</option>
+            <option value="semgrep">semgrep (SAST -- analiza la URL de un repositorio git)</option>
+            <option value="gitleaks">gitleaks (secretos en la URL de un repositorio git)</option>
+            <option value="yara">yara (patrones conocidos en archivos/carpetas)</option>
             <option value="zeek">zeek (captura de red por tiempo fijo)</option>
             <option value="falco">falco (eventos de runtime por tiempo fijo)</option>
           </select>
@@ -1006,6 +1035,9 @@ export default function Scans() {
             {createAgentScan.isPending ? "Creando..." : "Lanzar escaneo remoto"}
           </button>
         </div>
+        {scannerTargetHint(agentJobScannerType) && (
+          <p className="empty-hint" style={{ marginTop: 8 }}>{scannerTargetHint(agentJobScannerType)}</p>
+        )}
         {(() => {
           const selectedJobAgent = (agents.data ?? []).find((a) => a.id === agentJobAgentId);
           const dockerAgent = selectedJobAgent?.name.toLowerCase().includes("docker") ?? false;
