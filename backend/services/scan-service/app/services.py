@@ -906,6 +906,48 @@ async def purge_legacy_scanner_rows(db: AsyncSession) -> int:
     return total
 
 
+def missing_bootstrap_entries(agents, bootstrap_agents_raw: str) -> list[dict]:
+    """Entradas de BOOTSTRAP_AGENTS (con name y key) que NO tienen un agente
+    entre `agents` (los de UNA organizacion), comparando por hash de key.
+    [] si el JSON esta vacio o roto."""
+    if not (bootstrap_agents_raw or "").strip():
+        return []
+    try:
+        entries = json.loads(bootstrap_agents_raw)
+    except json.JSONDecodeError:
+        return []
+    present = {a.key_hash for a in agents}
+    return [
+        e for e in (entries or [])
+        if isinstance(e, dict) and e.get("name") and e.get("key") and _hash_agent_key(e["key"]) not in present
+    ]
+
+
+async def adopt_bootstrap_agents(db: AsyncSession, bootstrap_agents_raw: str, organization_id: str) -> bool:
+    """Auto-reparacion: si a la organizacion de un admin le faltan agentes
+    bootstrap (ej. "Agente LAN" no aparece en la lista), los trae/crea en SU
+    organizacion. Pasa cuando ensure_bootstrap_agent los dejo en otra
+    organizacion al arrancar (detect_primary_organization no siempre acierta
+    -- ver su docstring) y entonces no aparecen en los desplegables de
+    escaneos remotos/programados. Solo se hace en instalaciones de UNA sola
+    organizacion (caso on-prem tipico): con varias, los agentes bootstrap
+    ejecutan jobs de todas y no se puede asumir de cual son. Devuelve True si
+    cambio algo."""
+    try:
+        count = (await db.execute(text("SELECT count(*) FROM organizations"))).scalar_one()
+    except Exception:  # noqa: BLE001 -- sin tabla organizations no se puede saber: no tocar nada
+        return False
+    if count != 1:
+        return False
+    agents = await list_agents(db, organization_id)
+    missing = missing_bootstrap_entries(agents, bootstrap_agents_raw)
+    for entry in missing:
+        await ensure_bootstrap_agent(db, entry["name"], entry["key"], organization_id)
+    if missing:
+        await db.flush()
+    return bool(missing)
+
+
 async def detect_primary_organization(db: AsyncSession, fallback: str) -> str:
     """Devuelve el organization_id 'real' de este deployment: el de los
     agentes o jobs que ya creo un usuario. Sirve para que los agentes

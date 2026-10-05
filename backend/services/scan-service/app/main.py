@@ -488,8 +488,18 @@ async def create_agent(
 
 @app.get("/agents", response_model=list[ScanAgentOut])
 async def list_agents(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
-    agents = await services.list_agents(db, org_id_from_claims(claims))
+    org_id = org_id_from_claims(claims)
+    agents = await services.list_agents(db, org_id)
     bootstrap_raw = os.getenv("BOOTSTRAP_AGENTS", "")
+    # Auto-reparacion (ver services.adopt_bootstrap_agents): si al admin le
+    # falta algun agente bootstrap (ej. "Agente LAN"), se lo trae a su org.
+    if claims.get("role") == "admin" and services.missing_bootstrap_entries(agents, bootstrap_raw):
+        try:
+            if await services.adopt_bootstrap_agents(db, bootstrap_raw, org_id):
+                await db.commit()
+                agents = await services.list_agents(db, org_id)
+        except Exception as exc:  # noqa: BLE001 -- la reparacion nunca rompe el listado
+            logger.warning("no se pudieron reparar los agentes bootstrap", extra={"error": str(exc)})
     return [
         ScanAgentOut(
             id=a.id,
