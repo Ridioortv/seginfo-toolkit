@@ -12,7 +12,7 @@ cryptography==50.0.2  # pin explicito (antes lo traia python-jose sin version): 
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1  # pin explicito: bcrypt>=4.1 removio el atributo __about__ que passlib 1.7.4 necesita para detectar el backend, y sin pin pip instala el ultimo bcrypt y auth-service se cae al primer hash_password/verify_password (login o registro) con AttributeError
 pyotp==2.9.0
-redis==5.0.8
+redis==8.1.0
 prometheus-client==0.20.0
 python-multipart==0.0.32
 google-auth==2.34.0
