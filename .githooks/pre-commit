@@ -1,0 +1,43 @@
+#!/bin/sh
+# Hook pre-commit de SentinelOps: frena commits con secretos ANTES de que
+# existan en el historial (despues de un push ya hay que rotar todo).
+# Se activa con:  git config core.hooksPath .githooks   (lo hace tools/instalar-hooks.ps1)
+# Puntos de bypass: ninguno a proposito. Si es un falso positivo, ajusta
+# .gitleaks.toml en vez de usar --no-verify.
+
+fail=0
+
+# 1) Archivos que jamas deben commitearse (por nombre).
+for f in $(git diff --cached --name-only --diff-filter=AM); do
+  case "$f" in
+    .env.example|*/.env.example|*.tfvars.example) continue ;;
+    .env|.env.*|*/.env|*/.env.*|*.env.bak|*.pem|*.key|*.pfx|*.p12|*.jks|id_rsa*|id_ed25519*|credentials.json|*.tfstate|*.tfstate.*)
+      echo "BLOQUEADO: '$f' es un archivo de secretos y no se commitea."
+      fail=1 ;;
+  esac
+done
+
+# 2) Subproyectos embebidos (gitlinks) como 'sentinel para sofi'.
+if git diff --cached --raw | grep -q '^:[0-9]* 160000'; then
+  echo "BLOQUEADO: hay un repositorio git embebido (gitlink) en el commit."
+  echo "          Agregalo a .gitignore o quitalo con: git rm --cached <ruta>"
+  fail=1
+fi
+
+# 3) Patrones de secretos conocidos en las lineas agregadas.
+added=$(git diff --cached -U0 --no-color -- . ':(exclude).env.example' ':(exclude)*/.env.example' ':(exclude)*package-lock.json' ':(exclude)*/tests/*' ':(exclude)docs/*' | grep '^+' | grep -v '^+++')
+if echo "$added" | grep -Eq 'ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|gh[ousr]_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|-----BEGIN ([A-Z]+ )?PRIVATE KEY-----|xox[abprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35}|sk_live_[0-9a-zA-Z]{20,}'; then
+  echo "BLOQUEADO: se detecto un token/clave con formato conocido en los cambios."
+  fail=1
+fi
+
+# 4) gitleaks completo si esta instalado (opcional, mas profundo).
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks protect --staged --redact --config .gitleaks.toml >/dev/null 2>&1 || {
+    echo "BLOQUEADO: gitleaks encontro un secreto en los cambios (corre 'gitleaks protect --staged -v')."
+    fail=1
+  }
+fi
+
+[ "$fail" -eq 0 ] || { echo; echo "Commit cancelado. Quita el secreto, rotalo si ya salio de tu PC, y reintenta."; exit 1; }
+exit 0

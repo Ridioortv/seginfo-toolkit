@@ -82,3 +82,69 @@ class TestBuildImageInventory:
 
     def test_empty_input_returns_empty(self):
         assert build_image_inventory([]) == []
+
+
+class TestAgentTrivyJobsInInventory:
+    """Un trivy lanzado desde "Escaneos remotos" lo ejecuta un agente
+    (AgentScanJob, no ScanJob): tiene que aparecer en el inventario igual
+    que uno local (bug: 'cuando escaneo con trivy no aparecen en Imagenes
+    y Paquetes')."""
+
+    def _agent_job(self, target, finished_at, packages, findings=None):
+        from app.models import AgentScanJob
+        return AgentScanJob(
+            id=f"agent-{target}", agent_id="a1", scanner_type="trivy", target=target,
+            status="completed", options={}, findings=findings or [], packages=packages,
+            finished_at=finished_at,
+        )
+
+    def test_agent_job_with_packages_becomes_an_image(self):
+        job = self._agent_job("nginx:latest", datetime(2026, 9, 1, tzinfo=timezone.utc), [{"name": "openssl", "version": "3"}])
+        images = build_image_inventory([job])
+        assert [i["target"] for i in images] == ["nginx:latest"]
+        assert images[0]["package_count"] == 1
+        assert images[0]["mode"] == "image"
+
+    def test_agent_and_local_jobs_are_merged(self):
+        local = _job("alpine:3.18", datetime(2026, 9, 1, tzinfo=timezone.utc), [{"name": "musl", "version": "1"}])
+        remote = self._agent_job("nginx:latest", datetime(2026, 9, 2, tzinfo=timezone.utc), [{"name": "openssl", "version": "3"}])
+        images = build_image_inventory([remote, local])
+        assert {i["target"] for i in images} == {"alpine:3.18", "nginx:latest"}
+
+
+class TestSubmitAgentResultPackages:
+    def test_packages_are_stored_on_completed_trivy_job(self):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from app.models import AgentScanJob, ScanAgent
+        from app.services import submit_agent_result
+
+        job = AgentScanJob(id="j1", agent_id="a1", scanner_type="trivy", target="x", organization_id="o1")
+        agent = ScanAgent(id="a1", name="n", key_hash="h")
+        payload = SimpleNamespace(
+            status="completed", findings=[], error_message="",
+            packages=[{"name": "musl", "version": "1"}],
+        )
+        db = SimpleNamespace(flush=AsyncMock())
+        asyncio.run(submit_agent_result(db, agent, job, payload))
+        assert job.packages == [{"name": "musl", "version": "1"}]
+
+    def test_failed_job_stores_no_packages(self):
+        import asyncio
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from app.models import AgentScanJob, ScanAgent
+        from app.services import submit_agent_result
+
+        job = AgentScanJob(id="j1", agent_id="a1", scanner_type="trivy", target="x", organization_id="o1")
+        agent = ScanAgent(id="a1", name="n", key_hash="h")
+        payload = SimpleNamespace(status="failed", findings=[], error_message="boom", packages=[{"name": "x"}])
+        db = SimpleNamespace(flush=AsyncMock())
+        asyncio.run(submit_agent_result(db, agent, job, payload))
+        assert job.packages == []
+
+    def test_result_schema_accepts_packages_and_defaults_to_empty(self):
+        from app.schemas import AgentResultSubmit
+        assert AgentResultSubmit(status="completed").packages == []
+        assert AgentResultSubmit(status="completed", packages=[{"name": "a"}]).packages == [{"name": "a"}]

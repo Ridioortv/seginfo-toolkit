@@ -34,3 +34,23 @@ def test_empty_or_broken_env_never_deletes_anything():
     assert stale_bootstrap_agent_ids(agents, "{no es json") == []
     assert stale_bootstrap_agent_ids(agents, "[]") == []
     assert stale_bootstrap_agent_ids(agents, json.dumps([{"name": "x"}])) == []
+
+
+def test_nested_list_in_env_does_not_wipe_legit_agents():
+    """Regresion real: un script dejo BOOTSTRAP_AGENTS como
+    [[{docker},{lan}],{wan}] y se borraron Docker y LAN por no entender la
+    entrada anidada."""
+    nested = json.dumps([
+        [{"name": "Agente Docker", "key": "k-docker"}, {"name": "Agente LAN", "key": "k-lan"}],
+        {"name": "Agente WAN", "key": "k-wan"},
+    ])
+    agents = [_agent("1", "k-docker"), _agent("2", "k-lan"), _agent("3", "k-wan"), _agent("4", "k-gvm")]
+    assert stale_bootstrap_agent_ids(agents, nested) == ["4"]
+
+
+def test_unreadable_entry_blocks_any_deletion():
+    raw = json.dumps([{"name": "Agente Docker", "key": "k-docker"}, {"name": "Agente LAN", "key": 123}])
+    raw = raw.replace("123", '["x"]')  # una key que no es texto: entrada que no se entiende
+    agents = [_agent("1", "k-docker"), _agent("2", "k-gvm")]
+    # hay 2 "key" en el texto pero solo 1 entrada legible -> no se borra nada
+    assert stale_bootstrap_agent_ids(agents, raw) == []

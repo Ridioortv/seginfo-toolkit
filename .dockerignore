@@ -1,0 +1,25 @@
+# Contexto de build de los servicios backend (context: .): no enviar al
+# daemon de Docker secretos, historial de git ni copias locales.
+.git
+.github
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+sentinel para sofi
+node_modules
+**/node_modules
+node_modules_leftover_test
+**/__pycache__
+**/*.pyc
+.pytest_cache
+release
+dist
+frontend
+launcher
+docs
+infra
+*.exe
+STATUS.md

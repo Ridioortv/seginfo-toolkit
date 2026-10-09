@@ -80,7 +80,8 @@ export default function ImageInventory() {
       <div className="panel">
         <p className="empty-hint">
           Cada fila es la imagen o archivo escaneado mas reciente con trivy (subido en "Escaneos" -&gt; "Escanear
-          imagen o paquete con Trivy", o un escaneo normal contra una imagen de registro). Reescanear la misma
+          imagen o paquete con Trivy", un escaneo normal contra una imagen de registro, o un escaneo trivy lanzado
+          con un agente remoto desde "Escaneos remotos"). Reescanear la misma
           imagen actualiza su inventario en vez de duplicarlo.
         </p>
 
@@ -108,8 +109,9 @@ export default function ImageInventory() {
         {images.data && images.data.length === 0 && (
           <p className="empty-hint">
             Todavia no hay ninguna imagen escaneada con trivy. Anda a "Escaneos" y subi una imagen (.tar de
-            `docker save`) o un manifiesto de dependencias, o lanza un escaneo trivy normal contra una imagen de
-            registro.
+            `docker save`) o un manifiesto de dependencias, o lanza un escaneo trivy (normal o con un agente remoto)
+            contra una imagen de registro. Los escaneos hechos antes de esta version no traen el listado de paquetes:
+            volve a escanear la imagen para que aparezca aca.
           </p>
         )}
         {images.data && images.data.length > 0 && (

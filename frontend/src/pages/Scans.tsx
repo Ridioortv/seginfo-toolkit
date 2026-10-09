@@ -50,6 +50,12 @@ function scannerTargetHint(type: ScannerType): string | null {
         "Semgrep analiza codigo fuente: como target usa solo la URL de un repositorio git " +
         "(ej. https://github.com/usuario/repo.git). No sirve con una IP, un host ni una URL de sitio web."
       );
+    case "trivy":
+      return (
+        "Trivy analiza imagenes de contenedor (ej. nginx:latest o mi-registro/app:1.0) o carpetas/archivos de " +
+        "paquetes, no hosts ni IPs de red. Cuando termine, el inventario completo de paquetes queda en " +
+        "\"Imagenes y Paquetes\"."
+      );
     case "gitleaks":
       return (
         "Gitleaks busca secretos (claves, tokens, contrasenas) en el historial de un repositorio git: " +

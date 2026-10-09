@@ -1,4 +1,5 @@
 import axios from "axios";
+import { useAuthStore } from "../store/auth";
 
 /**
  * Convierte cualquier error de una llamada a un microservicio en un
@@ -9,6 +10,18 @@ import axios from "axios";
  * amigable, asi el usuario puede copiar/pegar el detalle si necesita
  * soporte.
  */
+/**
+ * Un 403 casi siempre significa "tu rol no alcanza para esta accion" (varias
+ * acciones -- borrar, escanear repos, etc. -- son solo para admin/soc_manager).
+ * Se agrega al detalle el rol con el que se inicio sesion, para que no haga
+ * falta adivinar con que cuenta se esta entrando.
+ */
+function permissionHint(): string {
+  const role = useAuthStore.getState().claims?.role;
+  if (!role || role === "admin") return "";
+  return ` -- Iniciaste sesion con el rol "${role}", y esta accion requiere admin o soc_manager. Cerra sesion y entra con una cuenta admin.`;
+}
+
 export function connectionErrorDetail(error: unknown): string {
   if (axios.isAxiosError(error)) {
     if (error.response) {
@@ -16,7 +29,8 @@ export function connectionErrorDetail(error: unknown): string {
         typeof error.response.data === "object" && error.response.data !== null && "detail" in error.response.data
           ? String((error.response.data as { detail?: unknown }).detail)
           : JSON.stringify(error.response.data);
-      return `HTTP ${error.response.status}: ${detail}`.slice(0, 300);
+      const base = `HTTP ${error.response.status}: ${detail}`.slice(0, 300);
+      return error.response.status === 403 ? base + permissionHint() : base;
     }
     if (error.code === "ERR_NETWORK" || error.message?.toLowerCase().includes("network")) {
       return `Sin respuesta (${error.message}) -- el contenedor de este servicio probablemente no esta corriendo o todavia se esta reiniciando.`;

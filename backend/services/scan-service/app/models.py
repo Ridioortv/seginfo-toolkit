@@ -161,6 +161,9 @@ class AgentScanJob(Base):
     options: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|assigned|completed|failed
     findings: Mapped[list] = mapped_column(JSON, default=list)
+    # Solo trivy: inventario COMPLETO de paquetes que reporta el agente
+    # (igual que ScanJob.packages) -- alimenta "Imagenes y Paquetes".
+    packages: Mapped[list] = mapped_column(JSON, default=list)
     error_message: Mapped[str] = mapped_column(String(2000), default="")
     created_by: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

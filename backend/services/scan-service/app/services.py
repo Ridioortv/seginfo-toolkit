@@ -276,7 +276,11 @@ def build_image_inventory(jobs: list) -> list[dict]:
 
 async def get_image_inventory(db: AsyncSession, organization_id: str, limit_scans: int = 500) -> list[dict]:
     """Dashboard de imagenes/paquetes -- ver build_image_inventory para la
-    logica de agrupacion en si."""
+    logica de agrupacion en si. Junta los escaneos trivy que corrio el
+    propio scan-service (ScanJob) Y los que corrio un agente remoto
+    (AgentScanJob: Agente Docker/LAN/WAN) -- antes solo miraba los
+    primeros, asi que un trivy lanzado desde "Escaneos remotos" nunca
+    aparecia aca."""
     result = await db.execute(
         select(ScanJob)
         .where(
@@ -287,7 +291,20 @@ async def get_image_inventory(db: AsyncSession, organization_id: str, limit_scan
         .order_by(ScanJob.finished_at.desc())
         .limit(limit_scans)
     )
-    return build_image_inventory(result.scalars().all())
+    jobs = list(result.scalars().all())
+    agent_result = await db.execute(
+        select(AgentScanJob)
+        .where(
+            AgentScanJob.organization_id == organization_id,
+            AgentScanJob.scanner_type == "trivy",
+            AgentScanJob.status == "completed",
+        )
+        .order_by(AgentScanJob.finished_at.desc())
+        .limit(limit_scans)
+    )
+    jobs.extend(agent_result.scalars().all())
+    jobs.sort(key=lambda j: j.finished_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return build_image_inventory(jobs)
 
 
 async def create_scan_job(db: AsyncSession, payload, actor: str, organization_id: str) -> ScanJob:
@@ -782,6 +799,32 @@ def agent_key_matches(agent: ScanAgent, api_key: str) -> bool:
     return bool(api_key) and hmac.compare_digest(agent.key_hash, _hash_agent_key(api_key))
 
 
+def parse_bootstrap_entries(bootstrap_agents_raw: str) -> list[dict] | None:
+    """Lee BOOTSTRAP_AGENTS de forma tolerante: devuelve la lista de
+    {"name", "key"} validos, aplanando listas anidadas (un .env editado a
+    mano o por un script puede dejar [[{...},{...}],{...}], y eso antes
+    hacia que se ignorara o rompiera TODA la lista). None si esta vacio o no
+    es JSON valido."""
+    if not (bootstrap_agents_raw or "").strip():
+        return None
+    try:
+        data = json.loads(bootstrap_agents_raw)
+    except json.JSONDecodeError:
+        return None
+    out: list[dict] = []
+
+    def _walk(node) -> None:
+        if isinstance(node, dict):
+            if isinstance(node.get("name"), str) and isinstance(node.get("key"), str) and node["name"] and node["key"]:
+                out.append({"name": node["name"], "key": node["key"]})
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(data)
+    return out
+
+
 def is_protected_agent(agent) -> bool:
     """True si `agent` es uno de los bootstrap (Agente Docker/Agente LAN,
     ver ensure_bootstrap_agent) -- estos NO se pueden borrar desde la UI:
@@ -806,14 +849,8 @@ def resolve_bootstrap_api_key(agent, bootstrap_agents_raw: str) -> str | None:
     despliega el stack ya tiene esas keys en su propio .env."""
     if not is_protected_agent(agent) or not bootstrap_agents_raw.strip():
         return None
-    try:
-        entries = json.loads(bootstrap_agents_raw)
-    except json.JSONDecodeError:
-        return None
-    for entry in entries or []:
-        key = (entry or {}).get("key")
-        if not key:
-            continue
+    for entry in parse_bootstrap_entries(bootstrap_agents_raw) or []:
+        key = entry["key"]
         if hmac.compare_digest(_hash_agent_key(key), agent.key_hash):
             return key
     return None
@@ -853,17 +890,15 @@ def stale_bootstrap_agent_ids(agents, bootstrap_agents_raw: str) -> list[str]:
     solo CREA agentes, nunca borra. Devuelve [] si el JSON esta vacio, no se
     puede leer o no trae ninguna key valida: un .env roto nunca debe hacer
     que se borren todos los agentes."""
-    if not (bootstrap_agents_raw or "").strip():
+    entries = parse_bootstrap_entries(bootstrap_agents_raw)
+    if not entries:
         return []
-    try:
-        entries = json.loads(bootstrap_agents_raw)
-    except json.JSONDecodeError:
+    # Si en el texto hay mas "key" que entradas que se pudieron leer, hay una
+    # entrada mal formada: no se borra nada (borrar un agente porque su
+    # entrada no se entendio fue un bug real, ver STATUS.md).
+    if (bootstrap_agents_raw or "").count('"key"') != len(entries):
         return []
-    valid_hashes = {
-        _hash_agent_key(entry["key"])
-        for entry in (entries or [])
-        if isinstance(entry, dict) and entry.get("key")
-    }
+    valid_hashes = {_hash_agent_key(e["key"]) for e in entries}
     if not valid_hashes:
         return []
     return [
@@ -910,17 +945,9 @@ def missing_bootstrap_entries(agents, bootstrap_agents_raw: str) -> list[dict]:
     """Entradas de BOOTSTRAP_AGENTS (con name y key) que NO tienen un agente
     entre `agents` (los de UNA organizacion), comparando por hash de key.
     [] si el JSON esta vacio o roto."""
-    if not (bootstrap_agents_raw or "").strip():
-        return []
-    try:
-        entries = json.loads(bootstrap_agents_raw)
-    except json.JSONDecodeError:
-        return []
+    entries = parse_bootstrap_entries(bootstrap_agents_raw) or []
     present = {a.key_hash for a in agents}
-    return [
-        e for e in (entries or [])
-        if isinstance(e, dict) and e.get("name") and e.get("key") and _hash_agent_key(e["key"]) not in present
-    ]
+    return [e for e in entries if _hash_agent_key(e["key"]) not in present]
 
 
 async def adopt_bootstrap_agents(db: AsyncSession, bootstrap_agents_raw: str, organization_id: str) -> bool:
@@ -1228,6 +1255,9 @@ async def get_agent_job_for_agent(db: AsyncSession, agent: ScanAgent, job_id: st
 async def submit_agent_result(db: AsyncSession, agent: ScanAgent, job: AgentScanJob, payload) -> AgentScanJob:
     job.status = payload.status
     job.findings = payload.findings
+    # Inventario de paquetes (solo trivy lo manda): sin esto el escaneo
+    # trivy hecho por un agente remoto nunca aparecia en "Imagenes y Paquetes".
+    job.packages = (getattr(payload, "packages", None) or []) if payload.status == "completed" else []
     job.error_message = payload.error_message[:2000]
     job.finished_at = _now()
     agent.last_seen_at = _now()

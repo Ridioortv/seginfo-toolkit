@@ -105,6 +105,10 @@ async def lifespan(app: FastAPI):
         # tabla que ya existe).
         await conn.execute(text("ALTER TABLE scan_jobs ADD COLUMN IF NOT EXISTS packages JSON DEFAULT '[]'"))
         await conn.execute(text("UPDATE scan_jobs SET packages = '[]' WHERE packages IS NULL"))
+        # Mismo inventario de paquetes para los escaneos trivy que corre un
+        # agente remoto (Agente Docker/LAN/WAN): ver AgentScanJob.packages.
+        await conn.execute(text("ALTER TABLE agent_scan_jobs ADD COLUMN IF NOT EXISTS packages JSON DEFAULT '[]'"))
+        await conn.execute(text("UPDATE agent_scan_jobs SET packages = '[]' WHERE packages IS NULL"))
         # ScanSchedule.agent_id (ver models.py): columna nueva, mismo motivo
         # que las de arriba. NULL es un valor valido (regla sin agente, el
         # comportamiento historico) asi que no hace falta ningun UPDATE de
@@ -155,10 +159,11 @@ async def lifespan(app: FastAPI):
     # arranque scan-service. Cualquier error aca (JSON malo, DB, etc.) solo
     # se loguea y el servicio arranca igual.
     try:
-        import json as _json
         _raw_bootstrap = os.getenv("BOOTSTRAP_AGENTS", "").strip()
         if _raw_bootstrap:
-            _entries = _json.loads(_raw_bootstrap)
+            _entries = services.parse_bootstrap_entries(_raw_bootstrap)
+            if _entries is None:
+                raise ValueError("BOOTSTRAP_AGENTS no es un JSON valido")
             async with SessionLocal() as db:
                 _org = await services.detect_primary_organization(db, DEFAULT_ORGANIZATION_ID)
                 for _entry in _entries or []:

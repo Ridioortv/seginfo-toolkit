@@ -193,6 +193,15 @@ async def triage_vulnerability(db: AsyncSession, vuln: Vulnerability, payload, a
     return vuln
 
 
+async def delete_vulnerability(db: AsyncSession, vuln: Vulnerability) -> None:
+    """Borra UNA vulnerabilidad (la que el usuario eligio en la tabla). Ojo: si
+    el mismo hallazgo vuelve a aparecer en un escaneo futuro, la ingesta lo
+    crea de nuevo -- para que deje de molestar sin borrarlo, se lo marca como
+    "falso positivo" o "riesgo aceptado" (triage)."""
+    await db.delete(vuln)
+    await db.flush()
+
+
 async def get_stats(db: AsyncSession, organization_id: str) -> dict:
     total_result = await db.execute(
         select(func.count(Vulnerability.id)).where(Vulnerability.organization_id == organization_id)

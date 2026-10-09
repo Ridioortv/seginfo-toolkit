@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { connectionErrorDetail, blobExportErrorDetail } from "./errors";
+import { useAuthStore } from "../store/auth";
 
 /** Construye un objeto que `axios.isAxiosError` reconoce como AxiosError
  * sin depender de un servidor real ni de los tipos internos de axios. */
@@ -48,6 +49,29 @@ describe("connectionErrorDetail", () => {
   });
 });
 
+
+describe("connectionErrorDetail 403 hint", () => {
+  const forbidden = () =>
+    fakeAxiosError({ response: { status: 403, data: { detail: "Permisos insuficientes" } } });
+
+  it("tells a non-admin which role they are logged in with", () => {
+    useAuthStore.setState({ claims: { sub: "u", role: "analyst", exp: 0 } });
+    const text = connectionErrorDetail(forbidden());
+    expect(text).toContain("HTTP 403: Permisos insuficientes");
+    expect(text).toContain('rol "analyst"');
+    expect(text).toContain("cuenta admin");
+  });
+
+  it("adds no hint when the user is already admin", () => {
+    useAuthStore.setState({ claims: { sub: "u", role: "admin", exp: 0 } });
+    expect(connectionErrorDetail(forbidden())).toBe("HTTP 403: Permisos insuficientes");
+  });
+
+  it("adds no hint when there is no session", () => {
+    useAuthStore.setState({ claims: null });
+    expect(connectionErrorDetail(forbidden())).toBe("HTTP 403: Permisos insuficientes");
+  });
+});
 
 describe("blobExportErrorDetail", () => {
   it("extracts the real backend detail from a Blob error body (GET .../export)", async () => {

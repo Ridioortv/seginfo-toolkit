@@ -104,6 +104,22 @@ async def get_vulnerability(vuln_id: str, claims: dict = Depends(get_current_cla
     return vuln
 
 
+@app.delete("/vulnerabilities/{vuln_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_vulnerability(
+    vuln_id: str,
+    # Mismos roles que el triage (PATCH .../triage): quien puede clasificar un
+    # hallazgo puede sacarlo de la lista.
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
+):
+    vuln = await services.get_vulnerability(db, vuln_id, org_id_from_claims(claims))
+    if vuln is None:
+        raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
+    await services.delete_vulnerability(db, vuln)
+    await db.commit()
+    logger.info("vulnerabilidad borrada", extra={"vuln_id": vuln_id, "actor": claims.get("sub")})
+
+
 @app.post("/vulnerabilities/{vuln_id}/enrich", response_model=VulnerabilityOut)
 async def enrich(
     vuln_id: str,

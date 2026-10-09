@@ -7,6 +7,7 @@ como propio (lo mismo que hace cualquier navegador al visitar el sitio).
 
 Funciones puras (testeables sin DB/red/TLS real) arriba; funciones de I/O
 (con manejo de error acotado, nunca deben tumbar el scheduler) abajo."""
+import asyncio
 import hashlib
 import ipaddress
 import os
@@ -15,7 +16,7 @@ import ssl
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import delete as sql_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.logging import configure_logging
@@ -37,6 +38,10 @@ SIEM_SERVICE_URL = os.getenv("SIEM_SERVICE_URL", "http://siem-service:8000")
 # (o una CT log ruidosa) haga que una corrida tarde horas y bloquee al
 # resto de los dominios de la cola del scheduler.
 MAX_TLS_CHECKS_PER_RUN = 50
+# Cuantos handshakes TLS corren a la vez dentro de una corrida de un dominio.
+TLS_CONCURRENCY = 10
+# Un chequeo "running" mas viejo que esto se considera colgado (se puede relanzar).
+CHECK_STALE_AFTER = timedelta(minutes=15)
 
 CRTSH_URL = "https://crt.sh/"
 
@@ -208,29 +213,44 @@ def _format_cert_name(name_tuple) -> str:
 
 # --- I/O ----------------------------------------------------------------
 
-async def fetch_crtsh_subdomains(domain: str, http_client: httpx.AsyncClient) -> set[str]:
+async def fetch_crtsh_detailed(domain: str, http_client: httpx.AsyncClient, attempts: int = 2) -> tuple[set[str], str | None]:
     """GET a crt.sh (Certificate Transparency, publico, solo lectura de
-    registros ya existentes -- NUNCA un escaneo activo). Ante cualquier
-    falla (timeout, 503, HTML de error en vez de JSON -- crt.sh a veces
-    devuelve eso bajo carga) se loguea un warning y se devuelve un set
-    vacio: esta funcion NUNCA propaga la excepcion hacia el caller, para
-    que un crt.sh caido no tumbe la corrida completa del dominio (el
-    dominio raiz igual se sigue chequeando por TLS, ver run_domain_check)."""
-    try:
-        response = await http_client.get(
-            CRTSH_URL,
-            params={"q": f"%.{domain}", "output": "json"},
-            headers={"User-Agent": "SentinelOps-ASM/1.0"},
-            timeout=20.0,
-        )
-        response.raise_for_status()
-        entries = response.json()
-        if not isinstance(entries, list):
-            raise ValueError("respuesta de crt.sh no es una lista JSON")
-        return parse_crtsh_entries(entries)
-    except (httpx.HTTPError, ValueError) as exc:
-        logger.warning("no se pudo consultar crt.sh", extra={"domain": domain, "error": str(exc)})
-        return set()
+    registros ya existentes -- NUNCA un escaneo activo). Devuelve
+    (subdominios, error): `error` es None si crt.sh respondio bien, o un
+    mensaje corto si fallo todas las veces (timeout, 502/503, HTML de error
+    en vez de JSON -- crt.sh es famoso por caerse bajo carga, por eso se
+    reintenta una vez). NUNCA propaga la excepcion hacia el caller: un
+    crt.sh caido no tumba la corrida completa del dominio (el dominio raiz
+    igual se sigue chequeando por TLS, ver run_domain_check)."""
+    last_error = "sin respuesta"
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            response = await http_client.get(
+                CRTSH_URL,
+                params={"q": f"%.{domain}", "output": "json"},
+                headers={"User-Agent": "SentinelOps-ASM/1.0"},
+                timeout=25.0,
+            )
+            response.raise_for_status()
+            entries = response.json()
+            if not isinstance(entries, list):
+                raise ValueError("respuesta de crt.sh no es una lista JSON")
+            return parse_crtsh_entries(entries), None
+        except (httpx.HTTPError, ValueError) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"[:200]
+            logger.warning(
+                "no se pudo consultar crt.sh",
+                extra={"domain": domain, "error": last_error, "attempt": attempt},
+            )
+            if attempt < attempts:
+                await asyncio.sleep(2)
+    return set(), last_error
+
+
+async def fetch_crtsh_subdomains(domain: str, http_client: httpx.AsyncClient) -> set[str]:
+    """Version "solo el set" de fetch_crtsh_detailed (set vacio ante falla)."""
+    subdomains, _error = await fetch_crtsh_detailed(domain, http_client)
+    return subdomains
 
 
 async def fetch_tls_certificate(hostname: str, port: int = 443, timeout: float = 10.0) -> dict:
@@ -279,8 +299,6 @@ async def _resolve_hostname_ips(hostname: str, port: int) -> list[str]:
 
 
 async def _do_fetch_tls_certificate(hostname: str, port: int, timeout: float) -> dict:
-    import asyncio
-
     resolved_ips = await _resolve_hostname_ips(hostname, port)
     blocked_ips = [ip for ip in resolved_ips if is_blocked_target_ip(ip)]
     if blocked_ips:
@@ -416,7 +434,7 @@ async def run_domain_check(db: AsyncSession, monitored_domain: MonitoredDomain, 
        certificado TLS que estan sirviendo y genera alertas de vencimiento
        o de fallo de chequeo segun corresponda."""
     domain = monitored_domain.domain
-    discovered = await fetch_crtsh_subdomains(domain, http_client)
+    discovered, crtsh_error = await fetch_crtsh_detailed(domain, http_client)
     discovered.add(domain)
 
     existing_result = await db.execute(
@@ -452,15 +470,57 @@ async def run_domain_check(db: AsyncSession, monitored_domain: MonitoredDomain, 
     await db.flush()
 
     active_assets = [a for a in existing_by_hostname.values() if a.is_active][:MAX_TLS_CHECKS_PER_RUN]
-    for asset in active_assets:
-        await _check_certificate_for_asset(db, monitored_domain, asset, now)
+    # Los handshakes TLS se hacen EN PARALELO (de a TLS_CONCURRENCY): antes
+    # eran uno por uno con hasta 10 s de timeout cada uno, asi que con 50
+    # subdominios "Chequear ahora" podia tardar 8 minutos. Solo la red es
+    # concurrente; las escrituras a la DB siguen siendo secuenciales (una
+    # sola sesion).
+    semaphore = asyncio.Semaphore(TLS_CONCURRENCY)
+
+    async def _fetch(asset: DiscoveredAsset) -> dict:
+        async with semaphore:
+            return await fetch_tls_certificate(asset.hostname)
+
+    cert_results = await asyncio.gather(*(_fetch(a) for a in active_assets)) if active_assets else []
+    cert_errors = 0
+    for asset, cert_data in zip(active_assets, cert_results):
+        if cert_data.get("error"):
+            cert_errors += 1
+        await _check_certificate_for_asset(db, monitored_domain, asset, now, cert_data)
     await db.flush()
+    return {
+        "subdomains": len(discovered),
+        "new_subdomains": len(new_hostnames),
+        "certs_checked": len(active_assets),
+        "cert_errors": cert_errors,
+        "crtsh_error": crtsh_error,
+    }
+
+
+def summarize_check(summary: dict) -> tuple[str, str]:
+    """(status, detail) legibles para MonitoredDomain.last_check_*: "ok" si
+    todo respondio, "partial" si crt.sh fallo (solo se chequeo el dominio
+    raiz, sin descubrir subdominios)."""
+    detail = (
+        f"{summary['subdomains']} hostname(s) conocidos ({summary['new_subdomains']} nuevo(s)), "
+        f"{summary['certs_checked']} certificado(s) chequeados"
+    )
+    if summary["cert_errors"]:
+        detail += f", {summary['cert_errors']} con error de conexion TLS"
+    if summary.get("crtsh_error"):
+        return "partial", (
+            f"crt.sh no respondio ({summary['crtsh_error']}): no se pudieron descubrir subdominios, "
+            f"solo se chequeo el dominio raiz. {detail}"
+        )[:500]
+    return "ok", detail[:500]
 
 
 async def _check_certificate_for_asset(
-    db: AsyncSession, monitored_domain: MonitoredDomain, asset: DiscoveredAsset, now: datetime
+    db: AsyncSession, monitored_domain: MonitoredDomain, asset: DiscoveredAsset, now: datetime,
+    cert_data: dict | None = None,
 ) -> None:
-    cert_data = await fetch_tls_certificate(asset.hostname)
+    if cert_data is None:
+        cert_data = await fetch_tls_certificate(asset.hostname)
 
     cert_result = await db.execute(
         select(SslCertificate).where(
@@ -551,24 +611,61 @@ async def check_all_enabled_domains(session_factory) -> None:
             await run_domain_check_now(session_factory, domain_id, http_client)
 
 
+def is_check_running(domain: MonitoredDomain) -> bool:
+    """True si hay un chequeo en curso (y no quedo colgado hace rato)."""
+    if domain.last_check_status != "running" or domain.last_checked_at is None:
+        return False
+    started = domain.last_checked_at
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return _now() - started < CHECK_STALE_AFTER
+
+
+async def mark_check_started(db: AsyncSession, domain: MonitoredDomain) -> None:
+    domain.last_check_status = "running"
+    domain.last_check_detail = "Chequeo en curso..."
+    domain.last_checked_at = _now()
+    await db.flush()
+
+
+async def _record_check_result(session_factory, domain_id: str, status: str, detail: str) -> None:
+    """Guarda el resultado en una sesion propia: tiene que persistir aunque
+    la sesion del chequeo haya hecho rollback por una excepcion."""
+    async with session_factory() as db:
+        domain = await db.get(MonitoredDomain, domain_id)
+        if domain is None:
+            return
+        domain.last_check_status = status
+        domain.last_check_detail = detail[:500]
+        domain.last_checked_at = _now()
+        await db.commit()
+
+
 async def run_domain_check_now(session_factory, domain_id: str, http_client: httpx.AsyncClient | None = None) -> None:
     """Corre un chequeo para UN dominio, con su propia sesion de DB -- usado
     tanto por el job periodico (check_all_enabled_domains) como por
-    POST /domains/{id}/check-now (via BackgroundTasks, ver app/main.py)."""
+    POST /domains/{id}/check-now (via BackgroundTasks, ver app/main.py).
+    Deja el resultado (ok/partial/error + detalle) en MonitoredDomain.last_check_*
+    para que la UI lo muestre."""
     async with session_factory() as db:
         domain = await db.get(MonitoredDomain, domain_id)
         if domain is None or not domain.is_enabled:
             return
         try:
             if http_client is not None:
-                await run_domain_check(db, domain, http_client)
+                summary = await run_domain_check(db, domain, http_client)
             else:
                 async with httpx.AsyncClient() as owned_client:
-                    await run_domain_check(db, domain, owned_client)
+                    summary = await run_domain_check(db, domain, owned_client)
+            status, detail = summarize_check(summary)
+            domain.last_check_status = status
+            domain.last_check_detail = detail
+            domain.last_checked_at = _now()
             await db.commit()
         except Exception as exc:  # noqa: BLE001 -- un dominio no debe tumbar el scheduler ni dejar la sesion colgada
             logger.error("error chequeando dominio de superficie", extra={"domain_id": domain_id, "error": str(exc)})
             await db.rollback()
+            await _record_check_result(session_factory, domain_id, "error", f"{type(exc).__name__}: {exc}")
 
 
 # --- CRUD ------------------------------------------------------------------
@@ -608,6 +705,32 @@ async def get_domain(db: AsyncSession, domain_id: str, organization_id: str | No
 
 
 async def delete_domain(db: AsyncSession, domain: MonitoredDomain) -> None:
+    """Borra el dominio Y todo lo que se descubrio a partir de el
+    (subdominios, alertas y certificados de esos hostnames) -- antes solo se
+    borraba la fila del dominio y las alertas/subdominios quedaban huerfanos
+    en la pantalla. Los certificados solo se borran si ningun OTRO dominio de
+    la misma organizacion tiene ese hostname."""
+    hostnames_result = await db.execute(
+        select(DiscoveredAsset.hostname).where(DiscoveredAsset.monitored_domain_id == domain.id)
+    )
+    hostnames = {row[0] for row in hostnames_result.all()}
+    await db.execute(sql_delete(SurfaceAlert).where(SurfaceAlert.monitored_domain_id == domain.id))
+    await db.execute(sql_delete(DiscoveredAsset).where(DiscoveredAsset.monitored_domain_id == domain.id))
+    if hostnames:
+        still_used = await db.execute(
+            select(DiscoveredAsset.hostname).where(
+                DiscoveredAsset.organization_id == domain.organization_id,
+                DiscoveredAsset.hostname.in_(hostnames),
+            )
+        )
+        orphan_hostnames = hostnames - {row[0] for row in still_used.all()}
+        if orphan_hostnames:
+            await db.execute(
+                sql_delete(SslCertificate).where(
+                    SslCertificate.organization_id == domain.organization_id,
+                    SslCertificate.hostname.in_(orphan_hostnames),
+                )
+            )
     await db.delete(domain)
     await db.flush()
 

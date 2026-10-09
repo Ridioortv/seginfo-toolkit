@@ -46,6 +46,14 @@ class MonitoredDomain(Base):
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_by: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # Estado del ultimo chequeo ("Chequear ahora" o el job periodico):
+    # "" (nunca chequeado) | "running" | "ok" | "partial" (crt.sh no
+    # respondio, solo se chequeo el dominio raiz) | "error". Sin esto el
+    # chequeo corre en segundo plano y la UI no tenia como saber si
+    # termino, fallo o seguia corriendo.
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_check_status: Mapped[str | None] = mapped_column(String(20), nullable=True, default="")
+    last_check_detail: Mapped[str | None] = mapped_column(String(500), nullable=True, default="")
 
 
 class DiscoveredAsset(Base):

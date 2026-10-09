@@ -48,6 +48,9 @@ export default function Vulnerabilities() {
   const [severityFilter, setSeverityFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [search, setSearch] = useState("");
+  // Fila que el usuario esta por borrar (confirmacion en la propia fila).
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<{ id: string; error: unknown } | null>(null);
 
   const stats = useQuery({
     queryKey: ["vuln-stats", "page"],
@@ -84,6 +87,25 @@ export default function Vulnerabilities() {
       queryClient.invalidateQueries({ queryKey: ["vuln-stats", "page"] });
     },
     onError: (err: unknown) => setTriageActionError(err),
+  });
+
+  const deleteVuln = useMutation({
+    mutationFn: async (id: string) => {
+      await vulnApi.delete(`/vulnerabilities/${id}`);
+      return id;
+    },
+    onSuccess: (id) => {
+      setConfirmDeleteId(null);
+      setDeleteError(null);
+      if (expandedId === id) setExpandedId(null);
+      queryClient.invalidateQueries({ queryKey: ["vulnerabilities"] });
+      // Los contadores (esta pagina y el Dashboard) usan la clave ["vuln-stats", ...].
+      queryClient.invalidateQueries({ queryKey: ["vuln-stats"] });
+    },
+    onError: (err: unknown, id) => {
+      setConfirmDeleteId(null);
+      setDeleteError({ id, error: err });
+    },
   });
 
   return (
@@ -155,6 +177,10 @@ export default function Vulnerabilities() {
         {vulns.data && (
           <>
             <p className="empty-hint" style={{ marginTop: 8 }}>
+              Borrar saca el resultado de la lista; si un escaneo futuro vuelve a detectarlo, reaparece. Para que
+              deje de molestar sin borrarlo, marcalo como "Falso positivo" o "Aceptar riesgo" en Ver detalle.
+            </p>
+            <p className="empty-hint" style={{ marginTop: 8 }}>
               Mostrando {filtered.length} de {vulns.data.length} vulnerabilidad(es){hasActiveFilters ? " (con filtros aplicados)" : ""}.
             </p>
             <table className="data-table">
@@ -188,7 +214,38 @@ export default function Vulnerabilities() {
                       <td>
                         <button className="btn-link" onClick={() => setExpandedId(expandedId === v.id ? null : v.id)}>
                           {expandedId === v.id ? "Ocultar detalle" : "Ver detalle"}
-                        </button>
+                        </button>{" "}
+                        {confirmDeleteId === v.id ? (
+                          <>
+                            <span className="empty-hint">Borrar este resultado? </span>
+                            <button
+                              className="btn-link"
+                              onClick={() => deleteVuln.mutate(v.id)}
+                              disabled={deleteVuln.isPending}
+                            >
+                              {deleteVuln.isPending && deleteVuln.variables === v.id ? "Borrando..." : "Si, borrar"}
+                            </button>{" "}
+                            <button className="btn-link" onClick={() => setConfirmDeleteId(null)}>
+                              Cancelar
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            className="btn-link"
+                            onClick={() => {
+                              setDeleteError(null);
+                              setConfirmDeleteId(v.id);
+                            }}
+                          >
+                            Borrar
+                          </button>
+                        )}
+                        {deleteError && deleteError.id === v.id && (
+                          <p className="error-text" style={{ margin: "4px 0 0" }}>
+                            No se pudo borrar.{" "}
+                            <span className="error-detail">{connectionErrorDetail(deleteError.error)}</span>
+                          </p>
+                        )}
                       </td>
                     </tr>
                     {expandedId === v.id && (

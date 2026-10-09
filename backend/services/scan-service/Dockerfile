@@ -142,6 +142,14 @@ RUN (curl -fsSL https://falco.org/repo/falcosecurity-packages.asc \
 COPY backend/services/scan-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# semgrep en un venv AISLADO + symlink al PATH (app/scanners/semgrep.py lo llama
+# como "semgrep"): sus dependencias no se mezclan con las del servicio.
+COPY backend/services/scan-service/requirements-semgrep.txt .
+RUN python -m venv /opt/semgrep-venv \
+    && /opt/semgrep-venv/bin/pip install --no-cache-dir -r requirements-semgrep.txt \
+    && ln -s /opt/semgrep-venv/bin/semgrep /usr/local/bin/semgrep \
+    && semgrep --version
+
 # Reglas PROPIAS de SentinelOps para semgrep/yara -- NUNCA un ruleset de
 # terceros (ver rules/semgrep/sentinelops-rules.yml y
 # rules/yara/sentinelops.yar para el porque exacto de cada caso). Las

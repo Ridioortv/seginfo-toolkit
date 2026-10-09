@@ -14,6 +14,9 @@ class MonitoredDomainOut(BaseModel):
     is_enabled: bool
     created_by: str
     created_at: datetime
+    last_checked_at: datetime | None = None
+    last_check_status: str | None = ""
+    last_check_detail: str | None = ""
 
     class Config:
         from_attributes = True

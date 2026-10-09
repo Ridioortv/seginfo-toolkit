@@ -1,0 +1,22 @@
+# Configuracion de gitleaks (usada por CI, el hook pre-commit y tools/).
+# Extiende las reglas por defecto y solo permite valores de EJEMPLO conocidos.
+title = "SentinelOps gitleaks"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Placeholders documentados (no son secretos reales)"
+regexes = [
+  '''changeme[-a-zA-Z0-9]*''',
+  '''dev-secret-change-me''',
+  '''dev-encryption-key-change-me''',
+  '''<[A-Za-z0-9_ -]+>''',
+]
+paths = [
+  '''\.env\.example$''',
+  '''licensing-server/\.env\.example$''',
+  '''docs/.*''',
+  '''.*/tests/.*''',
+  '''package-lock\.json$''',
+]

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { assetApi, scanApi } from "../services/api";
 import type { AssetOut, ScanJobOut } from "../types";
@@ -23,6 +24,62 @@ const CRITICALITY_LABELS: Record<Criticality, string> = {
   critical: "Critica",
 };
 
+const ACTIVE_SCAN_STATUSES = new Set(["pending", "running"]);
+
+const SCAN_STATUS_LABELS: Record<string, string> = {
+  pending: "En cola...",
+  running: "Escaneando...",
+  completed: "Completado",
+  failed: "Fallo",
+  cancelled: "Cancelado",
+  scanner_unavailable: "Scanner no disponible",
+};
+
+// Estado en vivo del escaneo lanzado desde la fila de un activo: sin esto el
+// boton solo decia "lanzado" y despues no habia forma de saber si el escaneo
+// termino, fallo o seguia corriendo (parecia que "no escaneaba").
+function AssetScanStatus({ jobId }: { jobId: string }) {
+  const job = useQuery({
+    queryKey: ["asset-scan-job", jobId],
+    queryFn: async () => (await scanApi.get<ScanJobOut>(`/scans/${jobId}`)).data,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status && !ACTIVE_SCAN_STATUSES.has(status) ? false : 3000;
+    },
+  });
+
+  if (job.isError) {
+    return (
+      <p className="error-text" style={{ margin: "4px 0 0" }}>
+        No se pudo consultar el estado del escaneo.{" "}
+        <span className="error-detail">{connectionErrorDetail(job.error)}</span>
+      </p>
+    );
+  }
+  if (!job.data) return <p className="empty-hint" style={{ margin: "4px 0 0" }}>Consultando estado...</p>;
+
+  const { status, findings, error_message: errorMessage } = job.data;
+  const label = SCAN_STATUS_LABELS[status] ?? status;
+  if (status === "completed") {
+    return (
+      <p className="empty-hint" style={{ margin: "4px 0 0" }}>
+        {label}: {findings.length} hallazgo(s).{" "}
+        <Link to="/vulnerabilities">Ver vulnerabilidades</Link> o el detalle en <Link to="/scans">Escaneos</Link>.
+      </p>
+    );
+  }
+  if (ACTIVE_SCAN_STATUSES.has(status)) {
+    return <p className="empty-hint" style={{ margin: "4px 0 0" }}>{label}</p>;
+  }
+  return (
+    <p className="error-text" style={{ margin: "4px 0 0" }}>
+      {label}.{" "}
+      {errorMessage && <span className="error-detail">{errorMessage}</span>}{" "}
+      <Link to="/scans">Ver en Escaneos</Link>
+    </p>
+  );
+}
+
 export default function Assets() {
   const queryClient = useQueryClient();
 
@@ -35,6 +92,8 @@ export default function Assets() {
   const [formError, setFormError] = useState<string | null>(null);
 
   const [scanFeedback, setScanFeedback] = useState<{ assetId: string; ok: boolean; message: string } | null>(null);
+  // assetId -> id del ultimo escaneo lanzado desde la fila (para mostrar su estado en vivo).
+  const [scanJobs, setScanJobs] = useState<Record<string, string>>({});
 
   const assets = useQuery({
     queryKey: ["assets"],
@@ -83,17 +142,17 @@ export default function Assets() {
       ).data;
     },
     onSuccess: (job, asset) => {
-      setScanFeedback({
-        assetId: asset.id,
-        ok: true,
-        message: `Escaneo "${job.name}" lanzado -- segui el progreso en la pagina Escaneos.`,
-      });
+      setScanJobs((prev) => ({ ...prev, [asset.id]: job.id }));
+      setScanFeedback(null);
     },
     onError: (err: unknown, asset) => {
+      // connectionErrorDetail trae el motivo real (HTTP 422 + detalle del
+      // backend, sin respuesta, etc.) en vez del generico "Request failed
+      // with status code 422".
       setScanFeedback({
         assetId: asset.id,
         ok: false,
-        message: err instanceof Error ? err.message : "No se pudo lanzar el escaneo.",
+        message: `No se pudo lanzar el escaneo. ${connectionErrorDetail(err)}`,
       });
     },
   });
@@ -201,6 +260,7 @@ export default function Assets() {
                         {scanFeedback.message}
                       </p>
                     )}
+                    {scanJobs[a.id] && <AssetScanStatus jobId={scanJobs[a.id]} />}
                   </td>
                 </tr>
               ))}

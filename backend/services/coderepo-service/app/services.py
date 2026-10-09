@@ -30,7 +30,7 @@ import os
 import re
 import shutil
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from sqlalchemy import select
@@ -43,6 +43,18 @@ from app.models import RepoScanStatus, RepoTarget, SecretFinding, SecretSeverity
 logger = configure_logging("coderepo-service")
 
 VULN_SERVICE_URL = os.getenv("VULN_SERVICE_URL", "http://vuln-service:8000")
+
+# Un escaneo "running" mas viejo que esto se considera colgado (se puede relanzar).
+SCAN_STALE_AFTER = timedelta(minutes=30)
+
+
+def _warn(warnings: list[str] | None, message: str) -> None:
+    """Registra por que una herramienta (gitleaks/trivy) no pudo correr. Antes
+    esos fallos solo iban al log y el escaneo terminaba "ok, 0 hallazgos" --
+    un resultado limpio falso, justo lo peor para una herramienta de seguridad."""
+    logger.warning(message)
+    if warnings is not None:
+        warnings.append(message)
 
 # Mismo nombre de variable de entorno y mismo default que
 # scan-service/app/scanners/trivy.py -- OJO: en docker-compose.yml este
@@ -227,14 +239,54 @@ def should_create_secret_finding(existing_same_key: list[dict]) -> bool:
 # Cualquier mensaje que pudiera contener la URL con token SIEMPRE pasa por
 # redact_url antes de guardarse o loguearse.
 
+def explain_clone_error(stderr: str, branch: str, has_token: bool) -> str:
+    """Traduce el error crudo de `git clone` a un mensaje accionable. El caso
+    tipico: GitHub contesta con un pedido de usuario/contraseña tanto para un
+    repo PRIVADO sin token como para uno que NO EXISTE (para no revelar cual
+    de los dos es) -- y git, sin terminal, lo reporta como "could not read
+    Username ... No such device or address", que no le dice nada al usuario.
+    El texto crudo (ya redactado) se conserva al final para poder diagnosticar."""
+    raw = stderr.strip()
+    lower = raw.lower()
+    hint = None
+    if "remote branch" in lower and "not found" in lower:
+        hint = (
+            f"la rama '{branch}' no existe en ese repositorio. Revisa el nombre de la rama "
+            "(muchos repos usan 'master' en vez de 'main')."
+        )
+    elif any(m in lower for m in (
+        "could not read username", "could not read password", "terminal prompts disabled",
+        "authentication failed", "repository not found", "invalid username or password",
+        "returned error: 403", "returned error: 401", "returned error: 404",
+    )):
+        if has_token:
+            hint = (
+                "no se pudo acceder al repositorio con el token guardado. Puede que la URL este mal escrita, "
+                "que el token haya vencido o que no tenga permiso de lectura sobre ese repo."
+            )
+        else:
+            hint = (
+                "el repositorio no existe o es privado. Revisa que la URL este bien escrita "
+                "(https://github.com/usuario/repo); si es privado, borralo y volve a agregarlo con un "
+                "token de acceso con permiso de solo lectura."
+            )
+    if hint is None:
+        return raw
+    return f"{hint} (detalle de git: {raw[:400]})"
+
+
 async def _clone_repo(repo_url: str, branch: str, token: str | None, dest_dir: str) -> None:
     """Clona el repo COMPLETO (sin --depth 1: necesitamos el historial
     completo de git para gitleaks). Timeout de 180s."""
     authenticated_url = build_authenticated_clone_url(repo_url, token)
     cmd = ["git", "clone", "--branch", branch, "--single-branch", authenticated_url, dest_dir]
+    # GIT_TERMINAL_PROMPT=0: sin credenciales git falla al instante con un
+    # error claro en vez de intentar preguntar usuario/contraseña por una
+    # terminal que no existe en el contenedor.
+    git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     try:
         proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=git_env
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
     except asyncio.TimeoutError:
@@ -245,7 +297,7 @@ async def _clone_repo(repo_url: str, branch: str, token: str | None, dest_dir: s
         raise RuntimeError("git no esta instalado en este contenedor")
 
     if proc.returncode != 0:
-        raise RuntimeError(redact_url(stderr.decode(errors="replace")[:2000]))
+        raise RuntimeError(explain_clone_error(redact_url(stderr.decode(errors="replace")[:2000]), branch, bool(token)))
 
 
 def _directory_size_bytes(path: str) -> int:
@@ -266,7 +318,7 @@ def _directory_size_bytes(path: str) -> int:
     return total
 
 
-async def _run_gitleaks(repo_path: str) -> list[dict]:
+async def _run_gitleaks(repo_path: str, warnings: list[str] | None = None) -> list[dict]:
     """--exit-code 0 es CLAVE: gitleaks por default sale con codigo 1 si
     encuentra leaks, y sin este flag este wrapper interpretaria eso como
     que el comando "fallo" cuando en realidad funciono perfecto y
@@ -287,16 +339,16 @@ async def _run_gitleaks(repo_path: str) -> list[dict]:
         )
         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
     except FileNotFoundError:
-        logger.warning("gitleaks no esta instalado en este contenedor")
+        _warn(warnings, "gitleaks no esta instalado en este contenedor: no se buscaron secretos")
         return []
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
-        logger.warning("gitleaks: timeout de escaneo (300s)")
+        _warn(warnings, "gitleaks: timeout de escaneo (300s): la busqueda de secretos quedo incompleta")
         return []
 
     if proc.returncode != 0:
-        logger.warning("gitleaks fallo", extra={"error": stderr.decode(errors="replace")[:500]})
+        _warn(warnings, f"gitleaks fallo, no se buscaron secretos: {stderr.decode(errors='replace')[:300]}")
         return []
 
     try:
@@ -307,7 +359,7 @@ async def _run_gitleaks(repo_path: str) -> list[dict]:
     return parse_gitleaks_report(raw_json)
 
 
-async def _run_trivy_fs(repo_path: str, repo_name: str) -> list[dict]:
+async def _run_trivy_fs(repo_path: str, repo_name: str, warnings: list[str] | None = None) -> list[dict]:
     """Analogo a scan-service/app/scanners/trivy.py::TrivyDriver.run, con
     el mismo reintento sin --skip-db-update una vez si la DB no esta
     inicializada."""
@@ -318,12 +370,12 @@ async def _run_trivy_fs(repo_path: str, repo_name: str) -> list[dict]:
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=540)
     except FileNotFoundError:
-        logger.warning("trivy no esta instalado en este contenedor")
+        _warn(warnings, "trivy no esta instalado en este contenedor: no se buscaron vulnerabilidades")
         return []
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
-        logger.warning("trivy: timeout de escaneo (540s)")
+        _warn(warnings, "trivy: timeout de escaneo (540s): la busqueda de vulnerabilidades quedo incompleta")
         return []
 
     raw = stdout.decode(errors="replace")
@@ -339,13 +391,13 @@ async def _run_trivy_fs(repo_path: str, repo_name: str) -> list[dict]:
             except asyncio.TimeoutError:
                 proc2.kill()
                 await proc2.wait()
-                logger.warning("trivy: timeout de escaneo (540s, incluyo descarga inicial de la DB)")
+                _warn(warnings, "trivy: timeout de escaneo (540s, incluyo descarga inicial de la DB)")
                 return []
             if proc2.returncode not in (0, 1):
-                logger.warning("trivy fallo (reintento sin --skip-db-update)", extra={"error": stderr2.decode(errors="replace")[:500]})
+                _warn(warnings, f"trivy fallo, no se buscaron vulnerabilidades: {stderr2.decode(errors='replace')[:300]}")
                 return []
             return parse_trivy_vuln_json(stdout2.decode(errors="replace"), repo_name)
-        logger.warning("trivy fallo", extra={"error": err[:500]})
+        _warn(warnings, f"trivy fallo, no se buscaron vulnerabilidades: {err[:300]}")
         return []
 
     return parse_trivy_vuln_json(raw, repo_name)
@@ -475,8 +527,9 @@ async def run_repo_scan(db: AsyncSession, target: RepoTarget) -> None:
                     f"({MAX_CLONE_SIZE_BYTES} bytes) -- escaneo cancelado"
                 )
 
-            secret_items = await _run_gitleaks(tmp_dir)
-            vuln_items = await _run_trivy_fs(tmp_dir, target.name)
+            tool_warnings: list[str] = []
+            secret_items = await _run_gitleaks(tmp_dir, tool_warnings)
+            vuln_items = await _run_trivy_fs(tmp_dir, target.name, tool_warnings)
 
             for item in secret_items:
                 await _create_secret_finding_if_needed(db, target, item)
@@ -492,7 +545,9 @@ async def run_repo_scan(db: AsyncSession, target: RepoTarget) -> None:
 
             target.last_scan_at = now
             target.last_scan_status = RepoScanStatus.ok
-            target.last_scan_error = ""
+            # El escaneo se completo, pero si una herramienta no pudo correr
+            # se deja dicho (en vez de mostrar un "0 hallazgos" enganoso).
+            target.last_scan_error = ("Aviso: " + " | ".join(tool_warnings))[:2000] if tool_warnings else ""
             await db.flush()
         except Exception as exc:  # noqa: BLE001 -- un repo roto nunca debe tumbar el sync ni el scheduler
             error_message = redact_url(str(exc))[:2000]
@@ -521,6 +576,36 @@ async def scan_all_enabled_targets(session_factory) -> None:
         await run_repo_scan_now(session_factory, target_id)
 
 
+def is_scan_running(target: RepoTarget) -> bool:
+    """True si hay un escaneo en curso (y no quedo colgado hace rato)."""
+    if target.last_scan_status != RepoScanStatus.running or target.last_scan_at is None:
+        return False
+    started = target.last_scan_at
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return _now() - started < SCAN_STALE_AFTER
+
+
+async def mark_scan_started(db: AsyncSession, target: RepoTarget) -> None:
+    target.last_scan_status = RepoScanStatus.running
+    target.last_scan_error = ""
+    target.last_scan_at = _now()
+    await db.flush()
+
+
+async def _record_scan_error(session_factory, target_id: str, message: str) -> None:
+    """Guarda el error en una sesion propia: tiene que persistir aunque la
+    sesion del escaneo haya hecho rollback por una excepcion."""
+    async with session_factory() as db:
+        target = await db.get(RepoTarget, target_id)
+        if target is None:
+            return
+        target.last_scan_status = RepoScanStatus.error
+        target.last_scan_error = message[:2000]
+        target.last_scan_at = _now()
+        await db.commit()
+
+
 async def run_repo_scan_now(session_factory, target_id: str) -> None:
     """Corre un escaneo para UN repo, con su propia sesion de DB -- usado
     tanto por el job periodico (scan_all_enabled_targets) como por
@@ -533,8 +618,10 @@ async def run_repo_scan_now(session_factory, target_id: str) -> None:
             await run_repo_scan(db, target)
             await db.commit()
         except Exception as exc:  # noqa: BLE001 -- un repo no debe tumbar el scheduler ni dejar la sesion colgada
-            logger.error("error en scan de repositorio", extra={"repo_target_id": target_id, "error": redact_url(str(exc))})
+            message = redact_url(str(exc))
+            logger.error("error en scan de repositorio", extra={"repo_target_id": target_id, "error": message})
             await db.rollback()
+            await _record_scan_error(session_factory, target_id, f"{type(exc).__name__}: {message}")
 
 
 # --- CRUD --------------------------------------------------------------------

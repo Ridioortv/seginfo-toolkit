@@ -1547,3 +1547,28 @@ y sumar a "Agentes de escaneo remoto" un agente WAN (internet).
   scanner no soportado. Tests: `remote-agent/test_wan_agent.py`.
 - Se quito de `scan-service/Dockerfile` el comentario que seguia mencionando
   gvm-cli.
+
+### Correccion (2026-10-05): se perdieron "Agente Docker" y "Agente LAN"
+
+Bug propio de la limpieza anterior, encontrado con la salida real de
+`scan_agents` que paso Manu (solo quedaba el Agente WAN; el Agente Docker
+recibia 401 en cada poll). Cadena de causas:
+
+1. `tools/agregar-agente-wan.ps1` armaba `BOOTSTRAP_AGENTS` con
+   `ConvertFrom-Json`/`ConvertTo-Json`, que en Windows PowerShell 5.1 no
+   tratan igual los arrays que en PowerShell 7: dejo la lista anidada
+   (`[[{docker},{lan}],{wan}]`).
+2. `prune_stale_bootstrap_agents` solo entendia entradas planas: leyo una sola
+   key valida (la del WAN) y borro Docker y LAN por "no figurar" -- junto con
+   sus escaneos remotos. Ademas el bucle de alta de agentes reventaba con la
+   entrada anidada.
+3. Arreglo: `services.parse_bootstrap_entries` lee `BOOTSTRAP_AGENTS` de forma
+   tolerante (aplana listas anidadas) y lo usan el alta, la poda, la
+   auto-reparacion y `resolve_bootstrap_api_key`. La poda ya NO borra nada si
+   hay mas `"key"` en el texto que entradas legibles. El script ahora no usa
+   JSON de PowerShell: extrae los pares con una regex, reconstruye una lista
+   plana y repara un `.env` ya roto. Al reiniciar scan-service, Docker y LAN se
+   vuelven a crear solos. Tests: `test_parse_bootstrap_entries.py` y los casos
+   nuevos de `test_stale_bootstrap_agents.py`. Los escaneos remotos viejos de
+   esos dos agentes se perdieron con el borrado.
+

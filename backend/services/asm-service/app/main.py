@@ -50,6 +50,18 @@ async def lifespan(app: FastAPI):
                 f"UPDATE {table} SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
             ))
 
+        # Estado del ultimo chequeo por dominio (ver MonitoredDomain.last_check_*).
+        await conn.execute(text("ALTER TABLE monitored_domains ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ"))
+        await conn.execute(text("ALTER TABLE monitored_domains ADD COLUMN IF NOT EXISTS last_check_status VARCHAR(20) DEFAULT ''"))
+        await conn.execute(text("ALTER TABLE monitored_domains ADD COLUMN IF NOT EXISTS last_check_detail VARCHAR(500) DEFAULT ''"))
+        # Un chequeo "running" al arrancar quedo huerfano (el servicio se
+        # reinicio a mitad de camino): se marca como interrumpido.
+        await conn.execute(text(
+            "UPDATE monitored_domains SET last_check_status = 'error', "
+            "last_check_detail = 'Chequeo interrumpido por un reinicio del servicio' "
+            "WHERE last_check_status = 'running'"
+        ))
+
     # Un solo job periodico que chequea todos los dominios habilitados de
     # todas las organizaciones. next_run_time=ahora para que corra una vez
     # apenas arranca el servicio (mismo truco que el refresh de trivy/nuclei
@@ -135,6 +147,13 @@ async def check_domain_now(
     domain = await services.get_domain(db, domain_id, org_id_from_claims(claims))
     if domain is None:
         raise HTTPException(status_code=404, detail="Dominio monitoreado no encontrado")
+    if services.is_check_running(domain):
+        return {"detail": "Ya hay un chequeo en curso para este dominio"}
+    # Se marca "running" ANTES de devolver la respuesta: asi el GET /domains
+    # que hace la UI justo despues ya lo ve en curso (si no, parecia que el
+    # boton no hacia nada hasta que terminaba el chequeo en segundo plano).
+    await services.mark_check_started(db, domain)
+    await db.commit()
     background_tasks.add_task(services.run_domain_check_now, SessionLocal, domain_id)
     logger.info("chequeo manual disparado", extra={"domain_id": domain_id, "actor": claims.get("sub")})
     return {"detail": "Chequeo disparado en segundo plano"}

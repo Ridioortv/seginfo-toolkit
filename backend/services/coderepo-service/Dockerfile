@@ -57,7 +57,11 @@ ENV PYTHONPATH=/app
 # tambien se le entrega a `sentinelops`: sin este chown, refresh_trivy_db
 # y cada escaneo individual fallarian con permiso denegado al intentar
 # escribir en la cache.
-RUN groupadd -r -g 1001 sentinelops && useradd -r -u 1001 -g sentinelops -M -s /usr/sbin/nologin sentinelops \
+# /root es 0700 por defecto: sin esto el usuario no-root no puede ni entrar a
+# /root/.cache/trivy (aunque ese subdirectorio sea suyo) y trivy fallaba en
+# silencio. 711 = solo atravesar, no listar.
+RUN chmod 711 /root \
+    && groupadd -r -g 1001 sentinelops && useradd -r -u 1001 -g sentinelops -M -s /usr/sbin/nologin sentinelops \
     && chown -R sentinelops:sentinelops /app /root/.cache/trivy
 USER sentinelops
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { coderepoApi } from "../services/api";
@@ -24,6 +24,22 @@ function truncateHash(hash: string): string {
 function formatFileLocation(filePath: string, startLine: number | null): string {
   return startLine != null ? `${filePath}:${startLine}` : filePath;
 }
+
+// Un escaneo "running" de hace mas de esto se da por colgado (el backend
+// aplica el mismo criterio) -- evita consultar para siempre.
+const STALE_RUNNING_MS = 30 * 60 * 1000;
+
+function isScanRunning(r: RepoTargetOut): boolean {
+  if (r.last_scan_status !== "running" || !r.last_scan_at) return false;
+  return Date.now() - new Date(r.last_scan_at).getTime() < STALE_RUNNING_MS;
+}
+
+const SCAN_STATUS_LABELS: Record<string, string> = {
+  never: "Nunca escaneado",
+  running: "Escaneando...",
+  ok: "OK",
+  error: "Error",
+};
 
 export default function CodeRepos() {
   const queryClient = useQueryClient();
@@ -51,7 +67,20 @@ export default function CodeRepos() {
   const repos = useQuery({
     queryKey: ["code-repos"],
     queryFn: async () => (await coderepoApi.get<RepoTargetOut[]>("/repos")).data,
+    // Mientras algun repo se esta escaneando (clonar + gitleaks + trivy corre
+    // en segundo plano en el backend) se consulta cada 3 s para mostrar cuando termina.
+    refetchInterval: (query) => ((query.state.data ?? []).some(isScanRunning) ? 3000 : false),
   });
+
+  const anyScanRunning = (repos.data ?? []).some(isScanRunning);
+  const wasScanRunning = useRef(false);
+  useEffect(() => {
+    // Cuando termina el ultimo escaneo en curso, se refrescan los secretos.
+    if (wasScanRunning.current && !anyScanRunning) {
+      queryClient.invalidateQueries({ queryKey: ["code-repo-secrets"] });
+    }
+    wasScanRunning.current = anyScanRunning;
+  }, [anyScanRunning, queryClient]);
 
   const secrets = useQuery({
     queryKey: ["code-repo-secrets", selectedRepoId, secretsFilter],
@@ -112,7 +141,7 @@ export default function CodeRepos() {
       setScanRepoError(null);
       setScanFeedback({
         repoId,
-        message: "Escaneo disparado -- clonar el repositorio y correr gitleaks/trivy puede tardar varios minutos.",
+        message: "Escaneo iniciado -- el estado se actualiza solo en la columna \"Ultimo escaneo\" (clonar y correr gitleaks/trivy puede tardar varios minutos).",
       });
       queryClient.invalidateQueries({ queryKey: ["code-repos"] });
     },
@@ -256,8 +285,9 @@ export default function CodeRepos() {
                   <td className="mono">{r.branch}</td>
                   <td>{r.has_token ? "Privado" : "Publico"}</td>
                   <td>
-                    <StatusBadge value={r.last_scan_status} />
-                    {r.last_scan_status === "error" && r.last_scan_error && (
+                    <StatusBadge value={r.last_scan_status === "running" && !isScanRunning(r) ? "failed" : r.last_scan_status} />
+                    <span className="empty-hint"> {isScanRunning(r) ? SCAN_STATUS_LABELS.running : r.last_scan_status === "running" ? "Sin respuesta (colgado)" : SCAN_STATUS_LABELS[r.last_scan_status] ?? ""}</span>
+                    {r.last_scan_error && r.last_scan_status !== "running" && (
                       <div className="empty-hint" style={{ margin: "4px 0 0" }}>
                         <span className="error-detail">{r.last_scan_error}</span>
                       </div>
@@ -278,9 +308,9 @@ export default function CodeRepos() {
                       className="btn-link"
                       title="Puede tardar varios minutos: clona el repositorio y corre gitleaks y trivy"
                       onClick={() => scanRepo.mutate(r.id)}
-                      disabled={scanRepo.isPending && scanRepo.variables === r.id}
+                      disabled={(scanRepo.isPending && scanRepo.variables === r.id) || isScanRunning(r)}
                     >
-                      {scanRepo.isPending && scanRepo.variables === r.id ? "Escaneando..." : "Escanear ahora"}
+                      {(scanRepo.isPending && scanRepo.variables === r.id) || isScanRunning(r) ? "Escaneando..." : "Escanear ahora"}
                     </button>{" "}
                     <button
                       className="btn-link"

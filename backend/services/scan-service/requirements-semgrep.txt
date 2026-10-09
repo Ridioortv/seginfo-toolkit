@@ -1,0 +1,6 @@
+# Semgrep (SAST): motor LGPL-2.1, se invoca como CLI (nunca se importa como
+# libreria python) -- ver app/scanners/semgrep.py, que ademas fija --config a
+# reglas PROPIAS (rules/semgrep/), nunca a 'auto'/'p/...'.
+# Vive en un venv aislado (/opt/semgrep-venv, ver Dockerfile) para que sus
+# dependencias no choquen con las del servicio. pip-audit en CI lo revisa tambien.
+semgrep==1.179.0

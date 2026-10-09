@@ -295,6 +295,34 @@ function Get-TrivyFindings([string]$rawJson) {
     return $findings
 }
 
+function Get-TrivyPackages([string]$rawJson) {
+    # Inventario COMPLETO de paquetes (Results[].Packages, requiere
+    # --list-all-pkgs) -- alimenta "Imagenes y Paquetes". Mismo shape que
+    # app/scanners/trivy.py::_parse_trivy_packages.
+    $packages = New-Object System.Collections.Generic.List[object]
+    if (-not $rawJson.Trim()) { return ,$packages.ToArray() }
+    try { $payload = $rawJson | ConvertFrom-Json } catch { return ,$packages.ToArray() }
+    foreach ($result in @($payload.Results)) {
+        if (-not $result) { continue }
+        $pkgType = [string]$result.Type
+        if (-not $pkgType) { $pkgType = [string]$result.Class }
+        foreach ($pkg in @($result.Packages)) {
+            if (-not $pkg -or -not $pkg.Name) { continue }
+            $layer = $null
+            if ($pkg.Layer -and $pkg.Layer.DiffID) { $layer = [string]$pkg.Layer.DiffID }
+            $packages.Add(@{
+                target = [string]$result.Target
+                type = $pkgType
+                name = [string]$pkg.Name
+                version = [string]$pkg.Version
+                arch = [string]$pkg.Arch
+                layer = $layer
+            })
+        }
+    }
+    return ,$packages.ToArray()
+}
+
 function Invoke-TrivyScan([string]$target, [string]$mode) {
     $subcommand = if ($mode -eq "fs") { "fs" } else { "image" }
     # Mismo motivo que en Invoke-NucleiScan: el timeout de trivy (interno,
@@ -303,14 +331,16 @@ function Invoke-TrivyScan([string]$target, [string]$mode) {
     # recuperar un job 'assigned' huerfano -- si no, el backend se lo
     # puede volver a repartir antes de que Submit-Result llegue a avisar
     # que termino (o que hizo timeout), y el job nunca sale de "assigned".
-    $scannerArgs = @($subcommand, "--format", "json", "--quiet", "--timeout", "6m", $target)
+    # --list-all-pkgs: ademas de las vulnerabilidades, lista TODOS los
+    # paquetes detectados (para "Imagenes y Paquetes").
+    $scannerArgs = @($subcommand, "--format", "json", "--quiet", "--timeout", "6m", "--list-all-pkgs", $target)
     $result = Invoke-ScannerBinary -exe (Resolve-ScannerBinary "trivy") -scannerArgs $scannerArgs -timeoutSeconds 420
     if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (420s) contra $target" } }
     if (($result.ExitCode -ne 0) -and ($result.ExitCode -ne 1)) {
         $errMsg = $result.Stderr; $errMsg = $errMsg.Substring(0, [Math]::Min(2000, $errMsg.Length))
         return @{ Raw = $result.Stdout; Findings = @(); Error = $errMsg }
     }
-    return @{ Raw = $result.Stdout; Findings = (Get-TrivyFindings $result.Stdout); Error = "" }
+    return @{ Raw = $result.Stdout; Findings = (Get-TrivyFindings $result.Stdout); Packages = (Get-TrivyPackages $result.Stdout); Error = "" }
 }
 
 function ConvertTo-JsonFindingsArray($items) {
@@ -331,7 +361,10 @@ function ConvertTo-JsonFindingsArray($items) {
     return "[" + ($parts -join ",") + "]"
 }
 
-function Submit-Result([string]$jobId, [string]$status, $findings, [string]$err, [string]$rawOutput = "agente LAN (PowerShell)") {
+function Submit-Result([string]$jobId, [string]$status, $findings, [string]$err, [string]$rawOutput = "agente LAN (PowerShell)", $packages = $null) {
+    # Con --list-all-pkgs el JSON crudo de trivy puede pesar varios MB: el
+    # backend igual lo recorta a 200 KB, asi que no tiene sentido mandarlo entero.
+    if ($rawOutput.Length -gt 200000) { $rawOutput = $rawOutput.Substring(0, 200000) }
     # Los campos escalares los serializa ConvertTo-Json normal (ahi no hay
     # bug); "findings" se arma aparte con ConvertTo-JsonFindingsArray (ver
     # arriba) y se inserta a mano en el mismo objeto -- reemplazando el
@@ -343,7 +376,13 @@ function Submit-Result([string]$jobId, [string]$status, $findings, [string]$err,
     # ConvertTo-Json real.
     $scalarPayload = (@{ status = $status; raw_output = $rawOutput; error_message = $err } | ConvertTo-Json -Depth 4 -Compress).TrimEnd()
     $findingsJson = ConvertTo-JsonFindingsArray $findings
-    $body = $scalarPayload.Substring(0, $scalarPayload.Length - 1) + ',"findings":' + $findingsJson + '}'
+    $packagesPart = ""
+    if ($packages -and @($packages).Count -gt 0) {
+        # Solo trivy: inventario completo de paquetes (mismo armado a mano del
+        # array que findings, por el mismo bug de 1 solo elemento).
+        $packagesPart = ',"packages":' + (ConvertTo-JsonFindingsArray $packages)
+    }
+    $body = $scalarPayload.Substring(0, $scalarPayload.Length - 1) + ',"findings":' + $findingsJson + $packagesPart + '}'
     # Windows PowerShell 5.1 manda -Body <string> con la codificacion ANSI de
     # la maquina, no UTF-8, aunque el Content-Type diga utf-8 -- si el JSON
     # de nuclei/trivy trae UN SOLO caracter no-ASCII (tildes, comillas
@@ -677,8 +716,8 @@ while ($true) {
                     Submit-Result $jobId "failed" @() $res.Error $res.Raw
                     Write-Log "job $($jobId.Substring(0,8)): fallo -- $($res.Error)"
                 } else {
-                    Submit-Result $jobId "completed" $res.Findings "" $res.Raw
-                    Write-Log "job $($jobId.Substring(0,8)): completado, $($res.Findings.Count) hallazgo(s)"
+                    Submit-Result $jobId "completed" $res.Findings "" $res.Raw $res.Packages
+                    Write-Log "job $($jobId.Substring(0,8)): completado, $($res.Findings.Count) hallazgo(s), $(@($res.Packages).Count) paquete(s)"
                 }
                 continue
             }

@@ -31,6 +31,7 @@ def _now() -> datetime:
 
 class RepoScanStatus(str, enum.Enum):
     never = "never"
+    running = "running"
     ok = "ok"
     error = "error"
 

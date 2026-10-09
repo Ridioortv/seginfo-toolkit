@@ -267,5 +267,7 @@ class AgentPollResponse(BaseModel):
 class AgentResultSubmit(BaseModel):
     status: Literal["completed", "failed"]
     findings: list[dict] = Field(default_factory=list)
+    # Solo trivy: inventario completo de paquetes (ver AgentScanJob.packages).
+    packages: list[dict] = Field(default_factory=list, max_length=50000)
     raw_output: str = ""
     error_message: str = ""

@@ -1,5 +1,25 @@
+# --- Endurecimiento comun (YAML anchors) -----------------------------------
+# no-new-privileges: un proceso dentro del contenedor no puede ganar privilegios
+#   via setuid/setcap aunque encuentre un binario con esos bits.
+# cap_drop ALL: las APIs FastAPI no necesitan ninguna capability de Linux.
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+
+x-api-hardening: &api-hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+# BIND_ADDR controla en que interfaz se publican los puertos de las APIs y el
+# frontend. Default 127.0.0.1 = solo esta PC. Para exponerlo en la LAN poneme
+# BIND_ADDR=0.0.0.0 en .env (y pone un firewall / reverse proxy con TLS delante).
+# Postgres, Redis y OpenSearch NUNCA se publican fuera de 127.0.0.1.
+
 services:
   postgres:
+    <<: *hardening
     restart: unless-stopped
     image: postgres:16-alpine
     env_file: .env
@@ -10,7 +30,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
@@ -18,10 +38,11 @@ services:
       retries: 10
 
   redis:
+    <<: *hardening
     restart: unless-stopped
     image: redis:7.2-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -29,6 +50,7 @@ services:
       retries: 10
 
   opensearch:
+    <<: *hardening
     restart: unless-stopped
     image: opensearchproject/opensearch:2.16.0
     environment:
@@ -36,7 +58,7 @@ services:
       - DISABLE_SECURITY_PLUGIN=true
       - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
       interval: 10s
@@ -45,6 +67,7 @@ services:
       start_period: 60s
 
   auth-service:
+    <<: *api-hardening
     restart: unless-stopped
     build:
       context: .
@@ -59,9 +82,10 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8001:8000"
+      - "${BIND_ADDR:-127.0.0.1}:8001:8000"
 
   asset-service:
+    <<: *api-hardening
     restart: unless-stopped
     build:
       context: .
@@ -76,10 +100,11 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8002:8000"
+      - "${BIND_ADDR:-127.0.0.1}:8002:8000"
 
 
   scan-service:
+    <<: *hardening
     restart: unless-stopped
     build:
       context: .
@@ -122,7 +147,7 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8003:8000"
+      - "${BIND_ADDR:-127.0.0.1}:8003:8000"
 
   # Agente de escaneo remoto que corre DENTRO del stack. Reusa la imagen de
   # scan-service (ya trae trivy/nuclei) y hace polling a scan-service
@@ -133,6 +158,7 @@ services:
   # el MISMO Dockerfile que scan-service: buildkit reusa toda la cache,
   # asi que no reconstruye nada pesado.
   remote-agent:
+    <<: *hardening
     restart: unless-stopped
     build:
       context: .
@@ -200,6 +226,7 @@ services:
   # Misma imagen que scan-service (trae trivy/nuclei/zap/semgrep/gitleaks).
   # Se auto-registra via BOOTSTRAP_AGENTS (ver .env, REMOTE_AGENT_WAN_KEY).
   remote-agent-wan:
+    <<: *hardening
     restart: unless-stopped
     build:
       context: .
@@ -223,6 +250,7 @@ services:
         condition: service_healthy
 
   vuln-service:
+    <<: *api-hardening
     restart: unless-stopped
     build:
       context: .
@@ -237,9 +265,10 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8004:8000"
+      - "${BIND_ADDR:-127.0.0.1}:8004:8000"
 
   siem-service:
+    <<: *api-hardening
     restart: unless-stopped
     build:
       context: .
@@ -266,9 +295,10 @@ services:
       opensearch:
         condition: service_started
     ports:
-      - "8005:8000"
+      - "${BIND_ADDR:-127.0.0.1}:8005:8000"
 
   soar-service:
+    <<: *api-hardening
     restart: unless-stopped
     build:
       context: .
@@ -289,9 +319,10 @@ services:
       notification-service:
         condition: service_started
     ports:
-      - "8006:8000"
+      - "${BIND_ADDR:-127.0.0.1}:8006:8000"
 
   case-service:
+    <<: *api-hardening
     restart: unless-stopped
     build:
       context: .
@@ -307,9 +338,10 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8007:8000"
+      - "${BIND_ADDR:-127.0.0.1}:8007:8000"
 
   purple-service:
+    <<: *api-hardening
     restart: unless-stopped
     build:
       context: .
@@ -325,9 +357,10 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8008:8000"
+      - "${BIND_ADDR:-127.0.0.1}:8008:8000"
 
   report-service:
+    <<: *api-hardening
     restart: unless-stopped
     build:
       context: .
@@ -349,9 +382,10 @@ services:
       notification-service:
         condition: service_started
     ports:
-      - "8009:8000"
+      - "${BIND_ADDR:-127.0.0.1}:8009:8000"
 
   notification-service:
+    <<: *api-hardening
     restart: unless-stopped
     build:
       context: .
@@ -367,9 +401,10 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8010:8000"
+      - "${BIND_ADDR:-127.0.0.1}:8010:8000"
 
   integration-service:
+    <<: *api-hardening
     restart: unless-stopped
     build:
       context: .
@@ -385,9 +420,10 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8011:8000"
+      - "${BIND_ADDR:-127.0.0.1}:8011:8000"
 
   threatintel-service:
+    <<: *api-hardening
     restart: unless-stopped
     build:
       context: .
@@ -402,9 +438,10 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8012:8000"
+      - "${BIND_ADDR:-127.0.0.1}:8012:8000"
 
   asm-service:
+    <<: *api-hardening
     restart: unless-stopped
     build:
       context: .
@@ -419,9 +456,10 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8013:8000"
+      - "${BIND_ADDR:-127.0.0.1}:8013:8000"
 
   cloud-service:
+    <<: *api-hardening
     restart: unless-stopped
     build:
       context: .
@@ -436,9 +474,10 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8014:8000"
+      - "${BIND_ADDR:-127.0.0.1}:8014:8000"
 
   coderepo-service:
+    <<: *hardening
     restart: unless-stopped
     build:
       context: .
@@ -459,13 +498,34 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "8015:8000"
+      - "${BIND_ADDR:-127.0.0.1}:8015:8000"
 
   frontend:
+    <<: *hardening
     restart: unless-stopped
     build:
       context: ./frontend
-    env_file: .env
+      # Las URLs/ID de Google se hornean en el bundle al construir (Vite). Los
+      # defaults del Dockerfile son el stack local; .env los sobreescribe.
+      args:
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8001}
+        VITE_ASSET_API_BASE_URL: ${VITE_ASSET_API_BASE_URL:-http://localhost:8002}
+        VITE_SCAN_API_BASE_URL: ${VITE_SCAN_API_BASE_URL:-http://localhost:8003}
+        VITE_VULN_API_BASE_URL: ${VITE_VULN_API_BASE_URL:-http://localhost:8004}
+        VITE_SIEM_API_BASE_URL: ${VITE_SIEM_API_BASE_URL:-http://localhost:8005}
+        VITE_SOAR_API_BASE_URL: ${VITE_SOAR_API_BASE_URL:-http://localhost:8006}
+        VITE_CASE_API_BASE_URL: ${VITE_CASE_API_BASE_URL:-http://localhost:8007}
+        VITE_PURPLE_API_BASE_URL: ${VITE_PURPLE_API_BASE_URL:-http://localhost:8008}
+        VITE_REPORT_API_BASE_URL: ${VITE_REPORT_API_BASE_URL:-http://localhost:8009}
+        VITE_NOTIFICATION_API_BASE_URL: ${VITE_NOTIFICATION_API_BASE_URL:-http://localhost:8010}
+        VITE_INTEGRATION_API_BASE_URL: ${VITE_INTEGRATION_API_BASE_URL:-http://localhost:8011}
+        VITE_THREATINTEL_API_BASE_URL: ${VITE_THREATINTEL_API_BASE_URL:-http://localhost:8012}
+        VITE_ASM_API_BASE_URL: ${VITE_ASM_API_BASE_URL:-http://localhost:8013}
+        VITE_CLOUD_API_BASE_URL: ${VITE_CLOUD_API_BASE_URL:-http://localhost:8014}
+        VITE_CODEREPO_API_BASE_URL: ${VITE_CODEREPO_API_BASE_URL:-http://localhost:8015}
+    # Sin env_file: el contenedor estatico no necesita ningun secreto (antes
+    # recibia JWT_SECRET_KEY, claves de agentes, etc. en su entorno).
     depends_on:
       - auth-service
       - asset-service
@@ -483,7 +543,7 @@ services:
       - cloud-service
       - coderepo-service
     ports:
-      - "5173:5173"
+      - "${BIND_ADDR:-127.0.0.1}:5173:8080"
 
 networks:
   default: {}

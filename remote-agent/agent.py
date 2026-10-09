@@ -112,6 +112,32 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 SCAN_SERVICE_URL = os.environ.get("SCAN_SERVICE_URL", "http://localhost:8003").rstrip("/")
+def _check_service_url(url):
+    """Valida SCAN_SERVICE_URL: solo http/https (urllib tambien abriria file:// o
+    ftp://) y avisa si la AGENT_API_KEY viajaria en claro hacia un host publico."""
+    from urllib.parse import urlparse
+    import ipaddress
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        sys.stderr.write("ERROR: SCAN_SERVICE_URL invalida (%r): solo se permite http:// o https://\n" % url)
+        sys.exit(2)
+    if parsed.scheme == "http":
+        host = parsed.hostname
+        local = host in ("localhost", "host.docker.internal") or "." not in host  # nombre de servicio Docker
+        if not local:
+            try:
+                ip = ipaddress.ip_address(host)
+                local = ip.is_private or ip.is_loopback or ip.is_link_local
+            except ValueError:
+                pass
+        if not local:
+            sys.stderr.write(
+                "ADVERTENCIA: SCAN_SERVICE_URL usa http:// hacia un host publico: la AGENT_API_KEY y los "
+                "resultados viajan SIN CIFRAR. Usa https:// (tunel o reverse proxy con TLS).\n"
+            )
+
+
+_check_service_url(SCAN_SERVICE_URL)
 AGENT_API_KEY = os.environ.get("AGENT_API_KEY", "")
 POLL_INTERVAL_SECONDS = int(os.environ.get("POLL_INTERVAL_SECONDS", "10"))
 # Cuantos jobs puede correr este agente EN PARALELO (ver _process_job/
@@ -211,12 +237,15 @@ def poll_jobs() -> list[dict]:
     return result.get("jobs", [])
 
 
-def submit_result(job_id: str, status: str, findings: list[dict], raw_output: str = "", error_message: str = "") -> None:
-    _api_request(
-        "POST",
-        f"/agents/results/{job_id}",
-        {"status": status, "findings": findings, "raw_output": raw_output[:200_000], "error_message": error_message[:2000]},
-    )
+def submit_result(
+    job_id: str, status: str, findings: list[dict], raw_output: str = "", error_message: str = "",
+    packages: list[dict] | None = None,
+) -> None:
+    payload = {"status": status, "findings": findings, "raw_output": raw_output[:200_000], "error_message": error_message[:2000]}
+    if packages:
+        # Solo trivy (inventario completo de paquetes, para "Imagenes y Paquetes").
+        payload["packages"] = packages
+    _api_request("POST", f"/agents/results/{job_id}", payload)
 
 
 
@@ -233,7 +262,10 @@ _TRIVY_TIMEOUT_SECONDS = 600
 def run_trivy(target: str, options: dict) -> tuple[str, list[dict], str]:
     mode = options.get("mode", "image") if isinstance(options, dict) else "image"
     subcommand = "fs" if mode == "fs" else "image"
-    cmd = ["trivy", subcommand, "--format", "json", "--quiet", "--timeout", "8m", target]
+    # --list-all-pkgs: ademas de las vulnerabilidades, trivy lista TODOS los
+    # paquetes detectados (alimenta "Imagenes y Paquetes", ver
+    # _parse_trivy_packages).
+    cmd = ["trivy", subcommand, "--format", "json", "--quiet", "--timeout", "8m", "--list-all-pkgs", target]
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=_TRIVY_TIMEOUT_SECONDS)
     except FileNotFoundError:
@@ -265,6 +297,32 @@ def _parse_trivy_json(raw_json: str) -> list[dict]:
                 "fixed_version": vuln.get("FixedVersion"),
             })
     return findings
+
+
+def _parse_trivy_packages(raw_json: str) -> list[dict]:
+    """Inventario COMPLETO de paquetes (Results[].Packages, requiere
+    --list-all-pkgs). Mismo shape que app/scanners/trivy.py."""
+    packages: list[dict] = []
+    try:
+        payload = json.loads(raw_json) if raw_json.strip() else {}
+    except json.JSONDecodeError:
+        return packages
+    for result in payload.get("Results", []) or []:
+        target_name = result.get("Target", "")
+        pkg_type = result.get("Type", "") or result.get("Class", "")
+        for pkg in result.get("Packages", []) or []:
+            name = pkg.get("Name")
+            if not name:
+                continue
+            packages.append({
+                "target": target_name,
+                "type": pkg_type,
+                "name": name,
+                "version": pkg.get("Version", ""),
+                "arch": pkg.get("Arch", ""),
+                "layer": (pkg.get("Layer") or {}).get("DiffID"),
+            })
+    return packages
 
 
 # ==========================================================================
@@ -916,8 +974,10 @@ def _process_job(job: dict) -> None:
         log(f"job {job_id}: fallo -- {error}")
         submit_result(job_id, "failed", [], raw_output=raw, error_message=error)
     else:
-        log(f"job {job_id}: completado, {len(findings)} hallazgo(s)")
-        submit_result(job_id, "completed", findings, raw_output=raw)
+        packages = _parse_trivy_packages(raw) if scanner_type == "trivy" else None
+        extra = f", {len(packages)} paquete(s)" if packages else ""
+        log(f"job {job_id}: completado, {len(findings)} hallazgo(s){extra}")
+        submit_result(job_id, "completed", findings, raw_output=raw, packages=packages)
 
 
 _job_executor = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_JOBS)

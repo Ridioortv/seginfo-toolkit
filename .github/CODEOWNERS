@@ -1,0 +1,10 @@
+# Todo cambio requiere revision del dueño (activar "Require review from Code Owners"
+# en la proteccion de la rama main).
+*                               @Ridioortv
+/.github/                       @Ridioortv
+/backend/shared/                @Ridioortv
+/backend/services/auth-service/ @Ridioortv
+/licensing-server/              @Ridioortv
+/docker-compose.yml             @Ridioortv
+/.gitignore                     @Ridioortv
+/.gitleaks.toml                 @Ridioortv

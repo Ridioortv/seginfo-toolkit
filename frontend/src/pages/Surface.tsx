@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { asmApi } from "../services/api";
 import type { MonitoredDomainOut, DiscoveredAssetOut, SurfaceAlertOut } from "../types";
@@ -17,6 +17,22 @@ function alertTypeLabel(value: string): string {
   return ALERT_TYPE_LABELS[value] ?? value;
 }
 
+// Un chequeo "running" de hace mas de esto se da por colgado (el backend
+// aplica el mismo criterio) -- evita que la pantalla quede consultando para siempre.
+const STALE_RUNNING_MS = 15 * 60 * 1000;
+
+function isCheckRunning(d: MonitoredDomainOut): boolean {
+  if (d.last_check_status !== "running" || !d.last_checked_at) return false;
+  return Date.now() - new Date(d.last_checked_at).getTime() < STALE_RUNNING_MS;
+}
+
+const CHECK_STATUS_LABELS: Record<string, string> = {
+  running: "Chequeando...",
+  ok: "OK",
+  partial: "Parcial",
+  error: "Fallo",
+};
+
 export default function Surface() {
   const queryClient = useQueryClient();
 
@@ -25,11 +41,29 @@ export default function Surface() {
   const [selectedDomainId, setSelectedDomainId] = useState<string | null>(null);
   const [checkFeedback, setCheckFeedback] = useState<{ domainId: string; message: string } | null>(null);
   const [alertsFilter, setAlertsFilter] = useState<"all" | "pending">("pending");
+  // Dominio que el usuario esta por borrar (confirmacion en la propia fila,
+  // en vez de un confirm() del navegador que algunos navegadores bloquean).
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<{ domainId: string; message: string } | null>(null);
 
   const domains = useQuery({
     queryKey: ["asm-domains"],
     queryFn: async () => (await asmApi.get<MonitoredDomainOut[]>("/domains")).data,
+    // Mientras algun dominio se esta chequeando, se consulta cada 3 s para
+    // mostrar cuando termina (el chequeo corre en segundo plano en el backend).
+    refetchInterval: (query) => ((query.state.data ?? []).some(isCheckRunning) ? 3000 : false),
   });
+
+  const anyRunning = (domains.data ?? []).some(isCheckRunning);
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    // Cuando termina el ultimo chequeo en curso, se refrescan subdominios y alertas.
+    if (wasRunning.current && !anyRunning) {
+      queryClient.invalidateQueries({ queryKey: ["asm-domain-assets"] });
+      queryClient.invalidateQueries({ queryKey: ["asm-alerts"] });
+    }
+    wasRunning.current = anyRunning;
+  }, [anyRunning, queryClient]);
 
   const assets = useQuery({
     queryKey: ["asm-domain-assets", selectedDomainId],
@@ -56,7 +90,7 @@ export default function Surface() {
       queryClient.invalidateQueries({ queryKey: ["asm-domains"] });
     },
     onError: (err: unknown) => {
-      setFormError(err instanceof Error ? err.message : "No se pudo agregar el dominio.");
+      setFormError(`No se pudo agregar el dominio. ${connectionErrorDetail(err)}`);
     },
   });
 
@@ -68,7 +102,16 @@ export default function Surface() {
       if (selectedDomainId === domainId) {
         setSelectedDomainId(null);
       }
+      setConfirmDeleteId(null);
+      setDeleteError(null);
       queryClient.invalidateQueries({ queryKey: ["asm-domains"] });
+      // El backend borra tambien los subdominios y alertas del dominio.
+      queryClient.invalidateQueries({ queryKey: ["asm-domain-assets"] });
+      queryClient.invalidateQueries({ queryKey: ["asm-alerts"] });
+    },
+    onError: (err: unknown, domainId) => {
+      setConfirmDeleteId(null);
+      setDeleteError({ domainId, message: `No se pudo borrar el dominio. ${connectionErrorDetail(err)}` });
     },
   });
 
@@ -78,14 +121,15 @@ export default function Surface() {
       return domainId;
     },
     onSuccess: (domainId) => {
-      setCheckFeedback({ domainId, message: "Chequeo disparado -- los resultados pueden tardar unos segundos en aparecer." });
-      queryClient.invalidateQueries({ queryKey: ["asm-domain-assets", domainId] });
-      queryClient.invalidateQueries({ queryKey: ["asm-alerts"] });
+      setCheckFeedback({ domainId, message: "Chequeo iniciado -- el resultado aparece en la columna \"Ultimo chequeo\"." });
+      // El backend ya dejo el dominio en "running": al refrescar la lista la
+      // pantalla empieza a consultar sola hasta que termine.
+      queryClient.invalidateQueries({ queryKey: ["asm-domains"] });
     },
     onError: (err: unknown, domainId) => {
       setCheckFeedback({
         domainId,
-        message: err instanceof Error ? err.message : "No se pudo disparar el chequeo.",
+        message: `No se pudo disparar el chequeo. ${connectionErrorDetail(err)}`,
       });
     },
   });
@@ -155,6 +199,7 @@ export default function Surface() {
                 <th>Dominio</th>
                 <th>Habilitado</th>
                 <th>Agregado por</th>
+                <th>Ultimo chequeo</th>
                 <th></th>
               </tr>
             </thead>
@@ -169,23 +214,64 @@ export default function Surface() {
                   <td>{d.is_enabled ? "si" : "no"}</td>
                   <td>{d.created_by}</td>
                   <td>
+                    {d.last_check_status ? (
+                      <>
+                        <strong className={d.last_check_status === "error" ? "error-text" : undefined}>
+                          {isCheckRunning(d)
+                            ? CHECK_STATUS_LABELS.running
+                            : d.last_check_status === "running"
+                              ? "Sin respuesta (colgado)"
+                              : CHECK_STATUS_LABELS[d.last_check_status] ?? d.last_check_status}
+                        </strong>
+                        {d.last_checked_at && (
+                          <span className="empty-hint"> {new Date(d.last_checked_at).toLocaleString()}</span>
+                        )}
+                        {d.last_check_detail && (
+                          <p className="empty-hint" style={{ margin: "2px 0 0" }}>{d.last_check_detail}</p>
+                        )}
+                      </>
+                    ) : (
+                      <span className="empty-hint">Todavia no se chequeo</span>
+                    )}
+                  </td>
+                  <td>
                     <button
                       className="btn-link"
                       onClick={() => checkNow.mutate(d.id)}
-                      disabled={checkNow.isPending && checkNow.variables === d.id}
+                      disabled={(checkNow.isPending && checkNow.variables === d.id) || isCheckRunning(d)}
                     >
-                      {checkNow.isPending && checkNow.variables === d.id ? "Chequeando..." : "Chequear ahora"}
+                      {(checkNow.isPending && checkNow.variables === d.id) || isCheckRunning(d)
+                        ? "Chequeando..."
+                        : "Chequear ahora"}
                     </button>{" "}
-                    <button
-                      className="btn-link"
-                      onClick={() => {
-                        if (confirm(`Dejar de monitorear ${d.domain}?`)) {
-                          deleteDomain.mutate(d.id);
-                        }
-                      }}
-                    >
-                      Borrar
-                    </button>
+                    {confirmDeleteId === d.id ? (
+                      <>
+                        <span className="empty-hint">Dejar de monitorear {d.domain} y borrar sus subdominios y alertas? </span>
+                        <button
+                          className="btn-link"
+                          onClick={() => deleteDomain.mutate(d.id)}
+                          disabled={deleteDomain.isPending}
+                        >
+                          {deleteDomain.isPending && deleteDomain.variables === d.id ? "Borrando..." : "Si, borrar"}
+                        </button>{" "}
+                        <button className="btn-link" onClick={() => setConfirmDeleteId(null)}>
+                          Cancelar
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="btn-link"
+                        onClick={() => {
+                          setDeleteError(null);
+                          setConfirmDeleteId(d.id);
+                        }}
+                      >
+                        Borrar
+                      </button>
+                    )}
+                    {deleteError && deleteError.domainId === d.id && (
+                      <p className="error-text" style={{ margin: "4px 0 0" }}>{deleteError.message}</p>
+                    )}
                     {checkFeedback && checkFeedback.domainId === d.id && (
                       <p className="empty-hint" style={{ margin: "4px 0 0" }}>
                         {checkFeedback.message}
@@ -196,7 +282,7 @@ export default function Surface() {
               ))}
               {domains.data.length === 0 && (
                 <tr>
-                  <td colSpan={4} className="empty-hint">
+                  <td colSpan={5} className="empty-hint">
                     Sin dominios monitoreados todavia. Agrega uno arriba.
                   </td>
                 </tr>

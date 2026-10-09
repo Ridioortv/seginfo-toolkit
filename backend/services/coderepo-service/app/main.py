@@ -11,6 +11,7 @@ from datetime import datetime
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -42,6 +43,17 @@ async def lifespan(app: FastAPI):
         # Tablas 100% nuevas -- create_all alcanza, no hace falta ningun
         # ALTER TABLE/backfill.
         await conn.run_sync(Base.metadata.create_all)
+        # La columna es VARCHAR(5) (largo de "never", ver native_enum=False en
+        # models.py): "running" no entra, hay que ensancharla en instalaciones
+        # que ya tienen la tabla (create_all no hace ALTER).
+        await conn.execute(text("ALTER TABLE repo_targets ALTER COLUMN last_scan_status TYPE VARCHAR(20)"))
+        # Un escaneo "running" al arrancar quedo huerfano (el servicio se
+        # reinicio a mitad de camino): se marca como interrumpido.
+        await conn.execute(text(
+            "UPDATE repo_targets SET last_scan_status = 'error', "
+            "last_scan_error = 'Escaneo interrumpido por un reinicio del servicio' "
+            "WHERE last_scan_status = 'running'"
+        ))
 
     # Job periodico que escanea todos los repositorios habilitados de
     # todas las organizaciones. next_run_time=ahora para que corra una vez
@@ -159,6 +171,13 @@ async def scan_repo_now(
     target = await services.get_target(db, repo_id, org_id_from_claims(claims))
     if target is None:
         raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+    if services.is_scan_running(target):
+        return {"detail": "Ya hay un escaneo en curso para este repositorio"}
+    # Se marca "running" ANTES de responder: asi el GET /repos que hace la UI
+    # justo despues ya lo ve en curso (antes seguia diciendo "never" hasta que
+    # terminaba el escaneo en segundo plano, y parecia que no habia pasado nada).
+    await services.mark_scan_started(db, target)
+    await db.commit()
     background_tasks.add_task(services.run_repo_scan_now, SessionLocal, repo_id)
     logger.info("scan manual disparado", extra={"repo_target_id": repo_id, "actor": claims.get("sub")})
     return {"detail": "Escaneo disparado en segundo plano"}

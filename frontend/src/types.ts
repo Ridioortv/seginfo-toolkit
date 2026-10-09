@@ -373,6 +373,10 @@ export interface MonitoredDomainOut {
   is_enabled: boolean;
   created_by: string;
   created_at: string;
+  last_checked_at?: string | null;
+  // "" (nunca) | "running" | "ok" | "partial" | "error"
+  last_check_status?: string | null;
+  last_check_detail?: string | null;
 }
 
 export interface DiscoveredAssetOut {
@@ -440,7 +444,7 @@ export interface CloudFindingOut {
   acknowledged_by: string;
 }
 
-export type RepoScanStatus = "never" | "ok" | "error";
+export type RepoScanStatus = "never" | "running" | "ok" | "error";
 export type SecretSeverity = "critical" | "high" | "medium";
 
 export interface RepoTargetOut {
