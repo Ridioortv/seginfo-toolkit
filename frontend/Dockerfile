@@ -46,7 +46,7 @@ RUN npm run build
 # --- Etapa 2: nginx SIN privilegios sirviendo solo archivos estaticos -------
 # (antes corria el servidor de desarrollo de Vite como root: sin minificar,
 # con HMR y con sus CVEs de file-read/path-traversal expuestas en la red)
-FROM nginxinc/nginx-unprivileged:1.27-alpine
+FROM nginxinc/nginx-unprivileged:1.31-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 8080
