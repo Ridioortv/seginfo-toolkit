@@ -3,5 +3,5 @@ starlette==1.7.0  # pin explicito: pip-audit corre con --no-deps y no vería est
 uvicorn[standard]==0.30.6
 pydantic==2.9.2
 cryptography==50.0.2
-httpx==0.27.2
+httpx==0.28.1
 psycopg2-binary==2.9.9
