@@ -12,7 +12,7 @@ redis==5.0.8
 prometheus-client==0.20.0
 python-multipart==0.0.32
 httpx==0.27.2
-opensearch-py[async]==2.7.1
+opensearch-py[async]==3.2.0
 
 pytest==9.1.1  # solo se usa para correr backend/services/siem-service/tests/ (make test / CI); no se importa en produccion
 pytest-asyncio==1.4.0  # sin este plugin los tests @pytest.mark.asyncio se SALTEABAN en silencio (pytest 8) o fallan (pytest 9)
