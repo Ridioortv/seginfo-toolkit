@@ -1,5 +1,5 @@
 # --- Etapa 1: build estatico (Vite) ----------------------------------------
-FROM node:22-slim AS build
+FROM node:25-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 # npm ci = instalacion reproducible desde el lockfile (el CI audita ese mismo lock)
