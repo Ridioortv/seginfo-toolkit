@@ -11,6 +11,12 @@ updates:
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/backend/services/asm-service"
     schedule:
@@ -28,6 +34,12 @@ updates:
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/backend/services/asset-service"
     schedule:
@@ -45,6 +57,12 @@ updates:
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/backend/services/auth-service"
     schedule:
@@ -62,6 +80,12 @@ updates:
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/backend/services/case-service"
     schedule:
@@ -79,6 +103,12 @@ updates:
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/backend/services/cloud-service"
     schedule:
@@ -96,6 +126,12 @@ updates:
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/backend/services/coderepo-service"
     schedule:
@@ -113,6 +149,12 @@ updates:
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/backend/services/integration-service"
     schedule:
@@ -130,6 +172,12 @@ updates:
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/backend/services/notification-service"
     schedule:
@@ -147,6 +195,12 @@ updates:
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/backend/services/purple-service"
     schedule:
@@ -164,6 +218,12 @@ updates:
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/backend/services/report-service"
     schedule:
@@ -181,6 +241,12 @@ updates:
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/backend/services/scan-service"
     schedule:
@@ -198,6 +264,12 @@ updates:
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/backend/services/siem-service"
     schedule:
@@ -215,6 +287,12 @@ updates:
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/backend/services/soar-service"
     schedule:
@@ -232,6 +310,12 @@ updates:
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/backend/services/threatintel-service"
     schedule:
@@ -249,6 +333,12 @@ updates:
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/backend/services/vuln-service"
     schedule:
@@ -263,15 +353,14 @@ updates:
       day: "monday"
     open-pull-requests-limit: 5
     labels: ["dependencies", "security"]
+    groups:
+      pip-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "docker"
     directory: "/licensing-server"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-    labels: ["dependencies", "security"]
-  - package-ecosystem: "pip"
-    directory: "/remote-agent"
     schedule:
       interval: "weekly"
       day: "monday"

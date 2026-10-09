@@ -13,4 +13,5 @@ prometheus-client==0.20.0
 python-multipart==0.0.32
 httpx==0.27.2
 
+aiosqlite==0.22.1  # solo para los tests (SQLite en memoria); no se usa en produccion
 pytest==9.1.1  # solo se usa para correr backend/services/vuln-service/tests/ (make test / CI); no se importa en produccion

@@ -61,12 +61,16 @@ jobs:
         # PYSEC-2026-1325 (ecdsa, CVE-2024-23342): ataque de timing en la FIRMA ECDSA P-256.
         # Aca solo se firma con HS256 (HMAC), nunca con ECDSA, y no hay version corregida:
         # riesgo aceptado y documentado en docs/security-hardening.md.
+        # GHSA-3qf3-8w2g-rqmx (python-jose, confusion de algoritmo): sin version corregida.
+        # Mitigado: todo jwt.decode fija algorithms=[...] (HS256 con secreto aleatorio en
+        # shared/security.py; asimetrico tomado del JWKS en auth-service/app/oidc.py,
+        # con test de regresion). Pendiente: migrar a PyJWT/authlib (docs/security-hardening.md).
         run: |
           status=0
           for f in backend/services/*/requirements*.txt licensing-server/requirements.txt remote-agent/requirements.txt; do
             [ -f "$f" ] || continue
             echo "== $f =="
-            pip-audit -r "$f" --progress-spinner off --ignore-vuln PYSEC-2026-1325 || status=1
+            pip-audit -r "$f" --progress-spinner off --ignore-vuln PYSEC-2026-1325 --ignore-vuln GHSA-3qf3-8w2g-rqmx || status=1
           done
           exit $status
 

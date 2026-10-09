@@ -37,12 +37,15 @@ jobs:
           done
       - name: Correr pytest por servicio
         run: |
+          status=0
           for svc in auth-service purple-service scan-service vuln-service \
                      asset-service case-service integration-service \
                      notification-service report-service siem-service soar-service; do
             echo "== pytest: $svc =="
-            (cd backend/services/$svc && python3 -m pytest -q)
+            # exit 5 = servicio sin tests: no es un fallo
+            (cd backend/services/$svc && python3 -m pytest -q) || { rc=$?; [ $rc -eq 5 ] || status=1; }
           done
+          exit $status
 
   frontend-build:
     name: Frontend - typecheck + build
