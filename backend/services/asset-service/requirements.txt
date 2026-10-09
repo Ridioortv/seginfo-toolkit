@@ -8,7 +8,7 @@ pydantic==2.9.2
 pydantic-settings==2.5.2
 python-jose[cryptography]==3.5.0
 cryptography==50.0.2  # pin explicito (antes lo traia python-jose sin version): CVEs de cryptography <49
-redis==5.0.8
+redis==8.1.0
 prometheus-client==0.20.0
 python-multipart==0.0.32
 
