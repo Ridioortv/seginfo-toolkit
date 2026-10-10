@@ -3,7 +3,7 @@ en forma al de auth-service; cada microservicio valida el JWT de forma
 independiente usando el mismo JWT_SECRET_KEY compartido via backend.shared)."""
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError
+from jwt import PyJWTError as JWTError
 from backend.shared.security import decode_token
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)

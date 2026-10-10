@@ -9,7 +9,7 @@ Estado del endurecimiento aplicado y lo que queda por hacer. Todo lo marcado com
 |---|---|
 | Secretos en git | `.gitignore` ampliado (`.env*`, claves, tfstate, copias de clientes); `.env.bak` y `sentinel para sofi` fuera del indice; hook pre-commit (`.githooks/`) y `gitleaks` en CI frenan nuevas fugas. |
 | Secretos locales | `tools/rotar-secretos.ps1` reemplaza JWT, clave de cifrado, password de Postgres y claves de agentes por valores aleatorios fuertes (sin imprimirlos). |
-| Dependencias Python | `cryptography` 43→50, `python-jose` 3.3→3.5 (CVE-2024-33663/33664), `python-multipart` 0.0.9→0.0.32, `requests` 2.32.3→2.34.2, `fastapi` 0.115→0.142 + `starlette` 0.38→1.7 (7 CVEs). Resultado `pip-audit`: 0 vulnerabilidades explotables. |
+| Dependencias Python | `cryptography` 43→50, `python-jose` reemplazado por `PyJWT` 2.15 (GHSA-3qf3-8w2g-rqmx sin parche en python-jose; tambien elimina `ecdsa`, PYSEC-2026-1325), `python-multipart` 0.0.9→0.0.32, `requests` 2.32.3→2.34.2, `fastapi` 0.115→0.142 + `starlette` 0.38→1.7 (7 CVEs). Resultado `pip-audit`: 0 vulnerabilidades explotables. |
 | Semgrep | Aislado en un venv propio dentro de la imagen de scan-service (sus pins viejos bloqueaban pydantic/FastAPI); actualizado a 1.179. |
 | Tests | `pytest-asyncio` agregado a scan-service y siem-service: 7 tests async se saltaban en silencio. Ahora corren. |
 | Frontend | Ya no corre el servidor de desarrollo de Vite como root: build estatico servido por nginx **sin privilegios** con CSP, X-Frame-Options, etc., sin secretos en el entorno. Vite 5→8, Vitest 2→5, React Router 6→7: `npm audit` 0 vulnerabilidades. |
@@ -33,6 +33,5 @@ Estado del endurecimiento aplicado y lo que queda por hacer. Todo lo marcado com
 - **scan-service** conserva capabilities elevadas (`NET_ADMIN`, `SYS_ADMIN`, `SYS_PTRACE`, ...) para zeek/falco (decision de producto). Es el contenedor mas privilegiado: no lo expongas fuera de localhost.
 - **OpenSearch** corre con `DISABLE_SECURITY_PLUGIN=true` y **Redis** sin password: aceptable porque solo escuchan en la red interna de Docker y en `127.0.0.1`. Antes de exponerlos o desplegar en cloud, activar autenticacion y TLS.
 - **Rate limiter** falla abierto: si Redis se cae, el login deja de limitar intentos (prioriza disponibilidad). Monitoreá Redis.
-- **ecdsa (CVE-2024-23342)**: ataque de timing en firmas ECDSA P-256; aca los JWT se firman con HS256, no aplica. Sin version corregida disponible (ignorado en CI, PYSEC-2026-1325).
 - **infra/terraform e infra/k8s** (plantillas de despliegue cloud) tienen hallazgos de Trivy (EKS publico, security contexts, egress abierto). No estan en uso; **corregirlas antes de desplegar a produccion**. El CI las reporta sin bloquear.
 - Trafico entre navegador y APIs es HTTP en localhost. Para uso en red/internet poner un reverse proxy con TLS (`licensing-server/Caddyfile` es un ejemplo) y ajustar `connect-src` en `frontend/nginx.conf`.

@@ -7,8 +7,8 @@ el token de cada request.
 import time
 
 import pytest
-from jose import jwt
-from jose.exceptions import ExpiredSignatureError
+import jwt
+from jwt.exceptions import ExpiredSignatureError
 
 from backend.shared import security
 
@@ -83,7 +83,7 @@ class TestAccessToken:
         header, payload, signature = token.split(".")
         tampered_char = "A" if signature[0] != "A" else "B"
         tampered = f"{header}.{payload}.{tampered_char}{signature[1:]}"
-        with pytest.raises(jwt.JWTError):
+        with pytest.raises(jwt.PyJWTError):
             security.decode_token(tampered)
 
 

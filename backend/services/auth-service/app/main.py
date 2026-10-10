@@ -10,7 +10,7 @@ from fastapi import FastAPI, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
-from jose import JWTError
+from jwt import PyJWTError as JWTError
 from sqlalchemy import text
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, make_asgi_app

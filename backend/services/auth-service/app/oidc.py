@@ -29,8 +29,8 @@ clave de firma que el proveedor ya rotó.
 import time
 from urllib.parse import urlencode
 import httpx
-from jose import jwt as jose_jwt
-from jose.exceptions import JWTError as JoseJWTError
+import jwt as pyjwt
+from jwt.exceptions import PyJWTError
 from backend.shared.crypto import decrypt_secret
 from app.models import SsoConfig
 
@@ -152,8 +152,8 @@ async def validate_id_token(config: SsoConfig, id_token: str, expected_nonce: st
     jwks = await fetch_jwks(jwks_uri)
 
     try:
-        unverified_header = jose_jwt.get_unverified_header(id_token)
-    except JoseJWTError as exc:
+        unverified_header = pyjwt.get_unverified_header(id_token)
+    except PyJWTError as exc:
         raise OidcError(f"id_token con header invalido: {exc}") from exc
 
     kid = unverified_header.get("kid")
@@ -161,10 +161,10 @@ async def validate_id_token(config: SsoConfig, id_token: str, expected_nonce: st
     if key is None:
         raise OidcError("no se encontro la clave publica (kid) del proveedor para verificar el id_token")
 
-    # BUG DE SEGURIDAD (corregido aca): antes se llamaba a jose_jwt.decode()
+    # BUG DE SEGURIDAD (corregido aca): antes se llamaba a pyjwt.decode()
     # con algorithms=[unverified_header.get("alg", "RS256")] -- es decir, la
     # lista de algoritmos PERMITIDOS se armaba a partir del header del propio
-    # id_token, que todavia no esta verificado en este punto. jose.jws
+    # id_token, que todavia no esta verificado en este punto. PyJWT
     # chequea que el alg del header figure en esa lista antes de construir
     # la key para verificar; si la lista es exactamente "lo que diga el
     # header", ese chequeo es un placebo -- CUALQUIER alg que el atacante
@@ -172,7 +172,7 @@ async def validate_id_token(config: SsoConfig, id_token: str, expected_nonce: st
     # propio id_token con header {"alg": "HS256", "kid": <kid real>}, lo
     # firma con HMAC-SHA256 usando como "secreto" la clave publica RSA del
     # proveedor (es PUBLICA, esta en este mismo JWKS) en su representacion
-    # PEM/JWK, y jose_jwt.decode con esa key (construida como RSA pero
+    # PEM/JWK, y pyjwt.decode con esa key (construida como RSA pero
     # forzada a tratarse como clave HMAC porque algorithms=["HS256"]) puede
     # terminar "verificando" la firma -- login SSO falsificado para
     # cualquier email, de cualquier organizacion con SSO configurado.
@@ -188,11 +188,16 @@ async def validate_id_token(config: SsoConfig, id_token: str, expected_nonce: st
         )
 
     try:
-        claims = jose_jwt.decode(
-            id_token, key, algorithms=[algorithm],
+        # La clave se construye con el algoritmo ya elegido desde el JWKS
+        # (PyJWK valida que kty/alg sean coherentes) y PyJWT rechaza usar una
+        # clave PEM/JWK publica como secreto HMAC. Se exigen exp/iss/aud.
+        signing_key = pyjwt.PyJWK.from_dict(key, algorithm=algorithm).key
+        claims = pyjwt.decode(
+            id_token, signing_key, algorithms=[algorithm],
             audience=config.client_id, issuer=config.issuer,
+            options={"require": ["exp", "iss", "aud"]},
         )
-    except JoseJWTError as exc:
+    except PyJWTError as exc:
         raise OidcError(f"id_token invalido: {exc}") from exc
 
     if claims.get("nonce") != expected_nonce:

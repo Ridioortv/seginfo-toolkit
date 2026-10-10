@@ -1,7 +1,7 @@
 """FastAPI dependencies: current user extraction and RBAC guards."""
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError
+from jwt import PyJWTError as JWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.database import get_db
 from backend.shared.security import decode_token

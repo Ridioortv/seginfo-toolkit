@@ -8,7 +8,7 @@ firewall/EDR/Jira.
 
 Usa Fernet (AES-128-CBC + HMAC-SHA256, autenticado) de la libreria
 `cryptography` -- ya viene instalada en todos los servicios como
-dependencia de `python-jose[cryptography]` (que ya se usa para JWT), asi
+dependencia de `PyJWT[crypto]` (que ya se usa para JWT), asi
 que no hace falta agregar un requirement nuevo.
 
 ENCRYPTION_KEY (env var) es cualquier string secreto -- el launcher

@@ -1,7 +1,7 @@
 """Password hashing and JWT helpers shared across services."""
 import os
 from datetime import datetime, timedelta, timezone
-from jose import jwt
+import jwt  # PyJWT
 
 # Los dos valores "de fabrica" que trae .env.example -- el launcher
 # (launcher/cmd/iniciar/main.go::ensureEnvFile) genera un JWT_SECRET_KEY

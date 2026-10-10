@@ -6,7 +6,7 @@ asyncpg==0.32.0
 alembic==1.20.0
 pydantic==2.14.0
 pydantic-settings==2.15.0
-python-jose[cryptography]==3.5.0
+PyJWT[crypto]==2.15.1
 cryptography==50.0.2  # pin explicito (antes lo traia python-jose sin version): CVEs de cryptography <49
 redis==5.3.1
 prometheus-client==0.26.0

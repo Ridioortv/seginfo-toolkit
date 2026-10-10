@@ -273,7 +273,7 @@ async def fetch_tls_certificate(hostname: str, port: int = 443, timeout: float =
     Para ese caso se intenta releer el certificado en formato DER
     (getpeercert(binary_form=True)) y parsearlo con el modulo `cryptography`
     si esta disponible (ya viene instalado transitivamente via
-    python-jose[cryptography], usado por backend.shared.security). Si
+    PyJWT[crypto], usado por backend.shared.security). Si
     `cryptography` no esta disponible o el DER tampoco vino, se devuelve un
     error explicito -- el soporte de certificados autofirmados/con cadena
     rota queda PARCIAL, documentado aca a proposito: la gran mayoria de

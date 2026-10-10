@@ -8,9 +8,9 @@ punto todavia no esta verificado. Si el algoritmo permitido es exactamente
 "lo que diga el atacante", esa verificacion es un placebo: es la base de un
 ataque de confusion de algoritmo (RS256 -> HS256, firmando con la clave
 PUBLICA del proveedor -- publica en su propio JWKS -- como si fuera un
-secreto HMAC). La version de python-jose fijada en requirements.txt
-(3.3.0) bloquea por su cuenta la variante mas directa de este ataque (su
-HMACKey exige kty=='oct', ver jose/backends/native.py::HMACKey._process_jwk)
+secreto HMAC). La libreria JWT del proyecto (PyJWT, que reemplazo a
+python-jose por su advisory GHSA-3qf3-8w2g-rqmx sin parche) bloquea por su cuenta la variante mas directa de este ataque (no
+usa una clave RSA/PEM como secreto HMAC)
 -- pero el codigo seguia confiando en un dato no verificado para una
 decision de seguridad, un patron fragil que no depende de nada que este
 modulo controle.
@@ -30,10 +30,14 @@ from types import SimpleNamespace
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from jose import jwt as jose_jwt
-from jose.utils import long_to_base64
+import jwt as pyjwt
 
 from app import oidc
+
+
+def long_to_base64(n: int) -> bytes:
+    raw = n.to_bytes((n.bit_length() + 7) // 8 or 1, "big")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=")
 
 
 def _make_rsa_jwk(kid: str = "kid1", declared_alg: str | None = "RS256"):
@@ -58,7 +62,7 @@ def _make_rsa_jwk(kid: str = "kid1", declared_alg: str | None = "RS256"):
 
 
 def _sign_id_token(private_pem: bytes, header_extra: dict, claims: dict, algorithm: str = "RS256") -> str:
-    return jose_jwt.encode(claims, private_pem.decode(), algorithm=algorithm, headers=header_extra)
+    return pyjwt.encode(claims, private_pem, algorithm=algorithm, headers=header_extra)
 
 
 def _patch_discovery(monkeypatch, jwk_entry: dict):
@@ -81,7 +85,7 @@ def _b64url(data: bytes) -> bytes:
 
 
 def _forge_hs256_token_signed_with_public_key(public_pem: bytes, kid: str, claims: dict) -> str:
-    """Construye a mano (sin pasar por jose, que ya rechaza esto en el lado
+    """Construye a mano (sin pasar por la libreria, que ya rechaza esto en el lado
     de la firma) el PoC clasico de confusion de algoritmo: header
     alg=HS256, firmado con HMAC-SHA256 usando la clave PUBLICA del
     proveedor (publica, esta en su JWKS) como si fuera un secreto
@@ -138,7 +142,7 @@ class TestValidateIdTokenAlgorithmComesFromTrustedJwks:
         # El PoC clasico: id_token con alg=HS256, firmado con HMAC usando
         # la clave PUBLICA del proveedor como "secreto". Con el fix, los
         # algoritmos permitidos para verificar vienen SIEMPRE del JWKS
-        # (RS256 aca) y nunca del header del propio token -- jose rechaza
+        # (RS256 aca) y nunca del header del propio token -- PyJWT rechaza
         # la verificacion porque "HS256" no esta en algorithms=["RS256"],
         # sin que esto dependa de ninguna proteccion interna especifica de
         # la libreria sobre el tipo de la key.
@@ -169,13 +173,13 @@ class TestValidateIdTokenAlgorithmComesFromTrustedJwks:
         _patch_discovery(monkeypatch, jwk_entry)
 
         captured = {}
-        real_decode = jose_jwt.decode
+        real_decode = pyjwt.decode
 
         def spy_decode(token, key, algorithms, **kwargs):
             captured["algorithms"] = list(algorithms)
             return real_decode(token, key, algorithms=algorithms, **kwargs)
 
-        monkeypatch.setattr(oidc.jose_jwt, "decode", spy_decode)
+        monkeypatch.setattr(oidc.pyjwt, "decode", spy_decode)
         token = _sign_id_token(
             private_pem, {"kid": "kid1"},
             {"iss": self.CONFIG.issuer, "aud": self.CONFIG.client_id, "nonce": "nonce1",
