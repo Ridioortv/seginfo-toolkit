@@ -70,7 +70,7 @@ async def _reject_if_org_inactive(db: AsyncSession, org, actor_email: str) -> No
     A quien llega hasta aca ya se le verificaron sus credenciales (esta
     funcion se llama DESPUES de authenticate()/Google/SSO, nunca
     antes) -- por eso alcanza esa confianza para, ademas de bloquearlo,
-    ofrecerle de una un link de pago (Mercado Pago) generado al vuelo
+    ofrecerle de una un link de pago (PayPal por defecto) generado al vuelo
     contra el servidor central de licencias, con actor_email como
     payer_email. El campo "detail" del 402 pasa a ser un objeto (no un
     string plano) para que el frontend pueda mostrar un boton "Pagar
@@ -84,9 +84,9 @@ async def _reject_if_org_inactive(db: AsyncSession, org, actor_email: str) -> No
     payment_url = None
     if license_check.is_configured():
         try:
-            payment_url = await license_check.get_mercadopago_payment_link(actor_email)
+            payment_url = await license_check.get_payment_link(actor_email)
         except license_check.LicenseCheckError as exc:
-            logger.warning("no se pudo generar el link de pago de Mercado Pago para %s: %s", org.id, exc)
+            logger.warning("no se pudo generar el link de pago de %s para %s: %s", license_check.PROVIDER_LABEL, org.id, exc)
 
     message = "La suscripcion de esta organizacion no esta al dia."
     if payment_url:
@@ -498,7 +498,7 @@ async def cancel_subscription_payment(
     solo corta el PROXIMO cobro automatico de Mercado Pago -- por eso el
     admin de la propia organizacion puede llamarlo el mismo, sin
     necesitar a un platform_admin. El acceso sigue activo hasta que
-    venza el periodo ya pagado (ver cancel_mercadopago_subscription en
+    venza el periodo ya pagado (ver license_check.cancel_subscription en
     backend/shared/license_check.py)."""
     org = await services.get_organization_by_id(db, org_id)
     if org is None:
@@ -510,7 +510,7 @@ async def cancel_subscription_payment(
             "para cancelar la suscripcion, contacta al operador.",
         )
     try:
-        await license_check.cancel_mercadopago_subscription()
+        await license_check.cancel_subscription()
     except license_check.LicenseCheckError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     await services.record_audit_event(
@@ -526,7 +526,7 @@ async def get_subscription_pay_link(
     claims: dict = Depends(require_org_admin_or_platform_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Autoservicio -- genera un link de pago de Mercado Pago para esta
+    """Autoservicio -- genera un link de pago (PayPal) para esta
     organizacion, tanto para pagar por primera vez como para volver a
     suscribirse despues de haber cancelado (ver cancel_subscription_payment
     arriba) mientras el periodo ya pagado todavia no vencio. payer_email
@@ -547,13 +547,13 @@ async def get_subscription_pay_link(
     if user is None:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     try:
-        payment_url = await license_check.get_mercadopago_payment_link(user.email)
+        payment_url = await license_check.get_payment_link(user.email)
     except license_check.LicenseCheckError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if not payment_url:
         raise HTTPException(
             status_code=503,
-            detail="Mercado Pago no esta configurado del lado del servidor central de licencias.",
+            detail=f"{license_check.PROVIDER_LABEL} no esta configurado del lado del servidor central de licencias.",
         )
     await services.record_audit_event(db, claims.get("sub", ""), "organization.subscription.pay_link", org_id)
     await db.commit()

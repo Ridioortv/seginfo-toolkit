@@ -416,6 +416,11 @@ PAYPAL_ENV=sandbox   # cambiar a "live" recién cuando probaste todo el flujo ab
 
 ### 2. El Billing Plan de $250 cada 30 días
 
+Atajo: con `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` y `PAYPAL_ENV` ya en
+`licensing-server/.env`, corré `python create_paypal_plan.py` (desde
+`licensing-server/`): crea el producto y el plan de USD 250/30 días e
+imprime el `PAYPAL_PLAN_ID`. Lo de abajo es el equivalente manual.
+
 Se crea una sola vez (después todos los clientes se suscriben al mismo
 plan). Más simple vía API que a mano en el dashboard -- con el
 `access_token` que te da el paso 1:

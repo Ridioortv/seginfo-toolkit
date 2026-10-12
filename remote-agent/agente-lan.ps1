@@ -56,7 +56,22 @@ function Install-AgentTask {
     $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if ($existing) {
         Write-Host "Ya estaba instalado -- lo vuelvo a registrar por si cambio la ruta o el usuario."
-        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        try {
+            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Stop
+        } catch {
+            # La tarea la creo otro nivel de permisos (p.ej. una consola de
+            # administrador) y este usuario no puede reemplazarla. No es grave:
+            # la tarea existente ya ejecuta ESTE mismo archivo. Solo hay que
+            # reiniciar el agente para que relea el .env (claves nuevas).
+            Write-Host "No pude reemplazar la tarea existente (permisos) -- la dejo como esta y reinicio el agente."
+            Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -like '*agente-lan.ps1*' -and $_.ProcessId -ne $PID } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            Start-Process -WindowStyle Hidden -FilePath $psExe -ArgumentList @(
+                "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$scriptPath`"")
+            Write-Host "Agente reiniciado en segundo plano. Log en: $logPath"
+            return
+        }
     }
 
     $action = New-ScheduledTaskAction -Execute $psExe `
@@ -165,6 +180,15 @@ function Resolve-ScannerBinary([string]$name) {
     return $null
 }
 
+function Get-CleanStderr([string]$text, [string]$fallback) {
+    # stderr de un scanner listo para error_message: sin codigos de color ANSI
+    # (nuclei los imprime aunque no haya consola) y acotado a 2000 caracteres.
+    $t = ""
+    if ($text) { $t = [regex]::Replace($text, '\x1b\[[0-9;?]*[ -/]*[@-~]', '').Trim() }
+    if (-not $t) { return $fallback }
+    return $t.Substring(0, [Math]::Min(2000, $t.Length))
+}
+
 function Invoke-ScannerBinary([string]$exe, [string[]]$scannerArgs, [int]$timeoutSeconds) {
     # Corre un binario externo (nuclei/trivy) con limite de tiempo real --
     # equivalente a subprocess.run(..., timeout=N) de Python: si se pasa
@@ -259,8 +283,12 @@ function Invoke-NucleiScan([string]$target, $options) {
     # siempre antes de que el backend lo de por huerfano.
     $result = Invoke-ScannerBinary -exe (Resolve-ScannerBinary "nuclei") -scannerArgs $scannerArgs -timeoutSeconds 420
     if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (420s) contra $target" } }
-    if (($result.ExitCode -ne 0) -and ($result.ExitCode -ne 1) -and (-not $result.Stdout.Trim())) {
-        $errMsg = $result.Stderr; $errMsg = $errMsg.Substring(0, [Math]::Min(2000, $errMsg.Length))
+    # nuclei sale con 0 haya o no hallazgos; un codigo != 0 sin NADA en stdout es
+    # un fallo real (ej. "no templates provided for scan", exit 1). Antes el 1 se
+    # tomaba por "hubo hallazgos" y el job terminaba "completado, 0 hallazgos".
+    if (($result.ExitCode -ne 0) -and (-not $result.Stdout.Trim())) {
+        $errMsg = Get-CleanStderr $result.Stderr "nuclei termino con codigo $($result.ExitCode) sin salida"
+        if ($errMsg -match 'no templates') { $errMsg = "nuclei no tiene plantillas instaladas en esta PC. Corre: nuclei -update-templates -- detalle: $errMsg" }
         return @{ Raw = $result.Stdout; Findings = @(); Error = $errMsg }
     }
     return @{ Raw = $result.Stdout; Findings = (Get-NucleiFindings $result.Stdout); Error = "" }
@@ -336,8 +364,10 @@ function Invoke-TrivyScan([string]$target, [string]$mode) {
     $scannerArgs = @($subcommand, "--format", "json", "--quiet", "--timeout", "6m", "--list-all-pkgs", $target)
     $result = Invoke-ScannerBinary -exe (Resolve-ScannerBinary "trivy") -scannerArgs $scannerArgs -timeoutSeconds 420
     if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (420s) contra $target" } }
-    if (($result.ExitCode -ne 0) -and ($result.ExitCode -ne 1)) {
-        $errMsg = $result.Stderr; $errMsg = $errMsg.Substring(0, [Math]::Min(2000, $errMsg.Length))
+    # trivy usa --exit-code 0 por default: cualquier codigo != 0 es un fallo real
+    # (antes el 1 se aceptaba y un FATAL terminaba como "0 hallazgos").
+    if ($result.ExitCode -ne 0) {
+        $errMsg = Get-CleanStderr $result.Stderr "trivy termino con codigo $($result.ExitCode) sin salida"
         return @{ Raw = $result.Stdout; Findings = @(); Error = $errMsg }
     }
     return @{ Raw = $result.Stdout; Findings = (Get-TrivyFindings $result.Stdout); Packages = (Get-TrivyPackages $result.Stdout); Error = "" }
@@ -513,8 +543,8 @@ function Invoke-SemgrepScan([string]$targetValue) {
         $semgrepArgs = @("scan", "--config", $SemgrepRulesDir, "--json", "--quiet", "--metrics=off", "--timeout", "60", $resolved.Path)
         $result = Invoke-ScannerBinary -exe $semgrepExe -scannerArgs $semgrepArgs -timeoutSeconds 420
         if ($result.TimedOut) { return @{ Raw = ""; Findings = @(); Error = "timeout de escaneo (420s)" } }
-        if (($result.ExitCode -ne 0) -and ($result.ExitCode -ne 1)) {
-            $errText = $result.Stderr; $errText = $errText.Substring(0, [Math]::Min(2000, $errText.Length))
+        if ((($result.ExitCode -ne 0) -and ($result.ExitCode -ne 1)) -or (($result.ExitCode -ne 0) -and (-not $result.Stdout.Trim()))) {
+            $errText = Get-CleanStderr $result.Stderr "semgrep termino con codigo $($result.ExitCode) sin salida"
             return @{ Raw = $result.Stdout; Findings = @(); Error = $errText }
         }
         $findings = @()
@@ -525,9 +555,11 @@ function Invoke-SemgrepScan([string]$targetValue) {
                     if (-not $r) { continue }
                     $sev = "info"
                     $rawSev = [string]$r.extra.severity
-                    if ($rawSev -eq "ERROR") { $sev = "high" } elseif ($rawSev -eq "WARNING") { $sev = "medium" }
+                    if ($rawSev -eq "ERROR") { $sev = "high" } elseif ($rawSev -eq "WARNING") { $sev = "medium" } elseif ($rawSev -eq "INFO") { $sev = "low" }
+                    # semgrep antepone al id el path del directorio de reglas; el id propio es el ultimo segmento.
+                    $shortId = ([string]$r.check_id).Split('.')[-1]
                     $findings += @{
-                        title = "$($r.check_id) en $($r.path)"
+                        title = "$shortId en $($r.path)"
                         description = [string]$r.extra.message
                         severity = $sev
                         cve_id = $null

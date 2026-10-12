@@ -139,6 +139,17 @@ RUN (curl -fsSL https://falco.org/repo/falcosecurity-packages.asc \
         && rm -rf /var/lib/apt/lists/*) \
     || echo "ADVERTENCIA (build): no se pudo instalar falco -- el scanner 'falco' va a quedar reportado como no disponible hasta que se resuelva esto."
 
+# Igual que zeek arriba: el contenedor corre como usuario NO-root y cap_add
+# (docker-compose.yml) solo amplia el "bounding set" -- sin capabilities de
+# ARCHIVO en el binario, un proceso no-root arranca sin ninguna capability
+# efectiva y falco no puede cargar su driver eBPF ("Operation not permitted").
+# Solo se listan capabilities que docker-compose.yml SI otorga (cap_add): si el
+# archivo pidiera una que no esta en el bounding set, el exec fallaria. No-fatal:
+# si falco no se instalo o el kernel de build no reconoce BPF/PERFMON, el build
+# sigue y falco queda "no disponible"/con error claro en runtime.
+RUN setcap cap_sys_admin,cap_sys_resource,cap_sys_ptrace,cap_bpf,cap_perfmon+eip "$(command -v falco)" 2>/dev/null \
+    || echo "ADVERTENCIA (build): no se pudo aplicar setcap a falco -- falco puede fallar en runtime con 'Operation not permitted' (corriendo como no-root)."
+
 COPY backend/services/scan-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

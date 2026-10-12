@@ -30,10 +30,11 @@ import re
 # argumentos), asi que un espacio o '\' en un argumento nunca habilita
 # inyeccion de comandos, solo pasa tal cual como parte de ese argumento.
 # Tiene que empezar y terminar con un caracter alfanumerico (o ')' al
-# terminar, por el caso "...(x86)"), asi que un target no puede empezar
+# terminar, por el caso "...(x86)", o con "/" por las URLs tipo
+# "http://host/"), asi que un target no puede empezar
 # con "-" (se interpretaria como flag) ni terminar en un separador
 # colgante.
-_SAFE_TARGET_RE = re.compile(r"^[A-Za-z0-9/](?:[A-Za-z0-9._:/@\\ ()-]{0,498}[A-Za-z0-9)])?$")
+_SAFE_TARGET_RE = re.compile(r"^[A-Za-z0-9/](?:[A-Za-z0-9._:/@\\ ()-]{0,498}[A-Za-z0-9)/])?$")
 
 
 def validate_target(target: str) -> str:

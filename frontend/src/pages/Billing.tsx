@@ -191,7 +191,7 @@ export default function Billing() {
           <div className="panel">
             <h2>Pagar / renovar</h2>
             <p className="empty-hint">
-              Genera un link de Mercado Pago para pagar por primera vez, o para volver a suscribirte si habias
+              Genera un link de PayPal (USD 250 cada 30 dias) para pagar por primera vez, o para volver a suscribirte si habias
               cancelado el cobro automatico.
             </p>
             <button className="btn-primary" onClick={() => payLink.mutate()} disabled={payLink.isPending}>
@@ -200,7 +200,7 @@ export default function Billing() {
             {payError && <p className="error-text">{payError}</p>}
             {payUrl && !payError && (
               <p className="empty-hint">
-                Se abrio Mercado Pago en una pestana nueva. Si no se abrio,{" "}
+                Se abrio PayPal en una pestana nueva. Si no se abrio,{" "}
                 <a href={payUrl} target="_blank" rel="noopener noreferrer">
                   hace click aca
                 </a>

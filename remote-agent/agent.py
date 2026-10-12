@@ -237,6 +237,15 @@ def poll_jobs() -> list[dict]:
     return result.get("jobs", [])
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def _clean_stderr(data: bytes, limit: int = 2000) -> str:
+    """stderr de un scanner listo para error_message: sin codigos de color
+    ANSI (nuclei los imprime aunque no haya TTY) y acotado."""
+    return _ANSI_RE.sub("", data.decode(errors="replace")).strip()[:limit]
+
+
 def submit_result(
     job_id: str, status: str, findings: list[dict], raw_output: str = "", error_message: str = "",
     packages: list[dict] | None = None,
@@ -273,8 +282,10 @@ def run_trivy(target: str, options: dict) -> tuple[str, list[dict], str]:
     except subprocess.TimeoutExpired:
         return "", [], f"timeout de escaneo ({_TRIVY_TIMEOUT_SECONDS}s) contra {target}"
     raw = proc.stdout.decode(errors="replace")
-    if proc.returncode not in (0, 1):
-        return raw, [], proc.stderr.decode(errors="replace")[:2000]
+    # trivy usa --exit-code 0 por default: cualquier codigo != 0 es un fallo
+    # real (antes el 1 se aceptaba y un FATAL terminaba como "0 hallazgos").
+    if proc.returncode != 0:
+        return raw, [], _clean_stderr(proc.stderr) or f"trivy termino con codigo {proc.returncode} sin salida"
     return raw, _parse_trivy_json(raw), ""
 
 
@@ -386,8 +397,15 @@ def run_nuclei(target: str, options: dict) -> tuple[str, list[dict], str]:
     except subprocess.TimeoutExpired:
         return "", [], f"timeout de escaneo ({_NUCLEI_TIMEOUT_SECONDS}s) contra {target}"
     raw = proc.stdout.decode(errors="replace")
-    if proc.returncode not in (0, 1) and not raw.strip():
-        return raw, [], proc.stderr.decode(errors="replace")[:2000]
+    # nuclei sale con 0 haya o no hallazgos; un codigo != 0 sin NADA en stdout
+    # es un fallo real (ej. "no templates provided for scan", exit 1) -- antes
+    # el 1 se tomaba por "hubo hallazgos" y terminaba "completado, 0 hallazgos".
+    if proc.returncode != 0 and not raw.strip():
+        err = _clean_stderr(proc.stderr)
+        if "no templates" in err.lower():
+            err = ("nuclei no tiene plantillas instaladas en esta maquina. Corre: nuclei -update-templates"
+                   " -- detalle: " + err)[:2000]
+        return raw, [], err or f"nuclei termino con codigo {proc.returncode} sin salida"
     return raw, _parse_nuclei_jsonl(raw), ""
 
 
@@ -587,8 +605,8 @@ def run_semgrep(target: str, options: dict) -> tuple[str, list[dict], str]:
         except subprocess.TimeoutExpired:
             return "", [], "timeout de escaneo (420s)"
         raw = proc.stdout.decode(errors="replace")
-        if proc.returncode not in (0, 1):
-            return raw, [], proc.stderr.decode(errors="replace")[:2000]
+        if proc.returncode not in (0, 1) or (proc.returncode != 0 and not raw.strip()):
+            return raw, [], _clean_stderr(proc.stderr) or f"semgrep termino con codigo {proc.returncode} sin salida"
         try:
             data = json.loads(raw) if raw.strip() else {}
         except json.JSONDecodeError:
@@ -598,7 +616,7 @@ def run_semgrep(target: str, options: dict) -> tuple[str, list[dict], str]:
             extra = result.get("extra", {}) or {}
             start = result.get("start", {}) or {}
             findings.append({
-                "title": f"{result.get('check_id', 'regla semgrep desconocida')} en {result.get('path', '')}",
+                "title": f"{(result.get('check_id') or 'regla semgrep desconocida').rsplit('.', 1)[-1]} en {result.get('path', '')}",
                 "description": (extra.get("message") or "")[:1000],
                 "severity": _SEMGREP_SEVERITY_MAP.get(extra.get("severity", "INFO"), "info"),
                 "cve_id": None,

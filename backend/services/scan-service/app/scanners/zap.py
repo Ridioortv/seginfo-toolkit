@@ -20,7 +20,7 @@ import json
 import os
 import shutil
 import tempfile
-from app.scanners.base import ScannerDriver, ScanResult
+from app.scanners.base import ScannerDriver, ScanResult, clean_stderr
 
 # Directorio de configuracion/estado de ZAP -- tiene que ser escribible
 # por el usuario no-root del contenedor (ver chown en el Dockerfile).
@@ -127,7 +127,7 @@ class ZapDriver(ScannerDriver):
             if not os.path.exists(report_path):
                 return ScanResult(
                     raw_output=stdout.decode(errors="replace")[:5000],
-                    error=(stderr.decode(errors="replace")[:2000]
+                    error=(clean_stderr(stderr.decode(errors="replace"))
                            or "ZAP no genero un reporte (fallo antes de completar el escaneo)"),
                 )
             try:

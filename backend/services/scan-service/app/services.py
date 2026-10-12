@@ -151,6 +151,7 @@ async def execute_uploaded_scan_job(session_factory, job_id: str, file_path: str
     paquetes. Borra tmpdir al final pase lo que pase (completado, fallado,
     cancelado) para no dejar el archivo subido tirado en disco."""
     from app.scanners.trivy import _parse_trivy_json, _parse_trivy_packages, TRIVY_CACHE_DIR
+    from app.scanners.base import clean_stderr
     task = asyncio.current_task()
     if task is not None:
         register_running_scan(job_id, task)
@@ -200,13 +201,39 @@ async def execute_uploaded_scan_job(session_factory, job_id: str, file_path: str
                 await db.commit()
                 return
 
+            if proc.returncode != 0 and any(m in stderr.decode(errors="replace").lower() for m in (
+                "--skip-db-update", "database is not initialized", "no such file", "db error",
+                "first run", "failed to open db", "database error",
+            )):
+                # Cache de DB vacia (volumen nuevo): un reintento dejando que
+                # trivy descargue la DB, igual que scanners/trivy.py.
+                cmd = [c for c in cmd if c not in ("--skip-db-update", "--skip-java-db-update")]
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    )
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=540)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+                    job = await db.get(ScanJob, job_id)
+                    job.status = ScanStatus.failed
+                    job.error_message = "timeout de escaneo (540s)"
+                    job.finished_at = _now()
+                    await db.commit()
+                    return
+
             raw = stdout.decode(errors="replace")
             job = await db.get(ScanJob, job_id)
             job.raw_result = raw[:200_000]
             job.finished_at = _now()
-            if proc.returncode not in (0, 1):
+            # trivy usa --exit-code 0 por defecto: cualquier codigo != 0 es un
+            # fallo real (DB sin inicializar, archivo ilegible, permisos...).
+            # Antes se aceptaba rc=1 como "ok con hallazgos" y el job quedaba
+            # "completado" con 0 hallazgos tapando el error.
+            if proc.returncode != 0:
                 job.status = ScanStatus.failed
-                job.error_message = (stderr.decode(errors="replace")[:2000]
+                job.error_message = (clean_stderr(stderr.decode(errors="replace"))
                                      or f"trivy salio con codigo {proc.returncode}")
             else:
                 job.findings = _parse_trivy_json(raw)

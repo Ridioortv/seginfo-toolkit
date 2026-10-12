@@ -112,6 +112,10 @@ def init_db() -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_paypal_subscription_id "
             "ON clients (paypal_subscription_id) WHERE paypal_subscription_id IS NOT NULL"
         )
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS processed_events ("
+            "event_id TEXT PRIMARY KEY, processed_at TEXT NOT NULL)"
+        )
         # Idem para Mercado Pago -- respaldo para cuando un
         # authorized_payment no trae external_reference (ver
         # app/mercadopago.py::resolve_license_key_lookup).
@@ -119,6 +123,22 @@ def init_db() -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_mercadopago_preapproval_id "
             "ON clients (mercadopago_preapproval_id) WHERE mercadopago_preapproval_id IS NOT NULL"
         )
+
+
+def claim_event(event_id: str) -> bool:
+    """Idempotencia de webhooks: PayPal reintenta un webhook si no recibe
+    2xx a tiempo, y sin esto cada reintento extenderia la licencia otros 30
+    dias. Devuelve True la PRIMERA vez que se ve este event_id (hay que
+    procesarlo) y False si ya se habia procesado (hay que ignorarlo)."""
+    with get_cursor() as cur:
+        cur.execute(
+            _adapt(
+                "INSERT INTO processed_events (event_id, processed_at) VALUES (?, ?) "
+                "ON CONFLICT (event_id) DO NOTHING"
+            ),
+            (event_id, _now_iso()),
+        )
+        return cur.rowcount > 0
 
 
 def create_client(license_key: str, org_name: str, expires_at_iso: str, notes: str = "") -> None:

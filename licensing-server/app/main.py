@@ -98,6 +98,15 @@ class PaypalLinkOut(BaseModel):
     approval_url: str
 
 
+class PaypalPublicLinkRequest(BaseModel):
+    payer_email: str | None = Field(default=None, description="Opcional: precarga el email en el checkout de PayPal")
+
+
+class PaypalCancelOut(BaseModel):
+    cancelled: bool
+    valid_until: str
+
+
 class MercadoPagoLinkRequest(BaseModel):
     payer_email: str = Field(..., min_length=3, description="Email del cliente en Mercado Pago -- lo pide MP para vincular la suscripcion")
     plan_id: str | None = Field(default=None, description="Si se omite, usa MERCADOPAGO_PLAN_ID")
@@ -176,6 +185,9 @@ async def paypal_subscription_link(license_key: str, payload: PaypalLinkRequest,
     return PaypalLinkOut(subscription_id=subscription_id, approval_url=approval_url)
 
 
+# /webhooks/billing es un alias: el dashboard de PayPal rechaza ("Please enter a
+# valid url") algunas URLs de webhook que contienen la palabra "paypal".
+@app.post("/webhooks/billing", status_code=status.HTTP_204_NO_CONTENT)
 @app.post("/webhooks/paypal", status_code=status.HTTP_204_NO_CONTENT)
 async def paypal_webhook(request: Request):
     """PayPal le pega aca en cada evento de las suscripciones (pago
@@ -195,9 +207,17 @@ async def paypal_webhook(request: Request):
         raise HTTPException(status_code=401, detail="firma de PayPal invalida")
 
     event_type = event.get("event_type", "")
-    if event_type not in paypal.PAYMENT_RECEIVED_EVENTS:
-        # Verificado pero no es un evento de pago (cancelacion, etc) --
-        # se ignora a proposito, ver el docstring de PAYMENT_RECEIVED_EVENTS.
+    if event_type not in paypal.PAYMENT_RECEIVED_EVENTS and event_type not in paypal.LINK_EVENTS:
+        # Verificado pero no es un evento de pago ni de vinculacion
+        # (cancelacion, etc) -- se ignora a proposito, ver el docstring de
+        # PAYMENT_RECEIVED_EVENTS.
+        return
+
+    # Idempotencia: PayPal reintenta si no recibe 2xx a tiempo; sin esto cada
+    # reintento de un pago extenderia la licencia otros 30 dias.
+    event_id = event.get("id")
+    if event_id and not db.claim_event(f"paypal:{event_id}"):
+        logger.info("webhook de PayPal repetido (%s) -- ignorado", event_id)
         return
 
     method, value = paypal.resolve_license_key_lookup(event)
@@ -220,6 +240,11 @@ async def paypal_webhook(request: Request):
         # (PAYMENT.SALE.COMPLETED, que solo traen billing_agreement_id)
         # puedan resolver el cliente.
         db.set_paypal_subscription_id(license_key, resource["id"])
+
+    if event_type in paypal.LINK_EVENTS:
+        # Solo vincula (arriba). El cobro llega en PAYMENT.SALE.COMPLETED.
+        db.append_note(license_key, "PayPal: suscripcion aprobada por el cliente")
+        return
 
     try:
         _extend_expiry(license_key, DEFAULT_PERIOD_DAYS)
@@ -333,6 +358,52 @@ def license_history(license_key: str):
     if row is None:
         raise HTTPException(status_code=404, detail="license_key desconocida")
     return LicenseHistoryOut(notes=row["notes"] or "")
+
+
+@app.post("/license/{license_key}/paypal/subscription-link", response_model=PaypalLinkOut)
+async def paypal_public_subscription_link(license_key: str, payload: PaypalPublicLinkRequest):
+    """Autoservicio (publico a proposito, igual que el resto de
+    /license/{license_key}/...: se autentica solo con conocer la license_key).
+    Lo llama la instalacion on-prem cuando el login queda bloqueado por falta
+    de pago, o desde la pantalla de Facturacion, para ofrecer el link de
+    PayPal de la suscripcion de USD 250 cada 30 dias."""
+    if db.get_client(license_key) is None:
+        raise HTTPException(status_code=404, detail="license_key desconocida")
+    if not paypal.is_configured():
+        raise HTTPException(status_code=503, detail="PayPal no esta configurado en este servidor")
+    try:
+        subscription_id, approval_url = await paypal.create_subscription_approval_link(
+            license_key, None, payload.payer_email
+        )
+    except paypal.PayPalError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    db.set_paypal_subscription_id(license_key, subscription_id)
+    logger.info("link de pago de PayPal generado (autoservicio)", extra={"license_key": license_key})
+    return PaypalLinkOut(subscription_id=subscription_id, approval_url=approval_url)
+
+
+@app.post("/license/{license_key}/paypal/cancel-subscription", response_model=PaypalCancelOut)
+async def paypal_cancel_subscription(license_key: str):
+    """Autoservicio del cliente: corta el PROXIMO cobro de PayPal. El periodo
+    ya pagado sigue corriendo hasta subscription_expires_at (no se toca)."""
+    row = db.get_client(license_key)
+    if row is None:
+        raise HTTPException(status_code=404, detail="license_key desconocida")
+    subscription_id = row["paypal_subscription_id"]
+    if not subscription_id:
+        raise HTTPException(status_code=404, detail="esta licencia no tiene ninguna suscripcion de PayPal vinculada")
+    if not paypal.is_configured():
+        raise HTTPException(status_code=503, detail="PayPal no esta configurado en este servidor")
+    try:
+        await paypal.cancel_subscription(subscription_id)
+    except paypal.PayPalError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    db.append_note(
+        license_key,
+        "PayPal: suscripcion cancelada por el cliente -- no se renueva mas, el periodo pagado sigue corriendo hasta que venza",
+    )
+    row = db.get_client(license_key)
+    return PaypalCancelOut(cancelled=True, valid_until=row["subscription_expires_at"])
 
 
 @app.post("/license/{license_key}/mercadopago/subscription-link", response_model=MercadoPagoLinkOut)

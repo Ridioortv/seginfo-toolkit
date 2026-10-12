@@ -47,7 +47,7 @@ export default function Login() {
   // _reject_if_org_inactive en auth-service/app/main.py). Ese 402 trae
   // el "detail" como objeto ({message, payment_url}), no como string
   // plano -- payment_url viene armado por el servidor central de
-  // licencias (Mercado Pago) si esta configurado, o null si esta
+  // licencias (PayPal) si esta configurado, o null si esta
   // instalacion todavia gestiona los pagos a mano (ahi solo se muestra
   // el mensaje, sin boton).
   function applyLoginError(err: unknown, fallback: string) {
@@ -238,7 +238,7 @@ export default function Login() {
               Pagar membresia
             </a>
             <p className="empty-hint" style={{ marginTop: 8 }}>
-              Se abre la pagina de Mercado Pago en una pestana nueva. Despues de pagar, esperá un minuto y volvé a
+              Se abre la pagina de PayPal en una pestana nueva. Despues de pagar, esperá un minuto y volvé a
               intentar ingresar -- el acceso se reactiva solo, no hace falta avisarle a nadie.
             </p>
           </>

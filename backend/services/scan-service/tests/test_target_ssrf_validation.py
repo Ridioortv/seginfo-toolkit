@@ -107,6 +107,26 @@ def test_validate_target_still_rejects_flag_like_targets():
         validate_target("--script=exploit")
 
 
+@pytest.mark.parametrize("target", [
+    "http://scanme.nmap.org/",
+    "https://example.com/app/",
+    "192.168.0.143/",
+])
+def test_validate_target_accepts_urls_with_trailing_slash(target):
+    # Una URL con "/" final es lo normal al pegar un sitio (ZAP, nuclei):
+    # antes daba HTTP 422 y no se podia lanzar el escaneo.
+    assert validate_target(target) == target
+
+
+@pytest.mark.parametrize("target", ["http://host/ ", "-x/", "http://a.com/;"])
+def test_validate_target_still_rejects_bad_endings_and_flags(target):
+    if target == "http://host/ ":
+        assert validate_target(target) == "http://host/"  # strip() deja la URL limpia
+    else:
+        with pytest.raises(ValueError):
+            validate_target(target)
+
+
 # --- Nuevos scanner_type (zap/semgrep/gitleaks/yara/zeek/falco) -----------
 # Ver app/schemas.py::_NON_NETWORK_SCANNER_TYPES para el criterio exacto:
 # zap/semgrep/gitleaks pueden recibir un host/URL de red (igual que

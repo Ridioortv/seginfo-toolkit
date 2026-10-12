@@ -104,7 +104,12 @@ services:
 
 
   scan-service:
-    <<: *hardening
+    # SIN no-new-privileges (a proposito, no es un olvido): el binario de zeek tiene
+    # capabilities de ARCHIVO (setcap cap_net_raw,cap_net_admin+eip, ver el
+    # Dockerfile) para poder capturar paquetes corriendo como usuario no-root, y
+    # no-new-privileges hace que el kernel IGNORE las capabilities de archivo
+    # (zeek fallaba con "pcap_activate: Operation not permitted"). El resto del
+    # endurecimiento (usuario no-root, puertos solo en 127.0.0.1) se mantiene.
     restart: unless-stopped
     build:
       context: .
@@ -158,7 +163,12 @@ services:
   # el MISMO Dockerfile que scan-service: buildkit reusa toda la cache,
   # asi que no reconstruye nada pesado.
   remote-agent:
-    <<: *hardening
+    # SIN no-new-privileges (a proposito, no es un olvido): el binario de zeek tiene
+    # capabilities de ARCHIVO (setcap cap_net_raw,cap_net_admin+eip, ver el
+    # Dockerfile) para poder capturar paquetes corriendo como usuario no-root, y
+    # no-new-privileges hace que el kernel IGNORE las capabilities de archivo
+    # (zeek fallaba con "pcap_activate: Operation not permitted"). El resto del
+    # endurecimiento (usuario no-root, puertos solo en 127.0.0.1) se mantiene.
     restart: unless-stopped
     build:
       context: .

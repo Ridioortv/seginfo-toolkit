@@ -12,7 +12,7 @@ chequeaba/actualizaba plantillas en CADA escaneo individual, que era la
 causa principal de que "tardara mucho"."""
 import asyncio
 import json
-from app.scanners.base import ScannerDriver, ScanResult
+from app.scanners.base import ScannerDriver, ScanResult, clean_stderr
 
 _EXCLUDED_TAGS = "dos,fuzz,intrusive"
 
@@ -68,8 +68,19 @@ class NucleiDriver(ScannerDriver):
             raise
 
         raw = stdout.decode(errors="replace")
-        if proc.returncode not in (0, 1) and not raw.strip():
-            return ScanResult(raw_output=raw, error=stderr.decode(errors="replace")[:2000])
+        # nuclei sale con 0 aunque no encuentre nada Y aunque encuentre
+        # hallazgos; un codigo != 0 sin NADA en stdout es un fallo real
+        # (ej. "no templates provided for scan" cuando el volumen de
+        # plantillas esta vacio, exit 1). Antes el 1 se tomaba por
+        # "hubo hallazgos" y el job terminaba "completado, 0 hallazgos".
+        if proc.returncode != 0 and not raw.strip():
+            err = clean_stderr(stderr.decode(errors="replace"))
+            if "no templates" in err.lower():
+                err = (
+                    "nuclei no tiene plantillas instaladas (volumen nuclei_templates vacio). "
+                    "Corre: docker compose exec scan-service nuclei -update-templates  -- detalle: " + err
+                )[:2000]
+            return ScanResult(raw_output=raw, error=err or f"nuclei termino con codigo {proc.returncode} sin salida")
 
         return ScanResult(raw_output=raw, findings=_parse_nuclei_jsonl(raw))
 

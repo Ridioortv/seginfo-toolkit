@@ -650,8 +650,8 @@ export default function Scans() {
             <div className="panel" style={{ marginTop: 8, marginBottom: 8 }}>
               <h3 style={{ marginTop: 0 }}>Quien ejecuta el escaneo</h3>
               <p className="empty-hint">
-                Sin agente, la regla corre DENTRO del contenedor de scan-service: nuclei siempre (trivy no escanea
-                IPs/hosts, usa el panel de arriba para imagenes/paquetes) -- por el aislamiento de red de Docker
+                Sin agente, la regla corre DENTRO del contenedor de scan-service: nuclei siempre (para imagenes/paquetes
+                usa el panel "Escanear imagen o paquete con Trivy") -- por el aislamiento de red de Docker
                 Desktop, sin agente nuclei solo alcanza WAN/internet, nunca tu LAN real. Para nuclei contra tu red
                 real elegi <strong>Agente LAN</strong> (visibilidad real de LAN). Para objetivos publicos de internet
                 podes usar <strong>Agente WAN (internet)</strong> (solo acepta objetivos publicos, rechaza IPs
@@ -706,7 +706,6 @@ export default function Scans() {
           <input placeholder="Nombre" value={schedName} onChange={(e) => setSchedName(e.target.value)} />
           <select value={schedScannerType} onChange={(e) => setSchedScannerType(e.target.value as ScannerType)}>
             <option value="nuclei">nuclei</option>
-            <option value="trivy">trivy</option>
             <option value="zap">zap (OWASP ZAP -- DAST pasivo contra una URL)</option>
             <option value="semgrep">semgrep (SAST -- analiza la URL de un repositorio git)</option>
             <option value="gitleaks">gitleaks (secretos en la URL de un repositorio git)</option>
@@ -954,7 +953,7 @@ export default function Scans() {
       <div className="panel">
         <h2>Escaneos remotos</h2>
         <p className="empty-hint">
-          Elegi el scanner (nuclei / trivy), el agente y el target. El agente elegido se lleva el job en su
+          Elegi el scanner (nuclei, zap, semgrep, gitleaks, zeek o falco), el agente y el target. El agente elegido se lleva el job en su
           siguiente polling y manda el resultado solo -- puede tardar unos segundos segun su intervalo de
           polling. Cada scanner necesita su binario instalado en la maquina del agente; si falta, el job vuelve
           con un error claro. Para lanzar tenes que pegar la api key del agente (la que te mostro al
@@ -993,7 +992,6 @@ export default function Scans() {
             title="El binario del scanner elegido tiene que estar instalado en la maquina del agente."
           >
             <option value="nuclei">nuclei (plantillas de deteccion)</option>
-            <option value="trivy">trivy (CVEs en imagenes/paquetes)</option>
             <option value="zap">zap (OWASP ZAP -- DAST pasivo contra una URL)</option>
             <option value="semgrep">semgrep (SAST -- analiza la URL de un repositorio git)</option>
             <option value="gitleaks">gitleaks (secretos en la URL de un repositorio git)</option>

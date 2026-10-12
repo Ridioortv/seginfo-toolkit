@@ -135,17 +135,29 @@ if (-not $SinAgentes) {
     # que no reconozco se dejan como estan.
     $json = Get-EnvValue 'BOOTSTRAP_AGENTS'
     if ($json) {
-        try {
-            $agents = @($json | ConvertFrom-Json)
-            foreach ($a in $agents) {
-                if ($a.name -match 'Docker') { $a.key = $new['REMOTE_AGENT_DOCKER_KEY'] }
-                elseif ($a.name -match 'LAN') { $a.key = $new['REMOTE_AGENT_LAN_KEY'] }
-                elseif ($a.name -match 'WAN') { $a.key = $new['REMOTE_AGENT_WAN_KEY'] }
+        # NO se usa ConvertFrom-Json/ConvertTo-Json: en Windows PowerShell 5.1 aplanan
+        # mal los arrays y dejaban BOOTSTRAP_AGENTS con las claves VIEJAS (el agente
+        # mandaba la clave nueva y scan-service respondia 401). Se reescribe por regex.
+        $items = @()
+        foreach ($m in [regex]::Matches($json, '\{[^{}]*\}')) {
+            $o = $m.Value
+            $n = ''; $k = ''
+            if ($o -match '"name"\s*:\s*"([^"]*)"') { $n = $Matches[1] }
+            if ($o -match '"key"\s*:\s*"([^"]*)"')  { $k = $Matches[1] }
+            if     ($n -match 'Docker') { $k = $new['REMOTE_AGENT_DOCKER_KEY'] }
+            elseif ($n -match 'LAN')    { $k = $new['REMOTE_AGENT_LAN_KEY'] }
+            elseif ($n -match 'WAN')    { $k = $new['REMOTE_AGENT_WAN_KEY'] }
+            $items += ('{"name":"' + $n + '","key":"' + $k + '"}')
+        }
+        if ($items.Count -eq 0) {
+            Write-Warning "No pude interpretar BOOTSTRAP_AGENTS. Actualizalo a mano con las claves nuevas."
+        } else {
+            Set-EnvValue 'BOOTSTRAP_AGENTS' ('[' + ($items -join ',') + ']')
+            # Verificacion: cada clave nueva tiene que estar dentro de BOOTSTRAP_AGENTS.
+            $bs = Get-EnvValue 'BOOTSTRAP_AGENTS'
+            foreach ($kk in 'REMOTE_AGENT_DOCKER_KEY','REMOTE_AGENT_LAN_KEY','REMOTE_AGENT_WAN_KEY') {
+                if (-not $bs.Contains($new[$kk])) { throw "BOOTSTRAP_AGENTS no quedo con la clave nueva de $kk." }
             }
-            $newJson = ConvertTo-Json -InputObject $agents -Compress
-            Set-EnvValue 'BOOTSTRAP_AGENTS' $newJson
-        } catch {
-            Write-Warning "No pude interpretar BOOTSTRAP_AGENTS ($($_.Exception.Message)). Actualizalo a mano con las claves nuevas."
         }
     }
 }

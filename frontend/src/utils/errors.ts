@@ -22,12 +22,34 @@ function permissionHint(): string {
   return ` -- Iniciaste sesion con el rol "${role}", y esta accion requiere admin o soc_manager. Cerra sesion y entra con una cuenta admin.`;
 }
 
+/**
+ * FastAPI devuelve `detail` como texto en errores de negocio (400/401/404) pero
+ * como LISTA de objetos {loc, msg} en un 422 de validacion. String(lista) daba
+ * "[object Object]" y no se veia que campo estaba mal.
+ */
+function formatDetail(detail: unknown): string {
+  if (Array.isArray(detail)) {
+    return detail
+      .map((d) => {
+        if (d && typeof d === "object" && "msg" in d) {
+          const item = d as { loc?: unknown[]; msg?: unknown };
+          const campo = Array.isArray(item.loc) ? item.loc.filter((x) => x !== "body").join(".") : "";
+          return campo ? `${campo}: ${String(item.msg)}` : String(item.msg);
+        }
+        return typeof d === "string" ? d : JSON.stringify(d);
+      })
+      .join("; ");
+  }
+  if (detail && typeof detail === "object") return JSON.stringify(detail);
+  return String(detail);
+}
+
 export function connectionErrorDetail(error: unknown): string {
   if (axios.isAxiosError(error)) {
     if (error.response) {
       const detail =
         typeof error.response.data === "object" && error.response.data !== null && "detail" in error.response.data
-          ? String((error.response.data as { detail?: unknown }).detail)
+          ? formatDetail((error.response.data as { detail?: unknown }).detail)
           : JSON.stringify(error.response.data);
       const base = `HTTP ${error.response.status}: ${detail}`.slice(0, 300);
       return error.response.status === 403 ? base + permissionHint() : base;
@@ -65,7 +87,7 @@ export async function blobExportErrorDetail(error: unknown): Promise<string> {
       try {
         const parsed = JSON.parse(text);
         const detail =
-          typeof parsed === "object" && parsed !== null && "detail" in parsed ? String((parsed as { detail?: unknown }).detail) : text;
+          typeof parsed === "object" && parsed !== null && "detail" in parsed ? formatDetail((parsed as { detail?: unknown }).detail) : text;
         return `HTTP ${error.response.status}: ${detail}`.slice(0, 300);
       } catch {
         return `HTTP ${error.response.status}: ${text || "sin detalle"}`.slice(0, 300);

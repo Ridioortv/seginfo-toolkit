@@ -36,9 +36,17 @@ PAYPAL_CANCEL_URL = os.getenv("PAYPAL_CANCEL_URL", "https://www.google.com/?sent
 # corra hasta el final (is_org_active() del lado del cliente corta solo
 # cuando subscription_expires_at pasa) en vez de cortarle el acceso que
 # ya pago.
+#
+# IMPORTANTE: SOLO PAYMENT.SALE.COMPLETED extiende la licencia. PayPal manda
+# BILLING.SUBSCRIPTION.ACTIVATED al aprobar el cliente Y, aparte,
+# PAYMENT.SALE.COMPLETED por el primer cobro -- si los dos extendieran,
+# el primer pago daria 60 dias en vez de 30. ACTIVATED solo sirve para
+# vincular el subscription_id con la license_key (ver LINK_EVENTS).
 PAYMENT_RECEIVED_EVENTS = {
-    "BILLING.SUBSCRIPTION.ACTIVATED",  # primer pago, al aprobar la suscripcion
-    "PAYMENT.SALE.COMPLETED",  # cada cobro recurrente posterior
+    "PAYMENT.SALE.COMPLETED",  # cada cobro (el primero incluido)
+}
+LINK_EVENTS = {
+    "BILLING.SUBSCRIPTION.ACTIVATED",  # aprobacion: vincula subscription_id <-> license_key
 }
 
 
@@ -65,7 +73,9 @@ async def _get_access_token(client: httpx.AsyncClient) -> str:
     return resp.json()["access_token"]
 
 
-async def create_subscription_approval_link(license_key: str, plan_id: str | None = None) -> tuple[str, str]:
+async def create_subscription_approval_link(
+    license_key: str, plan_id: str | None = None, payer_email: str | None = None
+) -> tuple[str, str]:
     """Crea una suscripcion en PayPal (todavia sin aprobar por el
     cliente) con custom_id=license_key, y devuelve (subscription_id,
     approval_url). El operador manda approval_url al cliente; cuando lo
@@ -79,19 +89,22 @@ async def create_subscription_approval_link(license_key: str, plan_id: str | Non
 
     async with httpx.AsyncClient(timeout=15) as client:
         token = await _get_access_token(client)
+        payload = {
+            "plan_id": plan_id,
+            "custom_id": license_key,
+            "application_context": {
+                "brand_name": "SentinelOps",
+                "user_action": "SUBSCRIBE_NOW",
+                "return_url": PAYPAL_RETURN_URL,
+                "cancel_url": PAYPAL_CANCEL_URL,
+            },
+        }
+        if payer_email:
+            payload["subscriber"] = {"email_address": payer_email}
         resp = await client.post(
             f"{_base_url()}/v1/billing/subscriptions",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={
-                "plan_id": plan_id,
-                "custom_id": license_key,
-                "application_context": {
-                    "brand_name": "SentinelOps",
-                    "user_action": "SUBSCRIBE_NOW",
-                    "return_url": PAYPAL_RETURN_URL,
-                    "cancel_url": PAYPAL_CANCEL_URL,
-                },
-            },
+            json=payload,
         )
         if resp.status_code >= 400:
             raise PayPalError(f"PayPal rechazo la creacion de la suscripcion: {resp.status_code} {resp.text[:500]}")
@@ -102,6 +115,24 @@ async def create_subscription_approval_link(license_key: str, plan_id: str | Non
     if not approve_link:
         raise PayPalError("la respuesta de PayPal no incluyo un link 'approve'")
     return subscription_id, approve_link
+
+
+async def cancel_subscription(subscription_id: str, reason: str = "Cancelada por el cliente") -> None:
+    """Cancela el PROXIMO cobro de la suscripcion en PayPal. El periodo ya
+    pagado sigue corriendo (no se toca la fecha de vencimiento)."""
+    if not is_configured():
+        raise PayPalError("PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET no configurados")
+    async with httpx.AsyncClient(timeout=15) as client:
+        token = await _get_access_token(client)
+        resp = await client.post(
+            f"{_base_url()}/v1/billing/subscriptions/{subscription_id}/cancel",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"reason": reason[:128]},
+        )
+        # 204 = cancelada. 422 = ya estaba cancelada/expirada: para el cliente
+        # el resultado es el mismo (no se le cobra mas), no es un error.
+        if resp.status_code not in (200, 204, 422):
+            raise PayPalError(f"PayPal rechazo la cancelacion: {resp.status_code} {resp.text[:500]}")
 
 
 async def verify_webhook_signature(headers: dict, event_body: dict) -> bool:

@@ -14,7 +14,7 @@ que era la causa principal de que trivy "tardara mucho"."""
 import asyncio
 import json
 import os
-from app.scanners.base import ScannerDriver, ScanResult
+from app.scanners.base import ScannerDriver, ScanResult, clean_stderr
 
 _SEVERITY_MAP = {
     "CRITICAL": "critical",
@@ -76,8 +76,17 @@ class TrivyDriver(ScannerDriver):
 
         raw = stdout.decode(errors="replace")
         err = stderr.decode(errors="replace")
-        if proc.returncode not in (0, 1):
-            if "--skip-db-update" in err or "database is not initialized" in err.lower() or "no such file" in err.lower():
+        # trivy usa --exit-code 0 por default: sale con 0 haya o no
+        # vulnerabilidades. CUALQUIER codigo != 0 es un fallo real (antes el
+        # 1 se aceptaba como "hubo hallazgos" y un FATAL como "--skip-db-update
+        # cannot be specified on the first run" terminaba como un escaneo
+        # "completado con 0 hallazgos" -- peor que un error).
+        if proc.returncode != 0:
+            low = err.lower()
+            if any(m in low for m in (
+                "--skip-db-update", "database is not initialized", "no such file", "db error",
+                "first run", "failed to open db", "database error",
+            )):
                 # La cache esta vacia (primer arranque antes de que corra
                 # el refresh periodico, o volumen recien creado) --
                 # reintentamos una sola vez permitiendo que trivy baje la
@@ -99,10 +108,10 @@ class TrivyDriver(ScannerDriver):
                         await proc2.wait()
                     raise
                 raw2 = stdout2.decode(errors="replace")
-                if proc2.returncode not in (0, 1):
-                    return ScanResult(raw_output=raw2, error=stderr2.decode(errors="replace")[:2000])
+                if proc2.returncode != 0:
+                    return ScanResult(raw_output=raw2, error=clean_stderr(stderr2.decode(errors="replace")))
                 return ScanResult(raw_output=raw2, findings=_parse_trivy_json(raw2), packages=_parse_trivy_packages(raw2))
-            return ScanResult(raw_output=raw, error=err[:2000])
+            return ScanResult(raw_output=raw, error=clean_stderr(err))
 
         return ScanResult(raw_output=raw, findings=_parse_trivy_json(raw), packages=_parse_trivy_packages(raw))
 

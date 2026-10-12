@@ -16,7 +16,7 @@ trivy/nuclei (nunca linkeado ni distribuido como libreria)."""
 import asyncio
 import json
 import os
-from app.scanners.base import ScannerDriver, ScanResult
+from app.scanners.base import ScannerDriver, ScanResult, clean_stderr
 from app.scanners._codetarget import CodeTarget
 
 # Directorio con las reglas PROPIAS -- ver Dockerfile (COPY rules/semgrep
@@ -40,6 +40,13 @@ def build_semgrep_cmd(path: str, rules_dir: str = SEMGREP_RULES_DIR) -> list[str
     ]
 
 
+def _short_rule_id(check_id: str) -> str:
+    """semgrep antepone al id de la regla el path del directorio de reglas
+    (ej. "opt.sentinelops-semgrep-rules.sentinelops-python-eval-exec"); los
+    ids propios nunca llevan '.', asi que el ultimo segmento es el real."""
+    return (check_id or "").rsplit(".", 1)[-1] or "regla semgrep desconocida"
+
+
 def parse_semgrep_json(raw_json: str) -> list[dict]:
     findings: list[dict] = []
     try:
@@ -50,14 +57,14 @@ def parse_semgrep_json(raw_json: str) -> list[dict]:
         extra = result.get("extra", {}) or {}
         start = result.get("start", {}) or {}
         findings.append({
-            "title": f"{result.get('check_id', 'regla semgrep desconocida')} en {result.get('path', '')}",
+            "title": f"{_short_rule_id(result.get('check_id'))} en {result.get('path', '')}",
             "description": (extra.get("message") or "")[:1000],
             "severity": _SEVERITY_MAP.get(extra.get("severity", "INFO"), "info"),
             "cve_id": None,
             "service": None,
             "file_path": result.get("path"),
             "start_line": start.get("line"),
-            "rule_id": result.get("check_id"),
+            "rule_id": _short_rule_id(result.get("check_id")),
         })
     return findings
 
@@ -93,6 +100,9 @@ class SemgrepDriver(ScannerDriver):
             # semgrep devuelve 1 cuando ENCONTRO hallazgos (no es un error
             # del comando) -- igual criterio que trivy/nuclei con su
             # propio codigo de salida de "hallazgos encontrados".
-            if proc.returncode not in (0, 1):
-                return ScanResult(raw_output=raw, error=stderr.decode(errors="replace")[:2000])
+            if proc.returncode not in (0, 1) or (proc.returncode != 0 and not raw.strip()):
+                return ScanResult(
+                    raw_output=raw,
+                    error=clean_stderr(stderr.decode(errors="replace")) or f"semgrep termino con codigo {proc.returncode} sin salida",
+                )
             return ScanResult(raw_output=raw[:200_000], findings=parse_semgrep_json(raw))
