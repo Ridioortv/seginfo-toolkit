@@ -156,7 +156,7 @@ async def triage(
     vuln = await services.get_vulnerability(db, vuln_id, org_id_from_claims(claims))
     if vuln is None:
         raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
-    vuln = await services.triage_vulnerability(db, vuln, payload, claims.get("sub", ""))
+    vuln = await services.triage_vulnerability(db, vuln, payload, (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     vulns_triaged_total.labels(new_status=payload.status.value).inc()
     logger.info("vulnerabilidad triada", extra={"vuln_id": vuln_id, "status": payload.status.value, "actor": claims.get("sub")})

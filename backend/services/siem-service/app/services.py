@@ -51,7 +51,7 @@ async def ingest_events(db: AsyncSession, os_client, payload) -> tuple[int, int]
                 alert = await _create_alert(db, rule, document, organization_id)
                 alerts_created += 1
                 await _enrich_alert_with_threat_intel(alert, document)
-                alert.soar_triggered = await _notify_soar(alert, organization_id)
+                alert.soar_triggered = await _notify_soar(alert, organization_id, rule.tags)
 
     await db.flush()
     return indexed, alerts_created
@@ -122,7 +122,7 @@ async def _enrich_alert_with_threat_intel(alert: Alert, event: dict) -> None:
         alert.threat_intel = malicious
 
 
-async def _notify_soar(alert: Alert, organization_id: str) -> bool:
+async def _notify_soar(alert: Alert, organization_id: str, rule_tags: list[str] | None = None) -> bool:
     """Best-effort: si soar-service no responde, la alerta ya quedo guardada
     igual; esto solo dispara la evaluacion automatica de playbooks. Devuelve
     True/False segun si la notificacion salio bien -- lo usa _create_alert
@@ -136,6 +136,9 @@ async def _notify_soar(alert: Alert, organization_id: str) -> bool:
         "severity": alert.severity.value,
         "event": alert.matched_event,
         "organization_id": organization_id,
+        # Tags de la regla que disparo: soar-service los usa para correr solo
+        # los playbooks cuyo rule_tags coincide (o los que no filtran por tags).
+        "rule_tags": list(rule_tags or []),
     }
     from backend.shared.security import create_access_token
 

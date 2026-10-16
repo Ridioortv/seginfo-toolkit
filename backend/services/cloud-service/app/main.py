@@ -108,7 +108,7 @@ async def create_account(
     claims: dict = Depends(require_role("admin", "soc_manager")),
     db: AsyncSession = Depends(get_db),
 ):
-    account = await services.create_account(db, payload, org_id_from_claims(claims), claims.get("sub", ""))
+    account = await services.create_account(db, payload, org_id_from_claims(claims), (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     logger.info("cuenta de AWS agregada", extra={"cloud_account_id": account.id, "actor": claims.get("sub")})
     return _account_out(account)
@@ -186,6 +186,6 @@ async def update_finding(
     finding = await services.get_finding(db, finding_id, org_id_from_claims(claims))
     if finding is None:
         raise HTTPException(status_code=404, detail="Hallazgo no encontrado")
-    finding = await services.acknowledge_finding(db, finding, payload.is_acknowledged, claims.get("sub", ""))
+    finding = await services.acknowledge_finding(db, finding, payload.is_acknowledged, (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     return finding

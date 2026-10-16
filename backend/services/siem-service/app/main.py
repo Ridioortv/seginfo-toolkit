@@ -234,7 +234,7 @@ async def update_alert(
     alert = await services.get_alert(db, alert_id, org_id_from_claims(claims))
     if alert is None:
         raise HTTPException(status_code=404, detail="Alerta no encontrada")
-    alert = await services.update_alert(db, alert, payload, claims.get("sub", ""))
+    alert = await services.update_alert(db, alert, payload, (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     alerts_created_total.labels(severity=alert.severity.value).inc(0)  # asegura la serie en /metrics
     return alert

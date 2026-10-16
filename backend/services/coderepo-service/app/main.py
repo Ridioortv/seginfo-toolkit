@@ -143,7 +143,7 @@ async def create_repo(
     unsafe = services.repo_url_safety_error(payload.repo_url)
     if unsafe:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"repo_url no permitido: {unsafe}")
-    target = await services.create_target(db, payload, org_id_from_claims(claims), claims.get("sub", ""))
+    target = await services.create_target(db, payload, org_id_from_claims(claims), (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     logger.info("repositorio agregado", extra={"repo_target_id": target.id, "actor": claims.get("sub")})
     return _target_out(target)
@@ -214,6 +214,6 @@ async def update_secret(
     finding = await services.get_secret(db, finding_id, org_id_from_claims(claims))
     if finding is None:
         raise HTTPException(status_code=404, detail="Hallazgo no encontrado")
-    finding = await services.acknowledge_secret(db, finding, payload.is_acknowledged, claims.get("sub", ""))
+    finding = await services.acknowledge_secret(db, finding, payload.is_acknowledged, (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     return finding

@@ -112,7 +112,7 @@ async def create_domain(
     if await services.domain_exists(db, org_id, normalized):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ese dominio ya esta siendo monitoreado")
 
-    domain = await services.create_domain(db, normalized, org_id, claims.get("sub", ""))
+    domain = await services.create_domain(db, normalized, org_id, (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     logger.info("dominio agregado a monitoreo", extra={"domain_id": domain.id, "domain": domain.domain})
     return domain
@@ -188,6 +188,6 @@ async def acknowledge_alert(
     alert = await services.get_alert(db, alert_id, org_id_from_claims(claims))
     if alert is None:
         raise HTTPException(status_code=404, detail="Alerta no encontrada")
-    alert = await services.acknowledge_alert(db, alert, claims.get("sub", ""))
+    alert = await services.acknowledge_alert(db, alert, (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     return alert

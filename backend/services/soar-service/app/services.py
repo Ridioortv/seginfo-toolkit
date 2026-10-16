@@ -74,6 +74,20 @@ async def _run_steps(db: AsyncSession, playbook: Playbook, context: dict, trigge
     return run
 
 
+def tags_match(playbook_tags: list[str] | None, alert_tags: list[str] | None) -> bool:
+    """Un playbook sin rule_tags aplica a cualquier alerta (comportamiento de
+    los playbooks incluidos). Con rule_tags, solo corre si la regla que
+    disparo comparte al menos un tag (sin distinguir mayusculas). Antes
+    rule_tags se guardaba pero nunca se usaba: un playbook de "fuerza bruta"
+    corria tambien sobre alertas de PowerShell."""
+    if not playbook_tags:
+        return True
+    wanted = {t.strip().lower() for t in playbook_tags if t and t.strip()}
+    if not wanted:
+        return True
+    return bool(wanted & {t.strip().lower() for t in (alert_tags or []) if t})
+
+
 async def trigger_playbooks(db: AsyncSession, payload) -> tuple[int, list[PlaybookRun]]:
     """Llamado por siem-service cuando se genera una alerta (ver
     siem-service/app/services.py _notify_soar). Corre TODOS los playbooks
@@ -87,7 +101,10 @@ async def trigger_playbooks(db: AsyncSession, payload) -> tuple[int, list[Playbo
         )
     )
     playbooks = list(result.scalars().all())
-    matched = [p for p in playbooks if _severity_meets_minimum(payload.severity, p.min_severity)]
+    matched = [
+        p for p in playbooks
+        if _severity_meets_minimum(payload.severity, p.min_severity) and tags_match(p.rule_tags, payload.rule_tags)
+    ]
 
     context_base = {
         "event": payload.event,

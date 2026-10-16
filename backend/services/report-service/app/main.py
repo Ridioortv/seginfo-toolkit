@@ -126,7 +126,7 @@ async def generate_report(
 ):
     auth_header = request.headers.get("authorization")
     report = await services.generate_report(
-        db, payload.report_type, auth_header, claims.get("sub", ""), org_id_from_claims(claims)
+        db, payload.report_type, auth_header, (claims.get("email") or claims.get("sub", "")), org_id_from_claims(claims)
     )
     await db.commit()
     reports_generated_total.labels(report_type=payload.report_type).inc()
@@ -194,7 +194,7 @@ async def create_schedule(
     claims: dict = Depends(require_role("admin", "soc_manager")),
     db: AsyncSession = Depends(get_db),
 ):
-    schedule = await services.create_schedule(db, payload, claims.get("sub", ""), org_id_from_claims(claims))
+    schedule = await services.create_schedule(db, payload, (claims.get("email") or claims.get("sub", "")), org_id_from_claims(claims))
     await db.commit()
     _register_job(schedule)
     logger.info("regla de reporte programado creada", extra={"schedule_id": schedule.id})

@@ -64,6 +64,8 @@ class TriggerRequest(BaseModel):
     # JWT de quien ingesto el log). Si falta, se asume la organizacion
     # default (ver backend/shared/tenancy.py).
     organization_id: str | None = None
+    # Tags de la regla Sigma que genero la alerta (los manda siem-service).
+    rule_tags: list[str] = Field(default_factory=list)
 
 
 class TriggerResponse(BaseModel):

@@ -101,7 +101,7 @@ async def create_case(
     para cualquier respuesta que no sea 2xx, que case-service importa
     despues por el camino service-to-service autenticado (ver
     services.import_pending_cases_from_soar, que SI emite su propio JWT)."""
-    case = await services.create_case(db, payload, org_id_from_claims(claims), claims.get("sub", ""))
+    case = await services.create_case(db, payload, org_id_from_claims(claims), (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     cases_created_total.labels(
         priority=payload.priority.value,
@@ -146,7 +146,7 @@ async def update_case(
             status_code=409,
             detail=f"Transicion de estado invalida: {case.status.value} -> {changes['status'].value}",
         )
-    case = await services.update_case(db, case, payload, claims.get("sub", ""))
+    case = await services.update_case(db, case, payload, (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     return case
 
@@ -161,7 +161,7 @@ async def add_timeline_entry(
     case = await services.get_case(db, case_id, org_id_from_claims(claims))
     if case is None:
         raise HTTPException(status_code=404, detail="Caso no encontrado")
-    case = await services.add_timeline_entry(db, case, payload, claims.get("sub", ""))
+    case = await services.add_timeline_entry(db, case, payload, (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     return case
 
