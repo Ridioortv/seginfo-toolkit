@@ -92,7 +92,7 @@ function CoverageRing({ pct }: { pct: number | null }) {
 }
 
 export default function Dashboard() {
-  const username = useAuthStore((st) => st.claims?.sub);
+  const username = useAuthStore((st) => st.claims?.email ?? st.claims?.sub);
   const vulnStats = useQuery({
     queryKey: ["vuln-stats"],
     queryFn: async () => (await vulnApi.get<VulnerabilityStatsOut>("/vulnerabilities/stats")).data,

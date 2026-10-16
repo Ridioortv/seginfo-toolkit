@@ -493,7 +493,7 @@ async def authenticate(db: AsyncSession, email: str, password: str, totp_code: s
 
 def issue_tokens(user: User, role_name: str) -> tuple[str, str]:
     return (
-        create_access_token(user.id, role_name, user.organization_id, user.is_platform_admin),
+        create_access_token(user.id, role_name, user.organization_id, user.is_platform_admin, email=user.email),
         create_refresh_token(user.id),
     )
 

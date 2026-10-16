@@ -2,6 +2,7 @@ import { create } from "zustand";
 
 export interface Claims {
   sub: string;
+  email?: string;
   role: string;
   exp: number;
   [key: string]: unknown;

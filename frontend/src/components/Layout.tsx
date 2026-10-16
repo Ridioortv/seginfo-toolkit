@@ -110,7 +110,7 @@ export default function Layout() {
     navigate("/login");
   }
 
-  const username = claims?.sub ?? "usuario";
+  const username = claims?.email ?? claims?.sub ?? "usuario";
 
   return (
     <div className={"layout" + (navOpen ? " layout-nav-open" : "")}>
@@ -171,7 +171,7 @@ export default function Layout() {
             <Icon name={theme === "dark" ? "sun" : "moon"} />
           </button>
           <div className="topbar-user">
-            <span className="avatar" aria-hidden="true">{initials(claims?.sub)}</span>
+            <span className="avatar" aria-hidden="true">{initials(claims?.email ?? claims?.sub)}</span>
             <span className="topbar-user-text">
               <span className="topbar-user-name">{username}</span>
               <span className="topbar-user-role">{claims?.role ?? "sin rol"}</span>

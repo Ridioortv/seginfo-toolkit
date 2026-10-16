@@ -108,7 +108,13 @@ async def trigger_playbooks(db: AsyncSession, payload) -> tuple[int, list[Playbo
 async def run_playbook_manually(db: AsyncSession, playbook: Playbook, payload, organization_id: str) -> PlaybookRun:
     context = {
         "event": payload.event,
-        "alert": {"id": payload.alert_id, "severity": payload.event.get("severity", "medium"), "rule_name": ""},
+        "alert": {
+            "id": payload.alert_id,
+            "severity": payload.event.get("severity", "medium"),
+            # Sin esto, los casos/tickets/avisos de una corrida manual quedaban
+            # titulados "Alerta medium: " (nombre de regla vacio).
+            "rule_name": payload.event.get("rule_name") or f"ejecucion manual de {playbook.name}",
+        },
         "db": db,
         "organization_id": organization_id,
     }
