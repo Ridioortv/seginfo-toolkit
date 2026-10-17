@@ -17,6 +17,7 @@ interface Props {
 // abierta.
 export default function PaymentMethodModal({ open, pendingProvider, error, onSelect, onClose }: Props) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const emailDetailsRef = useRef<HTMLDetailsElement>(null);
   const [mpEmail, setMpEmail] = useState("");
   const busy = pendingProvider !== null;
 
@@ -55,6 +56,14 @@ export default function PaymentMethodModal({ open, pendingProvider, error, onSel
       previouslyFocused?.focus?.();
     };
   }, [open, onClose]);
+
+  // Si Mercado Pago rechazo por el email del pagador, se abre solo el campo
+  // para corregirlo (no hay que adivinar que estaba escondido).
+  useEffect(() => {
+    if (open && error && /email/i.test(error) && emailDetailsRef.current) {
+      emailDetailsRef.current.open = true;
+    }
+  }, [open, error]);
 
   if (!open) return null;
 
@@ -96,7 +105,7 @@ export default function PaymentMethodModal({ open, pendingProvider, error, onSel
           ))}
         </div>
 
-        <details className="pay-extra">
+        <details className="pay-extra" ref={emailDetailsRef}>
           <summary>¿Tu cuenta de Mercado Pago usa otro email?</summary>
           <label htmlFor="mp-email">Email de tu cuenta de Mercado Pago (opcional)</label>
           <input

@@ -134,3 +134,21 @@ def test_broken_paypal_still_reports_its_own_error_for_a_paypal_link(client, mon
     monkeypatch.setattr(paypal, "get_subscription_status", broken)
     r = client.post("/license/k-g7/paypal/subscription-link", json={})
     assert r.status_code == 502 and "credenciales" in r.json()["detail"]
+
+
+def test_mercadopago_real_vs_test_users_mismatch_explains_what_to_do(client, monkeypatch):
+    """Caso real: token de PRUEBA + email de un usuario real -> Mercado Pago
+    responde 400 "Both payer and collector must be real or test users"."""
+    _new(client, "k-g8")
+
+    def handler(request):
+        if "dolarapi" in str(request.url):
+            return httpx.Response(200, json={"venta": 1500})
+        return httpx.Response(400, json={"message": "Both payer and collector must be real or test users", "status": 400})
+
+    _patch_http(monkeypatch, mp, handler)
+    r = client.post("/license/k-g8/mercadopago/subscription-link", json={"payer_email": "real@gmail.com"})
+    assert r.status_code == 502
+    detail = r.json()["detail"]
+    assert "COMPRADOR de prueba" in detail and "produccion" in detail
+    assert "real or test" not in detail

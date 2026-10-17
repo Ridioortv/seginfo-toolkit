@@ -37,26 +37,41 @@ import time
 
 import httpx
 
-MP_ACCESS_TOKEN = os.getenv("MP_ACCESS_TOKEN", "")
-MP_WEBHOOK_SECRET = os.getenv("MP_WEBHOOK_SECRET", "")
-MP_NOTIFICATION_URL = os.getenv("MP_NOTIFICATION_URL", "")
-MP_BACK_URL = os.getenv("MP_BACK_URL", "https://www.google.com/?sentinelops_subscribed=1")
-MP_PRICE_USD = float(os.getenv("MP_PRICE_USD", "250"))
+def _env(name: str, default: str = "") -> str:
+    """Variable de entorno sin espacios ni saltos de linea a los costados (se
+    cuelan al pegar valores en el dashboard de Render)."""
+    return os.getenv(name, default).strip()
+
+
+def _env_float(name: str, default: float) -> float:
+    """Un numero mal escrito en el dashboard (ej. "250 USD") no debe impedir que
+    el servidor arranque: se usa el valor por defecto."""
+    try:
+        return float(_env(name).replace(",", ".")) if _env(name) else default
+    except ValueError:
+        return default
+
+
+MP_ACCESS_TOKEN = _env("MP_ACCESS_TOKEN")
+MP_WEBHOOK_SECRET = _env("MP_WEBHOOK_SECRET")
+MP_NOTIFICATION_URL = _env("MP_NOTIFICATION_URL")
+MP_BACK_URL = _env("MP_BACK_URL") or "https://www.google.com/?sentinelops_subscribed=1"
+MP_PRICE_USD = _env_float("MP_PRICE_USD", 250.0)
 # Mercado Pago documenta que el webhook firmado con la clave secreta del panel
 # puede no aplicar a las notificaciones de Suscripciones (las que salen del
 # notification_url mandado al crearlas). Por eso, por defecto, una notificacion
 # SIN firma se acepta (el estado del cobro se vuelve a pedir a la API, asi que
 # no se puede falsificar); una firma presente pero incorrecta siempre se
 # rechaza. Con MP_WEBHOOK_REQUIRE_SIGNATURE=1 toda notificacion debe venir firmada.
-MP_WEBHOOK_REQUIRE_SIGNATURE = os.getenv("MP_WEBHOOK_REQUIRE_SIGNATURE", "").lower() in ("1", "true", "yes")
-MP_FX_URL = os.getenv("MP_FX_URL", "https://dolarapi.com/v1/dolares/oficial")
-MP_FX_FIELD = os.getenv("MP_FX_FIELD", "venta")
-MP_FX_MARGIN_PCT = float(os.getenv("MP_FX_MARGIN_PCT", "0"))
-MP_FALLBACK_RATE = os.getenv("MP_FALLBACK_RATE", "")
+MP_WEBHOOK_REQUIRE_SIGNATURE = _env("MP_WEBHOOK_REQUIRE_SIGNATURE").lower() in ("1", "true", "yes")
+MP_FX_URL = _env("MP_FX_URL") or "https://dolarapi.com/v1/dolares/oficial"
+MP_FX_FIELD = _env("MP_FX_FIELD") or "venta"
+MP_FX_MARGIN_PCT = _env_float("MP_FX_MARGIN_PCT", 0.0)
+MP_FALLBACK_RATE = _env("MP_FALLBACK_RATE")
 # Una cotizacion fuera de este rango es basura de la API (un 1 o un 0 cobraria
 # 250 pesos en vez de ~400 mil): se descarta antes de crearle un cobro a nadie.
-MP_FX_MIN = float(os.getenv("MP_FX_MIN", "100"))
-MP_FX_MAX = float(os.getenv("MP_FX_MAX", "100000"))
+MP_FX_MIN = _env_float("MP_FX_MIN", 100.0)
+MP_FX_MAX = _env_float("MP_FX_MAX", 100000.0)
 FX_CACHE_SECONDS = 600
 
 _API = "https://api.mercadopago.com"
@@ -86,7 +101,7 @@ def _raise_for_mp_status(resp: httpx.Response, what: str) -> None:
 
 def _valid_rate(value) -> float | None:
     try:
-        rate = float(value)
+        rate = float(str(value).strip().replace(",", "."))
     except (TypeError, ValueError):
         return None
     return rate if MP_FX_MIN <= rate <= MP_FX_MAX else None
@@ -115,7 +130,8 @@ async def get_usd_ars_rate(client: httpx.AsyncClient | None = None) -> float:
         rate = _valid_rate(MP_FALLBACK_RATE)
         if rate is None:
             raise MercadoPagoError(
-                "no se pudo obtener la cotizacion del dolar (y no hay MP_FALLBACK_RATE configurada)"
+                "no se pudo obtener la cotizacion del dolar y MP_FALLBACK_RATE esta vacia o es invalida "
+                "(poné solo el numero, por ejemplo 1300)"
             )
         return rate  # el fallback no se cachea: en cuanto la API vuelva se usa la real
 
@@ -156,6 +172,13 @@ async def create_subscription_approval_link(license_key: str, payer_email: str |
             payload["notification_url"] = MP_NOTIFICATION_URL
         resp = await client.post(f"{_API}/preapproval", headers=_headers(), json=payload)
         _raise_for_mp_status(resp, "crear la suscripcion")
+        if resp.status_code == 400 and "real or test" in resp.text:
+            raise MercadoPagoError(
+                "Mercado Pago: la cuenta que cobra y el email del pagador tienen que ser los dos reales o los "
+                "dos de prueba. Si estas probando con credenciales de PRUEBA, escribi en 'email de tu cuenta de "
+                "Mercado Pago' el email del COMPRADOR de prueba (panel de Mercado Pago > Cuentas de prueba). "
+                "En produccion, usa credenciales de produccion y tu email real."
+            )
         if resp.status_code >= 400:
             raise MercadoPagoError(f"Mercado Pago rechazo la creacion de la suscripcion: {resp.status_code} {resp.text[:500]}")
         body = resp.json()

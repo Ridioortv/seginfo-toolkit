@@ -21,13 +21,21 @@ from datetime import datetime, timezone
 
 import httpx
 
-PAYPAL_CLIENT_ID = os.getenv("PAYPAL_CLIENT_ID", "")
-PAYPAL_CLIENT_SECRET = os.getenv("PAYPAL_CLIENT_SECRET", "")
-PAYPAL_ENV = os.getenv("PAYPAL_ENV", "sandbox")
-PAYPAL_WEBHOOK_ID = os.getenv("PAYPAL_WEBHOOK_ID", "")
-PAYPAL_PLAN_ID = os.getenv("PAYPAL_PLAN_ID", "")
-PAYPAL_RETURN_URL = os.getenv("PAYPAL_RETURN_URL", "https://www.google.com/?sentinelops_subscribed=1")
-PAYPAL_CANCEL_URL = os.getenv("PAYPAL_CANCEL_URL", "https://www.google.com/?sentinelops_cancelled=1")
+def _env(name: str, default: str = "") -> str:
+    """Variable de entorno SIN espacios ni saltos de linea a los costados: al
+    pegar un valor en el dashboard de Render es muy facil que se cuele uno
+    (un "live " con espacio no es "live" y mandaba las credenciales live al
+    entorno sandbox -> HTTP 401 de PayPal)."""
+    return os.getenv(name, default).strip()
+
+
+PAYPAL_CLIENT_ID = _env("PAYPAL_CLIENT_ID")
+PAYPAL_CLIENT_SECRET = _env("PAYPAL_CLIENT_SECRET")
+PAYPAL_ENV = _env("PAYPAL_ENV", "sandbox").lower() or "sandbox"
+PAYPAL_WEBHOOK_ID = _env("PAYPAL_WEBHOOK_ID")
+PAYPAL_PLAN_ID = _env("PAYPAL_PLAN_ID")
+PAYPAL_RETURN_URL = _env("PAYPAL_RETURN_URL", "https://www.google.com/?sentinelops_subscribed=1") or "https://www.google.com/?sentinelops_subscribed=1"
+PAYPAL_CANCEL_URL = _env("PAYPAL_CANCEL_URL", "https://www.google.com/?sentinelops_cancelled=1") or "https://www.google.com/?sentinelops_cancelled=1"
 
 # Eventos de PayPal que representan un pago efectivamente recibido --
 # unicos que disparan una extension de la licencia. Todo lo demas
@@ -59,7 +67,7 @@ def is_configured() -> bool:
 
 
 def _base_url() -> str:
-    return "https://api-m.sandbox.paypal.com" if PAYPAL_ENV != "live" else "https://api-m.paypal.com"
+    return "https://api-m.paypal.com" if PAYPAL_ENV in ("live", "production", "prod") else "https://api-m.sandbox.paypal.com"
 
 
 async def _get_access_token(client: httpx.AsyncClient) -> str:

@@ -35,9 +35,11 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 logger = logging.getLogger("license_check")
 
-LICENSE_SERVER_URL = os.getenv("LICENSE_SERVER_URL", "").rstrip("/")
-LICENSE_KEY = os.getenv("LICENSE_KEY", "")
-LICENSE_SERVER_PUBLIC_KEY = os.getenv("LICENSE_SERVER_PUBLIC_KEY", "")
+# .strip(): un espacio o salto de linea colado al pegar el valor en el .env
+# rompia la URL o la firma sin ningun mensaje claro.
+LICENSE_SERVER_URL = os.getenv("LICENSE_SERVER_URL", "").strip().rstrip("/")
+LICENSE_KEY = os.getenv("LICENSE_KEY", "").strip()
+LICENSE_SERVER_PUBLIC_KEY = os.getenv("LICENSE_SERVER_PUBLIC_KEY", "").strip()
 # Pasarelas de cobro de la suscripcion (cada 30 dias): PayPal (USD 250) y
 # Mercado Pago (pesos, USD 250 al cambio del dia). El cliente elige cual en
 # "Pagos y licencia" (o en el login bloqueado). "paypal" es la de siempre.
@@ -145,10 +147,10 @@ def _error_detail(resp: httpx.Response) -> str:
     try:
         detail = resp.json().get("detail")
         if isinstance(detail, str) and detail:
-            return detail[:300]
+            return detail[:500]
     except (ValueError, AttributeError):
         pass
-    return resp.text[:300]
+    return resp.text[:500]
 
 
 def _is_route_missing(resp: httpx.Response) -> bool:
