@@ -35,6 +35,7 @@ PAYPAL_ENV = _env("PAYPAL_ENV", "sandbox").lower() or "sandbox"
 PAYPAL_WEBHOOK_ID = _env("PAYPAL_WEBHOOK_ID")
 PAYPAL_PLAN_ID = _env("PAYPAL_PLAN_ID")
 PAYPAL_RETURN_URL = _env("PAYPAL_RETURN_URL", "https://www.google.com/?sentinelops_subscribed=1") or "https://www.google.com/?sentinelops_subscribed=1"
+PAYPAL_PREFILL_EMAIL = _env("PAYPAL_PREFILL_EMAIL").lower() in ("1", "true", "yes")
 PAYPAL_CANCEL_URL = _env("PAYPAL_CANCEL_URL", "https://www.google.com/?sentinelops_cancelled=1") or "https://www.google.com/?sentinelops_cancelled=1"
 
 # Eventos de PayPal que representan un pago efectivamente recibido --
@@ -117,7 +118,10 @@ async def create_subscription_approval_link(
                 "cancel_url": PAYPAL_CANCEL_URL,
             },
         }
-        if payer_email:
+        # Por defecto NO se precarga el email del suscriptor: el email de login del
+        # cliente casi nunca es el de su cuenta PayPal, y si coincide con el de la
+        # cuenta que cobra PayPal rechaza el checkout con una pantalla de error generica.
+        if payer_email and PAYPAL_PREFILL_EMAIL:
             payload["subscriber"] = {"email_address": payer_email}
         resp = await client.post(
             f"{_base_url()}/v1/billing/subscriptions",

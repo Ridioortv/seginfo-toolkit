@@ -124,3 +124,35 @@ def test_mp_without_override_keeps_customer_email(reload_modules):
 def test_test_payer_email_is_normalized(reload_modules, raw, expected):
     reload_modules(MP_TEST_PAYER_EMAIL=raw)
     assert mp.MP_TEST_PAYER_EMAIL == expected.lower() or mp.MP_TEST_PAYER_EMAIL == expected
+
+
+def _capture_paypal_payload(monkeypatch):
+    import asyncio
+    import json
+    import httpx
+
+    sent = []
+
+    def handler(req):
+        u = str(req.url)
+        if u.endswith("/v1/oauth2/token"):
+            return httpx.Response(200, json={"access_token": "AT", "expires_in": 3000})
+        if u.endswith("/v1/billing/subscriptions"):
+            sent.append(json.loads(req.content))
+            return httpx.Response(201, json={"id": "I-PF", "links": [{"rel": "approve", "href": "https://pp.test/a"}]})
+        return httpx.Response(404)
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(paypal.httpx, "AsyncClient", lambda *a, **k: real(*a, transport=httpx.MockTransport(handler), **{x: y for x, y in k.items() if x != "transport"}))
+    asyncio.run(paypal.create_subscription_approval_link("KEY-PF", "P-1", "admin@mi-empresa.com"))
+    return sent[0]
+
+
+def test_paypal_does_not_prefill_subscriber_email_by_default(reload_modules, monkeypatch):
+    reload_modules(PAYPAL_CLIENT_ID="id", PAYPAL_CLIENT_SECRET="sec", PAYPAL_PREFILL_EMAIL="")
+    assert "subscriber" not in _capture_paypal_payload(monkeypatch)
+
+
+def test_paypal_prefill_email_can_be_enabled(reload_modules, monkeypatch):
+    reload_modules(PAYPAL_CLIENT_ID="id", PAYPAL_CLIENT_SECRET="sec", PAYPAL_PREFILL_EMAIL="1")
+    assert _capture_paypal_payload(monkeypatch)["subscriber"] == {"email_address": "admin@mi-empresa.com"}
