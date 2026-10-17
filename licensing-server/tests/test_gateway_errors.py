@@ -152,3 +152,47 @@ def test_mercadopago_real_vs_test_users_mismatch_explains_what_to_do(client, mon
     detail = r.json()["detail"]
     assert "COMPRADOR de prueba" in detail and "produccion" in detail
     assert "real or test" not in detail
+
+
+def _mismatch_handler(me_json, me_status=200):
+    def handler(request):
+        u = str(request.url)
+        if "dolarapi" in u:
+            return httpx.Response(200, json={"venta": 1500})
+        if u.endswith("/users/me"):
+            return httpx.Response(me_status, json=me_json)
+        return httpx.Response(400, json={"message": "Both payer and collector must be real or test users", "status": 400})
+    return handler
+
+
+def test_mismatch_diagnostic_reports_test_credentials_and_payer_sent(client, monkeypatch):
+    _new(client, "k-g9")
+    _patch_http(monkeypatch, mp, _mismatch_handler({"email": "test_user_555@testuser.com", "tags": ["test_user"]}))
+    monkeypatch.setattr(mp, "MP_TEST_PAYER_EMAIL", "")
+    d = client.post("/license/k-g9/mercadopago/subscription-link", json={"payer_email": "real@gmail.com"}).json()["detail"]
+    assert "credenciales de PRUEBA" in d and "test_user_555@testuser.com" in d
+    assert "real@gmail.com (de el email del modal)" in d
+    assert len(d) < 480  # el cliente on-prem recorta a 500
+
+
+def test_mismatch_diagnostic_shows_which_env_payer_was_used(client, monkeypatch):
+    _new(client, "k-g10")
+    _patch_http(monkeypatch, mp, _mismatch_handler({"email": "test_user_555@testuser.com", "tags": ["test_user"]}))
+    monkeypatch.setattr(mp, "MP_TEST_PAYER_EMAIL", "test_user_999@testuser.com")
+    d = client.post("/license/k-g10/mercadopago/subscription-link", json={}).json()["detail"]
+    assert "test_user_999@testuser.com (de MP_TEST_PAYER_EMAIL)" in d
+
+
+def test_mismatch_diagnostic_never_leaks_real_seller_email(client, monkeypatch):
+    _new(client, "k-g11")
+    _patch_http(monkeypatch, mp, _mismatch_handler({"email": "dueno@empresa.com", "tags": []}))
+    monkeypatch.setattr(mp, "MP_TEST_PAYER_EMAIL", "")
+    d = client.post("/license/k-g11/mercadopago/subscription-link", json={}).json()["detail"]
+    assert "credenciales REALES" in d and "dueno@empresa.com" not in d and "pagador enviado: ninguno" in d
+
+
+def test_mismatch_diagnostic_survives_users_me_failure(client, monkeypatch):
+    _new(client, "k-g12")
+    _patch_http(monkeypatch, mp, _mismatch_handler({"message": "x"}, me_status=500))
+    d = client.post("/license/k-g12/mercadopago/subscription-link", json={}).json()["detail"]
+    assert "no se pudo detectar" in d and "MP_TEST_PAYER_EMAIL" in d

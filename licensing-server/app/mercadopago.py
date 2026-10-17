@@ -152,6 +152,24 @@ def price_ars(rate: float) -> int:
     return round(MP_PRICE_USD * rate * (1 + MP_FX_MARGIN_PCT / 100))
 
 
+async def _collector_kind(client: httpx.AsyncClient) -> tuple[str, str | None]:
+    """Mejor esfuerzo para el diagnostico: ('test'|'real'|'unknown', email de la
+    cuenta vendedora SOLO si es de prueba -- el email de una cuenta real no se
+    expone). Nunca lanza."""
+    try:
+        resp = await client.get(f"{_API}/users/me", headers=_headers(), timeout=8)
+        if resp.status_code >= 400:
+            return "unknown", None
+        me = resp.json()
+        email = str(me.get("email") or "")
+        tags = [str(t) for t in (me.get("tags") or [])]
+        if "test_user" in tags or email.lower().endswith("@testuser.com"):
+            return "test", email or None
+        return "real", None
+    except (httpx.HTTPError, ValueError):
+        return "unknown", None
+
+
 async def create_subscription_approval_link(license_key: str, payer_email: str | None = None) -> tuple[str, str, int]:
     """Crea una suscripcion en Mercado Pago (pendiente: el cliente todavia no
     pago) con external_reference=license_key y devuelve (preapproval_id,
@@ -184,12 +202,18 @@ async def create_subscription_approval_link(license_key: str, payer_email: str |
         resp = await client.post(f"{_API}/preapproval", headers=_headers(), json=payload)
         _raise_for_mp_status(resp, "crear la suscripcion")
         if resp.status_code == 400 and "real or test" in resp.text:
+            origin = "MP_TEST_PAYER_EMAIL" if MP_TEST_PAYER_EMAIL else "el email del modal"
+            sent = f"{payer_email} (de {origin})" if payer_email else "ninguno"
+            kind, seller_email = await _collector_kind(client)
+            creds = {"test": "de PRUEBA", "real": "REALES"}.get(kind, "(no se pudo detectar)")
+            if seller_email:
+                creds += f", cuenta vendedora {seller_email}"
             raise MercadoPagoError(
-                "Mercado Pago: la cuenta que cobra y el email del pagador tienen que ser los dos reales o los "
-                "dos de prueba. Si estas probando con credenciales de PRUEBA, el pagador tiene que ser un "
-                "COMPRADOR de prueba (email test_user_<User ID del comprador>@testuser.com; el User ID esta en "
-                "Mercado Pago > Tus integraciones > Cuentas de prueba). Se carga una sola vez en Render como "
-                "MP_TEST_PAYER_EMAIL. En produccion, usa credenciales de produccion y deja esa variable vacia."
+                "Mercado Pago: cobrador y pagador tienen que ser los dos de prueba o los dos reales. "
+                f"Diagnostico: credenciales {creds}; pagador enviado: {sent}. "
+                "Con credenciales de prueba, define MP_TEST_PAYER_EMAIL en Render con el email del COMPRADOR de "
+                "prueba (test_user_<User ID del comprador>@testuser.com, del mismo pais que la vendedora). "
+                "En produccion usa credenciales reales y deja esa variable vacia."
             )
         if resp.status_code >= 400:
             raise MercadoPagoError(f"Mercado Pago rechazo la creacion de la suscripcion: {resp.status_code} {resp.text[:500]}")
