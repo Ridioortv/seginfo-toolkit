@@ -60,12 +60,17 @@ services:
         sync: false
       - key: PAYPAL_PLAN_ID
         sync: false
+      # PAYPAL_ENV / *_URL con sync:false A PROPOSITO: con "value:" Render los
+      # vuelve a pisar en cada sincronizacion del blueprint (cada push que toca
+      # este archivo), y un PAYPAL_ENV=live puesto a mano volvia a "sandbox" --
+      # credenciales live contra el entorno sandbox = HTTP 401 de PayPal.
+      # Setealos en el dashboard de Render (PAYPAL_ENV: sandbox o live).
       - key: PAYPAL_ENV
-        value: sandbox
+        sync: false
       - key: PAYPAL_RETURN_URL
-        value: https://www.google.com/?sentinelops_subscribed=1
+        sync: false
       - key: PAYPAL_CANCEL_URL
-        value: https://www.google.com/?sentinelops_cancelled=1
+        sync: false
       # Mercado Pago (segunda pasarela, cobro en pesos: USD 250 al cambio del
       # dia). Si MP_ACCESS_TOKEN queda vacio, los endpoints de Mercado Pago
       # devuelven 503 y PayPal sigue andando igual.
