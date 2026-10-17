@@ -146,3 +146,87 @@ def test_billing_alias_route_works_like_paypal_route(client):
     before = _expiry("k-alias")
     assert client.post("/webhooks/billing", json=_sale("WH-AL", "I-SUB7")).status_code == 204
     assert _expiry("k-alias") - before == timedelta(days=30)
+
+
+def test_second_link_refused_while_subscription_is_active(client, monkeypatch):
+    """Evita el doble cobro: con una suscripcion ACTIVA no se crea otra."""
+    _new_client(client, "k-dobleclick")
+    created = []
+
+    async def fake_create(license_key, plan_id=None, payer_email=None):
+        created.append(1)
+        return f"I-DOBLECLICK-{len(created)}", "https://paypal.test/approve"
+
+    async def fake_status(sub_id):
+        return "ACTIVE"
+
+    monkeypatch.setattr(paypal, "create_subscription_approval_link", fake_create)
+    monkeypatch.setattr(paypal, "get_subscription_status", fake_status)
+
+    assert client.post("/license/k-dobleclick/paypal/subscription-link", json={"payer_email": "a@b.com"}).status_code == 200
+    r = client.post("/license/k-dobleclick/paypal/subscription-link", json={"payer_email": "a@b.com"})
+    assert r.status_code == 409 and "activa" in r.json()["detail"]
+    r = client.post("/admin/clients/k-dobleclick/paypal-subscription-link", headers=ADMIN, json={})
+    assert r.status_code == 409
+    assert len(created) == 1  # nunca se creo una segunda suscripcion en PayPal
+
+
+def test_new_link_allowed_when_previous_not_active(client, monkeypatch):
+    """Si la anterior se cancelo/vencio o nunca se aprobo, se puede crear otra."""
+    _new_client(client, "k-redo")
+    states = iter(["APPROVAL_PENDING", "CANCELLED", None])
+
+    async def fake_create(license_key, plan_id=None, payer_email=None):
+        return "I-SUBX", "https://paypal.test/approve"
+
+    async def fake_status(sub_id):
+        return next(states)
+
+    monkeypatch.setattr(paypal, "create_subscription_approval_link", fake_create)
+    monkeypatch.setattr(paypal, "get_subscription_status", fake_status)
+    for _ in range(4):  # la 1ra no tiene suscripcion previa; las otras 3 consultan estados no bloqueantes
+        r = client.post("/license/k-redo/paypal/subscription-link", json={"payer_email": "a@b.com"})
+        assert r.status_code == 200
+
+
+def test_sale_before_link_is_retried_not_dropped(client):
+    """PAYMENT.SALE.COMPLETED puede llegar antes de que ACTIVATED relinke la
+    suscripcion: no se descarta, PayPal lo reintenta (409) y al reintentar se acredita."""
+    _new_client(client, "k-late", days=1)
+    db.set_paypal_subscription_id("k-late", "I-NEW")
+    before = _expiry("k-late")
+    sale = _sale("WH-LATE", "I-OLD")
+    assert client.post("/webhooks/paypal", json=sale).status_code == 409  # PayPal reintenta
+    assert _expiry("k-late") == before
+    activated = {"id": "WH-LATE-A", "event_type": "BILLING.SUBSCRIPTION.ACTIVATED",
+                 "resource": {"id": "I-OLD", "custom_id": "k-late"}}
+    assert client.post("/webhooks/paypal", json=activated).status_code == 204
+    assert client.post("/webhooks/paypal", json=sale).status_code == 204  # reintento del MISMO evento
+    assert _expiry("k-late") - before == timedelta(days=30)
+    assert client.post("/webhooks/paypal", json=sale).status_code == 204  # y no se duplica
+    assert _expiry("k-late") - before == timedelta(days=30)
+
+
+def test_transient_error_does_not_burn_the_event(client, monkeypatch):
+    _new_client(client, "k-err", days=1)
+    db.set_paypal_subscription_id("k-err", "I-ERR")
+    before = _expiry("k-err")
+    real = db.get_client_by_paypal_subscription_id
+    calls = {"n": 0}
+
+    def flaky(value):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("db caida")
+        return real(value)
+
+    monkeypatch.setattr(db, "get_client_by_paypal_subscription_id", flaky)
+    sale = _sale("WH-ERR", "I-ERR")
+    try:
+        r = client.post("/webhooks/paypal", json=sale)
+        assert r.status_code >= 500
+    except RuntimeError:
+        pass  # TestClient re-lanza la excepcion del servidor
+    assert _expiry("k-err") == before
+    assert client.post("/webhooks/paypal", json=sale).status_code == 204
+    assert _expiry("k-err") - before == timedelta(days=30)

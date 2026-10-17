@@ -1,4 +1,4 @@
-# SentinelOps -- manifiestos de Kubernetes
+# TERO Security -- manifiestos de Kubernetes
 
 Manifiestos base (Kustomize) que reproducen en un cluster de Kubernetes la
 misma topologia que `docker-compose.yml` en desarrollo: los 11

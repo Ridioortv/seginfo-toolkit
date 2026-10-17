@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SentinelOps - test end-to-end del pipeline de ESCANEOS REMOTOS.
+"""TERO Security - test end-to-end del pipeline de ESCANEOS REMOTOS.
 
 Que hace
 --------
@@ -23,7 +23,7 @@ Si todo esto pasa, el pipeline remoto funciona: un escaneo que "queda en
 pending" es simplemente porque no hay un agente real corriendo que haga
 el polling (ver remote-agent/agent.py y remote-agent/README.md).
 
-Uso (en la PC donde corre SentinelOps, con el stack levantado):
+Uso (en la PC donde corre TERO Security, con el stack levantado):
   Windows (cmd):
     set SENTINEL_EMAIL=tu-email-admin@dominio
     set SENTINEL_PASSWORD=tu-password
@@ -111,7 +111,7 @@ def main() -> int:
     password = os.environ.get("SENTINEL_PASSWORD", "")
     totp = os.environ.get("SENTINEL_TOTP", "")
     if not email or not password:
-        print("Falta SENTINEL_EMAIL y/o SENTINEL_PASSWORD (cuenta admin de SentinelOps).")
+        print("Falta SENTINEL_EMAIL y/o SENTINEL_PASSWORD (cuenta admin de TERO Security).")
         try:
             email = email or input("Email admin: ").strip()
             import getpass
@@ -119,7 +119,7 @@ def main() -> int:
         except (EOFError, KeyboardInterrupt):
             return 2
 
-    print(f"\nSentinelOps - test de escaneos remotos")
+    print(f"\nTERO Security - test de escaneos remotos")
     print(f"  auth-service: {AUTH_URL}")
     print(f"  scan-service: {SCAN_URL}\n")
 

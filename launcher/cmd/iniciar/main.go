@@ -1,6 +1,6 @@
-// SentinelOps - Iniciar.exe
+// TERO Security - Iniciar.exe
 //
-// Launcher para Windows que levanta toda la plataforma SentinelOps
+// Launcher para Windows que levanta toda la plataforma TERO Security
 // (12 microservicios + Postgres/Redis/OpenSearch) con Docker Compose y
 // abre el dashboard en el navegador. No reemplaza a Docker: sigue
 // haciendo falta tener Docker Desktop instalado en la PC.
@@ -18,7 +18,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -51,7 +53,7 @@ var services = []service{
 
 func main() {
 	fmt.Println("========================================")
-	fmt.Println(" SentinelOps - iniciando la plataforma")
+	fmt.Println(" TERO Security - iniciando la plataforma")
 	fmt.Println("========================================")
 	fmt.Println()
 
@@ -126,14 +128,14 @@ func main() {
 	fmt.Println()
 	fmt.Println("========================================")
 	if len(failed) == 0 && frontendOK {
-		fmt.Println(" SentinelOps esta corriendo. Los 11 microservicios y el frontend")
+		fmt.Println(" TERO Security esta corriendo. Los 11 microservicios y el frontend")
 		fmt.Println(" respondieron correctamente.")
 		fmt.Println(" Dashboard: " + frontendURL)
 		fmt.Println()
 		fmt.Println(" Abriendo el dashboard en el navegador...")
 		openBrowser(frontendURL)
 	} else {
-		fmt.Println(" SentinelOps arranco los contenedores, pero al menos uno todavia")
+		fmt.Println(" TERO Security arranco los contenedores, pero al menos uno todavia")
 		fmt.Println(" no responde (ver el detalle y los logs de arriba). No se abre el")
 		fmt.Println(" navegador solo para no confundir -- si necesitas ayuda, copia todo")
 		fmt.Println(" el texto de esta ventana (desde 'NO respondieron a tiempo' hacia")
@@ -143,7 +145,7 @@ func main() {
 	fmt.Println()
 	fmt.Println(" Los servicios siguen funcionando en segundo plano aunque")
 	fmt.Println(" cierres esta ventana. Para pararlos, usa")
-	fmt.Println(" 'SentinelOps - Detener.exe'.")
+	fmt.Println(" 'TERO Security - Detener.exe'.")
 	fmt.Println("========================================")
 	pause()
 }
@@ -192,7 +194,7 @@ func ensureDockerInstalled() {
 	if _, err := exec.LookPath("docker"); err != nil {
 		fmt.Println("No se encontro Docker instalado en esta PC.")
 		fmt.Println()
-		fmt.Println("SentinelOps necesita Docker Desktop para funcionar. Instalalo desde:")
+		fmt.Println("TERO Security necesita Docker Desktop para funcionar. Instalalo desde:")
 		fmt.Println("  https://www.docker.com/products/docker-desktop/")
 		fmt.Println()
 		fmt.Println("Despues de instalarlo (y abrirlo al menos una vez), volve a ejecutar")
@@ -281,6 +283,25 @@ var generatedSecretKeys = map[string]func() string{
 	"JWT_SECRET_KEY":    func() string { return randomHexSecret(32) }, // 256 bits
 	"POSTGRES_PASSWORD": func() string { return randomHexSecret(24) }, // 192 bits, alcanza y sobra para un password de DB
 	"ENCRYPTION_KEY":    func() string { return randomHexSecret(32) }, // 256 bits, ver backend/shared/crypto.py
+	"REDIS_PASSWORD":    func() string { return randomHexSecret(24) }, // Redis exige contrasena (docker-compose.yml)
+	// OpenSearch exige una contrasena FUERTE (mayuscula, minuscula, numero y simbolo):
+	// el prefijo/sufijo fijos garantizan las clases de caracteres, el medio es aleatorio.
+	"OPENSEARCH_ADMIN_PASSWORD": func() string { return "Os!" + randomHexSecret(12) + "9X" },
+	"SIEM_INGEST_TOKEN":         func() string { return randomHexSecret(32) }, // protege POST /logs/ingest del SIEM
+	// Claves de los agentes de escaneo remoto (BOOTSTRAP_AGENTS se reescribe
+	// abajo con estos mismos valores). Antes quedaban en los valores publicos
+	// "cambiame-key-agente-*" del .env.example, iguales en todas las instalaciones.
+	"REMOTE_AGENT_DOCKER_KEY": func() string { return randomHexSecret(32) },
+	"REMOTE_AGENT_LAN_KEY":    func() string { return randomHexSecret(32) },
+	"REMOTE_AGENT_WAN_KEY":    func() string { return randomHexSecret(32) },
+}
+
+// agentKeyPlaceholders asocia cada clave de agente generada con el valor de
+// ejemplo que figura dentro de la linea BOOTSTRAP_AGENTS del .env.example.
+var agentKeyPlaceholders = map[string]string{
+	"REMOTE_AGENT_DOCKER_KEY": "cambiame-key-agente-docker",
+	"REMOTE_AGENT_LAN_KEY":    "cambiame-key-agente-lan",
+	"REMOTE_AGENT_WAN_KEY":    "cambiame-key-agente-wan",
 }
 
 // ensureEnvFile crea .env a partir de .env.example en el primer uso, con
@@ -301,12 +322,35 @@ func ensureEnvFile(projectDir string) {
 	}
 
 	lines := strings.Split(string(data), "\n")
+	// Una instalacion nueva ya tiene TODOS sus secretos generados al azar (abajo), asi que
+	// arranca en ENVIRONMENT=production: con "development" los chequeos que fallan cerrado
+	// (secretos de ejemplo, SIEM_INGEST_TOKEN ausente, claves de agente de ejemplo) quedan
+	// inertes. Solo el .env que se crea aca; uno existente no se toca.
+	for i, line := range lines {
+		if strings.HasPrefix(line, "ENVIRONMENT=") {
+			lines[i] = "ENVIRONMENT=production"
+		}
+	}
 	generated := make([]string, 0, len(generatedSecretKeys))
+	values := make(map[string]string, len(generatedSecretKeys))
 	for i, line := range lines {
 		for key, gen := range generatedSecretKeys {
 			if strings.HasPrefix(line, key+"=") {
-				lines[i] = key + "=" + gen()
+				value := gen()
+				values[key] = value
+				lines[i] = key + "=" + value
 				generated = append(generated, key)
+			}
+		}
+	}
+	// BOOTSTRAP_AGENTS lleva las mismas claves de agente dentro de un JSON:
+	// se reemplazan los valores de ejemplo por las claves recien generadas.
+	for i, line := range lines {
+		if strings.HasPrefix(line, "BOOTSTRAP_AGENTS=") {
+			for envKey, placeholder := range agentKeyPlaceholders {
+				if value, ok := values[envKey]; ok {
+					lines[i] = strings.ReplaceAll(lines[i], placeholder, value)
+				}
 			}
 		}
 	}
@@ -318,9 +362,31 @@ func ensureEnvFile(projectDir string) {
 	if err := os.WriteFile(envPath, []byte(out), 0o600); err != nil {
 		fatal("No se pudo crear .env: %v", err)
 	}
+	restrictToCurrentUser(envPath)
 	fmt.Println("Primera vez: se creo .env a partir de .env.example, con secretos nuevos")
 	fmt.Println("generados al azar para esta instalacion (" + strings.Join(generated, ", ") + ") --")
 	fmt.Println("no se reusan entre instalaciones. Ver docs/runbook.md para mas detalle.")
+}
+
+// restrictToCurrentUser deja `path` legible solo por el usuario actual, SYSTEM y los
+// Administradores. En Windows el modo 0o600 de os.WriteFile no se traduce a ACLs: el archivo
+// hereda los permisos de la carpeta (si el repo esta en C:\ o en una carpeta compartida,
+// otros usuarios locales podian leer los secretos de .env). Se usan SIDs (no nombres) para que
+// funcione en cualquier idioma de Windows. Es best-effort: si icacls falla solo avisa.
+func restrictToCurrentUser(path string) {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	u, err := user.Current()
+	if err != nil || u.Username == "" {
+		fmt.Println("Aviso: no pude determinar el usuario actual; revisa a mano que solo vos puedas leer .env")
+		return
+	}
+	cmd := exec.Command("icacls", path, "/inheritance:r", "/grant:r",
+		u.Username+":F", "*S-1-5-18:F", "*S-1-5-32-544:F")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Printf("Aviso: no pude restringir los permisos de .env (%v): %s\n", err, strings.TrimSpace(string(out)))
+	}
 }
 
 func runStreaming(name string, args ...string) error {

@@ -41,10 +41,14 @@ async def clone_repo(url: str, dest_dir: str, timeout: int = 180, shallow: bool 
     if shallow:
         cmd += ["--depth", "1"]
     cmd += [url, dest_dir]
+    # Solo https, sin seguir redirects (un repo no puede redirigir el clone a un
+    # host interno) y sin prompt de credenciales.
+    cmd = ["git", "-c", "http.followRedirects=false"] + cmd[1:]
+    git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ALLOW_PROTOCOL": "https:http"}
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=git_env
         )
         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except FileNotFoundError:
@@ -53,6 +57,16 @@ async def clone_repo(url: str, dest_dir: str, timeout: int = 180, shallow: bool 
         proc.kill()
         await proc.wait()
         return f"timeout clonando el repositorio ({timeout}s)"
+    except BaseException:
+        # Cancelacion del escaneo (o cualquier otro corte) durante el clone: sin
+        # esto git quedaba corriendo, sin timeout, y el directorio temporal filtrado.
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            try:
+                await asyncio.shield(proc.wait())
+            except BaseException:  # noqa: BLE001
+                pass
+        raise
     if proc.returncode != 0:
         return _redact(stderr.decode(errors="replace"))[:2000]
     return None
@@ -76,7 +90,13 @@ class CodeTarget:
         target = (self.target or "").strip()
         if is_clonable_url(target):
             self._tmpdir = tempfile.mkdtemp(prefix="sentinelops-clone-")
-            err = await clone_repo(target, self._tmpdir, timeout=self.clone_timeout, shallow=self.shallow)
+            try:
+                err = await clone_repo(target, self._tmpdir, timeout=self.clone_timeout, shallow=self.shallow)
+            except BaseException:
+                # __aexit__ no se ejecuta si __aenter__ levanta (p.ej. CancelledError).
+                shutil.rmtree(self._tmpdir, ignore_errors=True)
+                self._tmpdir = None
+                raise
             if err:
                 self.error = f"no se pudo clonar '{_redact(target)}': {err}"
             else:

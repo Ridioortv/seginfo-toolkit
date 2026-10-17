@@ -91,14 +91,14 @@ def init_db() -> None:
                 notes TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 paypal_subscription_id TEXT,
-                mercadopago_preapproval_id TEXT
+                mp_preapproval_id TEXT
             )
             """
         )
         # Tiene que correr ANTES de crear los indices de mas abajo (si
         # la columna no existe todavia, CREATE INDEX sobre ella falla).
         _add_column_if_missing(cur, "clients", "paypal_subscription_id", "TEXT")
-        _add_column_if_missing(cur, "clients", "mercadopago_preapproval_id", "TEXT")
+        _add_column_if_missing(cur, "clients", "mp_preapproval_id", "TEXT")
 
         # paypal_subscription_id se usa para encontrar que cliente
         # corresponde a un webhook de PayPal cuyo evento no trae de
@@ -112,16 +112,16 @@ def init_db() -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_paypal_subscription_id "
             "ON clients (paypal_subscription_id) WHERE paypal_subscription_id IS NOT NULL"
         )
+        # Igual que arriba pero para Mercado Pago: los avisos de cobro
+        # (subscription_authorized_payment) traen el id de la suscripcion
+        # (preapproval), no la license_key.
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_mp_preapproval_id "
+            "ON clients (mp_preapproval_id) WHERE mp_preapproval_id IS NOT NULL"
+        )
         cur.execute(
             "CREATE TABLE IF NOT EXISTS processed_events ("
             "event_id TEXT PRIMARY KEY, processed_at TEXT NOT NULL)"
-        )
-        # Idem para Mercado Pago -- respaldo para cuando un
-        # authorized_payment no trae external_reference (ver
-        # app/mercadopago.py::resolve_license_key_lookup).
-        cur.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_mercadopago_preapproval_id "
-            "ON clients (mercadopago_preapproval_id) WHERE mercadopago_preapproval_id IS NOT NULL"
         )
 
 
@@ -139,6 +139,14 @@ def claim_event(event_id: str) -> bool:
             (event_id, _now_iso()),
         )
         return cur.rowcount > 0
+
+
+def release_event(event_id: str) -> None:
+    """Deshace claim_event: el evento NO se pudo aplicar (cliente sin resolver,
+    error transitorio), asi que el reintento de PayPal tiene que poder
+    procesarlo en vez de ser descartado como duplicado."""
+    with get_cursor() as cur:
+        cur.execute(_adapt("DELETE FROM processed_events WHERE event_id = ?"), (event_id,))
 
 
 def create_client(license_key: str, org_name: str, expires_at_iso: str, notes: str = "") -> None:
@@ -166,6 +174,12 @@ def get_client_by_paypal_subscription_id(subscription_id: str):
         return cur.fetchone()
 
 
+def get_client_by_mp_preapproval_id(preapproval_id: str):
+    with get_cursor() as cur:
+        cur.execute(_adapt("SELECT * FROM clients WHERE mp_preapproval_id = ?"), (preapproval_id,))
+        return cur.fetchone()
+
+
 def list_clients() -> list:
     with get_cursor() as cur:
         cur.execute("SELECT * FROM clients ORDER BY created_at DESC")
@@ -190,18 +204,10 @@ def set_paypal_subscription_id(license_key: str, subscription_id: str) -> bool:
         return cur.rowcount > 0
 
 
-def get_client_by_mercadopago_preapproval_id(preapproval_id: str):
+def set_mp_preapproval_id(license_key: str, preapproval_id: str) -> bool:
     with get_cursor() as cur:
         cur.execute(
-            _adapt("SELECT * FROM clients WHERE mercadopago_preapproval_id = ?"), (preapproval_id,)
-        )
-        return cur.fetchone()
-
-
-def set_mercadopago_preapproval_id(license_key: str, preapproval_id: str) -> bool:
-    with get_cursor() as cur:
-        cur.execute(
-            _adapt("UPDATE clients SET mercadopago_preapproval_id = ? WHERE license_key = ?"),
+            _adapt("UPDATE clients SET mp_preapproval_id = ? WHERE license_key = ?"),
             (preapproval_id, license_key),
         )
         return cur.rowcount > 0
@@ -209,7 +215,7 @@ def set_mercadopago_preapproval_id(license_key: str, preapproval_id: str) -> boo
 
 def append_note(license_key: str, line: str) -> None:
     """Agrega una linea al historial de notas de un cliente (pagos
-    recibidos, eventos de PayPal/Mercado Pago procesados, etc) -- se
+    recibidos, eventos de PayPal procesados, etc) -- se
     acota a los ultimos 50 renglones para que la columna no crezca sin
     limite."""
     with get_cursor() as cur:

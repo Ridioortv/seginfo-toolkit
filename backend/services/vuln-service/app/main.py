@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="SentinelOps Vulnerability Service", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="TERO Security Vulnerability Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -48,6 +48,12 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/metrics", make_asgi_app())
 
 
+_KNOWN_SCANNER_LABELS = frozenset({
+    "nuclei", "trivy", "zap", "yara", "gitleaks", "semgrep", "falco", "zeek",
+    "asm", "cloud", "coderepo", "manual",
+})
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "vuln-service"}
@@ -56,7 +62,7 @@ async def health():
 @app.post("/vulnerabilities/ingest", response_model=IngestResponse, status_code=status.HTTP_201_CREATED)
 async def ingest(
     payload: IngestRequest,
-    claims: dict = Depends(get_current_claims),
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
     """Llamado por scan-service al terminar un job -- con un JWT de
@@ -71,7 +77,13 @@ async def ingest(
     igualmente limitada a SU propia organizacion, nunca a una ajena."""
     created, updated = await services.ingest_findings(db, payload, org_id_from_claims(claims))
     await db.commit()
-    vulns_ingested_total.labels(scanner_type=payload.scanner_type or "desconocido").inc(len(payload.findings))
+    # El valor de scanner_type lo manda el caller: como label de Prometheus cada
+    # valor nuevo crea una serie que vive en memoria hasta reiniciar (cardinalidad
+    # sin tope). Solo se etiquetan los escaneres conocidos.
+    scanner_label = payload.scanner_type if payload.scanner_type in _KNOWN_SCANNER_LABELS else (
+        "desconocido" if not payload.scanner_type else "otro"
+    )
+    vulns_ingested_total.labels(scanner_type=scanner_label).inc(len(payload.findings))
     logger.info("hallazgos ingeridos", extra={"creados": created, "actualizados": updated})
     return IngestResponse(created=created, updated=updated)
 

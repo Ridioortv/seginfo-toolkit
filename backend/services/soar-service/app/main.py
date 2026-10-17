@@ -6,6 +6,7 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, make_asgi_app
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.database import get_db, SessionLocal, engine, Base
@@ -34,6 +35,11 @@ async def lifespan(app: FastAPI):
         # "global/built-in", exactamente el mismo estado en el que ya
         # estaban de forma implicita (visibles para todos, sin tenant).
         await conn.execute(text("ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"))
+        # El nombre pasa de unico-global a unico-por-organizacion (ver models.py).
+        await conn.execute(text("ALTER TABLE playbooks DROP CONSTRAINT IF EXISTS playbooks_name_key"))
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_playbooks_org_name ON playbooks (COALESCE(organization_id, ''), name)"
+        ))
         await conn.execute(text("ALTER TABLE playbook_runs ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"))
         await conn.execute(text("ALTER TABLE pending_cases ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"))
         await conn.execute(text(
@@ -50,7 +56,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="SentinelOps SOAR Service", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="TERO Security SOAR Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -69,7 +75,7 @@ async def health():
 @app.post("/trigger", response_model=TriggerResponse)
 async def trigger(
     payload: TriggerRequest,
-    claims: dict = Depends(get_current_claims),
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
     """Llamado por siem-service ante cada alerta nueva (best-effort, ver
@@ -99,8 +105,12 @@ async def create_playbook(
     claims: dict = Depends(require_role("admin", "soc_manager")),
     db: AsyncSession = Depends(get_db),
 ):
-    playbook = await services.create_playbook(db, payload, org_id_from_claims(claims))
-    await db.commit()
+    try:
+        playbook = await services.create_playbook(db, payload, org_id_from_claims(claims))
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ya existe un playbook con ese nombre en tu organizacion")
     return playbook
 
 

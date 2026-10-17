@@ -1,6 +1,6 @@
 """Driver de YARA: deteccion de patrones/indicadores conocidos en
 archivos (webshells, payloads ofuscados, malware generico) usando
-reglas PROPIAS de SentinelOps -- ver rules/yara/sentinelops.yar para
+reglas PROPIAS de TERO Security -- ver rules/yara/sentinelops.yar para
 el detalle del por que (muchos "rule packs" de YARA de terceros
 mezclan licencias distintas regla por regla, varias sin resolver para
 uso comercial). Puramente de deteccion: solo lee el archivo/directorio

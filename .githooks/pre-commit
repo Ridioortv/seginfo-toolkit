@@ -1,5 +1,5 @@
 #!/bin/sh
-# Hook pre-commit de SentinelOps: frena commits con secretos ANTES de que
+# Hook pre-commit de TERO Security: frena commits con secretos ANTES de que
 # existan en el historial (despues de un push ya hay que rotar todo).
 # Se activa con:  git config core.hooksPath .githooks   (lo hace tools/instalar-hooks.ps1)
 # Puntos de bypass: ninguno a proposito. Si es un falso positivo, ajusta

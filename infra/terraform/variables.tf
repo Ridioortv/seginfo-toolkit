@@ -67,6 +67,24 @@ variable "db_password" {
   sensitive   = true
 }
 
+variable "redis_auth_token" {
+  description = "AUTH token de Redis (16-128 caracteres). Pasar via TF_VAR_redis_auth_token -- NUNCA hardcodear ni comitear."
+  type        = string
+  sensitive   = true
+}
+
+variable "opensearch_master_password" {
+  description = "Contrasena del usuario maestro de OpenSearch (mayuscula, minuscula, numero y simbolo, 8+). Pasar via TF_VAR_opensearch_master_password."
+  type        = string
+  sensitive   = true
+}
+
+variable "eks_public_access_cidrs" {
+  description = "CIDRs autorizados a llamar al API publico de EKS. Poner la IP de oficina/VPN (ej. [\"203.0.113.10/32\"]); no dejar 0.0.0.0/0 en produccion."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
 variable "redis_node_type" {
   type    = string
   default = "cache.t4g.micro"

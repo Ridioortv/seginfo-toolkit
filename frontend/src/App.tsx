@@ -19,7 +19,9 @@ import Notifications from "./pages/Notifications";
 import Integrations from "./pages/Integrations";
 import Help from "./pages/Help";
 import Organizations from "./pages/Organizations";
+import Security from "./pages/Security";
 import Billing from "./pages/Billing";
+import Users from "./pages/Users";
 import SsoCallback from "./pages/SsoCallback";
 
 export default function App() {
@@ -49,9 +51,11 @@ export default function App() {
             <Route path="/reports" element={<Reports />} />
             <Route path="/notifications" element={<Notifications />} />
             <Route path="/integrations" element={<Integrations />} />
+            <Route path="/security" element={<Security />} />
             <Route path="/help" element={<Help />} />
             <Route path="/organizations" element={<Organizations />} />
             <Route path="/billing" element={<Billing />} />
+            <Route path="/users" element={<Users />} />
           </Route>
         </Route>
       </Routes>

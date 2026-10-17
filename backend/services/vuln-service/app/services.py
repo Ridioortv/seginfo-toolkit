@@ -21,6 +21,37 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# Limites de las columnas de la tabla `vulnerabilities` (ver models.py). En
+# Postgres un valor mas largo que el VARCHAR hace fallar el INSERT con
+# DataError -> 500 y se pierde TODO el lote de hallazgos (SQLite, el de los
+# tests, no hace cumplir el largo, asi que sin esto el bug solo aparece en
+# produccion). Ejemplo real: ZAP manda en `service` hasta 5 URLs juntas
+# (varios cientos de caracteres) y la columna es String(100). Los escaneres
+# son una fuente externa y no se les puede exigir que respeten estos
+# largos, asi que se recorta aca, en el limite de confianza.
+_MAX_TITLE = 500
+_MAX_CVE_ID = 30
+_MAX_PACKAGE = 255
+_MAX_VERSION = 100
+_MAX_SERVICE = 100
+_MAX_SCANNER = 50
+
+
+def _clip(value: str | None, limit: int) -> str:
+    text = value or ""
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _clip_cve(value: str | None) -> str | None:
+    if not value:
+        return None
+    return value[:_MAX_CVE_ID]
+
+
+def _valid_port(value: int | None) -> int | None:
+    return value if value is not None and 0 <= value <= 65535 else None
+
+
 def _normalize_severity(value: str) -> VulnSeverity:
     try:
         return VulnSeverity(value)
@@ -68,11 +99,14 @@ async def ingest_findings(db: AsyncSession, payload, organization_id: str) -> tu
     created, updated = 0, 0
     asset_criticality = await _get_asset_criticality(payload.asset_id, organization_id)
 
+    scanner = _clip(payload.scanner_type, _MAX_SCANNER)
     for finding in payload.findings:
-        existing = await _find_existing(db, organization_id, payload.asset_id, finding.cve_id, finding.title)
+        cve_id = _clip_cve(finding.cve_id)
+        title = _clip(finding.title, _MAX_TITLE)
+        existing = await _find_existing(db, organization_id, payload.asset_id, cve_id, title)
         if existing is not None:
             existing.scan_job_id = payload.scan_job_id or existing.scan_job_id
-            existing.source_scanner = payload.scanner_type or existing.source_scanner
+            existing.source_scanner = scanner or existing.source_scanner
             existing.description = finding.description or existing.description
             existing.updated_at = _now()
             updated += 1
@@ -80,24 +114,24 @@ async def ingest_findings(db: AsyncSession, payload, organization_id: str) -> tu
         else:
             vuln = Vulnerability(
                 organization_id=organization_id,
-                cve_id=finding.cve_id,
-                title=finding.title,
+                cve_id=cve_id,
+                title=title,
                 description=finding.description,
                 severity=_normalize_severity(finding.severity),
-                source_scanner=payload.scanner_type,
+                source_scanner=scanner,
                 scan_job_id=payload.scan_job_id,
                 asset_id=payload.asset_id,
-                package=finding.package or "",
-                installed_version=finding.installed_version or "",
-                fixed_version=finding.fixed_version or "",
-                port=finding.port,
-                service=finding.service or "",
+                package=_clip(finding.package, _MAX_PACKAGE),
+                installed_version=_clip(finding.installed_version, _MAX_VERSION),
+                fixed_version=_clip(finding.fixed_version, _MAX_VERSION),
+                port=_valid_port(finding.port),
+                service=_clip(finding.service, _MAX_SERVICE),
             )
             db.add(vuln)
             await db.flush()
             created += 1
 
-        if finding.cve_id:
+        if cve_id:
             await _enrich(vuln, asset_criticality)
         else:
             vuln.priority_score = enrichment.compute_priority_score(None, None, False, asset_criticality)

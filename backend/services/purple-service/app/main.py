@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="SentinelOps Purple Team Service", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="TERO Security Purple Team Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -94,7 +94,7 @@ async def get_exercise(exercise_id: str, claims: dict = Depends(get_current_clai
 @app.post("/exercises/{exercise_id}/coverage", response_model=CoverageResult)
 async def compute_exercise_coverage(
     exercise_id: str,
-    claims: dict = Depends(get_current_claims),
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
     """Recalcula y persiste la cobertura de deteccion para las tecnicas

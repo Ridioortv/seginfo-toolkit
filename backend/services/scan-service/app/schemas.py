@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 from app.models import ScannerType, ScanStatus
-from app.target_validation import validate_target, reject_dangerous_network_target
+from app.target_validation import validate_target, reject_dangerous_network_target, strip_url_userinfo
 
 ScanFrequency = Literal["daily", "weekly"]
 
@@ -23,6 +23,22 @@ ScanFrequency = Literal["daily", "weekly"]
 _NON_NETWORK_SCANNER_TYPES = frozenset({
     ScannerType.trivy, ScannerType.yara, ScannerType.zeek, ScannerType.falco,
 })
+
+
+_CODE_SCANNER_TYPES = frozenset({ScannerType.gitleaks, ScannerType.semgrep})
+
+
+def _reject_local_path_in_container(scanner_type, target: str, agent_id: str | None = None) -> None:
+    """gitleaks/semgrep ejecutados DENTRO del contenedor de scan-service aceptan
+    solo una URL git http(s): un path local ("/proc/self/environ", "/tmp", "/")
+    dejaba a un analyst leer el filesystem del contenedor compartido (secretos
+    del stack y archivos de otras organizaciones). Un path local solo tiene
+    sentido en un agente remoto, que corre en la maquina del propio cliente."""
+    if scanner_type in _CODE_SCANNER_TYPES and not agent_id and not target.lower().startswith(("http://", "https://")):
+        raise ValueError(
+            "para gitleaks/semgrep el target tiene que ser la URL (http/https) de un repositorio git; "
+            "para escanear una carpeta local usa un agente remoto"
+        )
 
 
 class ScanJobCreate(BaseModel):
@@ -45,6 +61,7 @@ class ScanJobCreate(BaseModel):
         # (ver target_validation.reject_dangerous_network_target). nuclei SI
         # corre dentro de la red docker de la plataforma, asi que su target
         # se valida contra ese denylist.
+        _reject_local_path_in_container(self.scanner_type, self.target)
         if self.scanner_type not in _NON_NETWORK_SCANNER_TYPES:
             reject_dangerous_network_target(self.target)
         return self
@@ -105,6 +122,7 @@ class ScanScheduleCreate(BaseModel):
         # ese caso lo ejecuta un agente remoto FUERA de la red docker de la
         # plataforma (en la LAN real del cliente), asi que el denylist de
         # nombres de servicio internos no aplica (ver AgentScanJobCreate).
+        _reject_local_path_in_container(self.scanner_type, self.target, self.agent_id)
         if self.scanner_type not in _NON_NETWORK_SCANNER_TYPES and not self.agent_id:
             reject_dangerous_network_target(self.target)
         return self
@@ -134,6 +152,12 @@ class ScanScheduleOut(BaseModel):
     class Config:
         from_attributes = True
 
+    @field_validator("target")
+    @classmethod
+    def _hide_target_userinfo(cls, v: str) -> str:
+        """Filas guardadas antes de rechazar user:token@ en el target: nunca se devuelve el token."""
+        return strip_url_userinfo(v)
+
 
 class ScanJobOut(BaseModel):
     id: str
@@ -157,6 +181,13 @@ class ScanJobOut(BaseModel):
 
 # --- Inventario de imagenes/paquetes (dashboard de trivy, ver
 # app/services.py::get_image_inventory) ---
+
+    @field_validator("target")
+    @classmethod
+    def _hide_target_userinfo(cls, v: str) -> str:
+        """Filas guardadas antes de rechazar user:token@ en el target: nunca se devuelve el token."""
+        return strip_url_userinfo(v)
+
 
 class ImageInventoryItem(BaseModel):
     target: str
@@ -247,6 +278,12 @@ class AgentScanJobOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+    @field_validator("target")
+    @classmethod
+    def _hide_target_userinfo(cls, v: str) -> str:
+        """Filas guardadas antes de rechazar user:token@ en el target: nunca se devuelve el token."""
+        return strip_url_userinfo(v)
 
 
 class AgentPollJob(BaseModel):

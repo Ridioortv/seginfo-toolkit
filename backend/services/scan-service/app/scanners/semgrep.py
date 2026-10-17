@@ -1,5 +1,5 @@
 """Driver de Semgrep: analisis estatico de codigo (SAST) usando
-EXCLUSIVAMENTE reglas PROPIAS de SentinelOps -- ver
+EXCLUSIVAMENTE reglas PROPIAS de TERO Security -- ver
 rules/semgrep/sentinelops-rules.yml para el detalle completo del por
 que. --config SIEMPRE apunta a ese archivo/directorio propio, JAMAS a
 `auto` ni a ningun ruleset del registro publico (`p/...`, `r/...`): el

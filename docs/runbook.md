@@ -1,6 +1,6 @@
-# SentinelOps -- runbook operativo
+# TERO Security -- runbook operativo
 
-Procedimientos practicos para operar una instancia de SentinelOps. Para el
+Procedimientos practicos para operar una instancia de TERO Security. Para el
 "por que" de cada decision de diseno, ver `architecture.md` y `security.md`.
 
 ## Arranque / apagado
@@ -12,7 +12,7 @@ make logs                   # seguir logs de todos los servicios
 make down                   # apagar
 ```
 
-En Windows, sin terminal: `SentinelOps - Iniciar.exe` / `SentinelOps -
+En Windows, sin terminal: `TERO Security - Iniciar.exe` / `TERO Security -
 Detener.exe` en la raiz del repo hacen lo mismo que `make up` / `make
 down`, mas la verificacion de que Docker Desktop este instalado y
 corriendo y la apertura automatica del dashboard (ver
@@ -76,7 +76,7 @@ app de MFA (Google Authenticator, Authy, etc.) y confirma con
 
 ## Organizaciones (multi-tenancy) y SSO empresarial (OIDC)
 
-SentinelOps es multi-tenant: cada organizacion (empresa cliente) es una
+TERO Security es multi-tenant: cada organizacion (empresa cliente) es una
 fila en `organizations` (auth-service) y todo el resto de las tablas de
 la plataforma (activos, escaneos, vulnerabilidades, alertas SIEM,
 playbooks/runs de SOAR, casos, ejercicios purple team, reportes, canales
@@ -176,7 +176,7 @@ OpenSearch.
 ## Pasar de dry-run a acciones reales (SOAR / integraciones / notificaciones)
 
 **No hacer esto sin que el cliente lo pida explicitamente y entienda las
-consecuencias.** Por defecto, SentinelOps nunca toca infraestructura real:
+consecuencias.** Por defecto, TERO Security nunca toca infraestructura real:
 
 1. **Notificaciones reales** (email/Slack): configurar un canal real en
    notification-service (`POST /channels` con `webhook_url` o los datos SMTP
@@ -340,7 +340,7 @@ limitacion de red del propio Docker Desktop.
 
 **Como se resuelve.** `remote-agent/agent.py` (en la raiz del repo) es un
 script Python que corre FUERA de Docker -- en la misma PC donde esta
-SentinelOps, o en cualquier otra maquina de la LAN con visibilidad real
+TERO Security, o en cualquier otra maquina de la LAN con visibilidad real
 a la red que se quiere escanear (tambien existe `remote-agent/agente-lan.ps1`,
 un equivalente nativo en PowerShell para Windows que no requiere instalar
 Python). El agente hace **polling** hacia
@@ -371,7 +371,7 @@ adentro del contenedor.
    vez).
 2. En la maquina donde va a correr el agente: configurar
    `AGENT_API_KEY` (la key del paso 1) y `SCAN_SERVICE_URL` (si el agente
-   corre en otra maquina de la LAN, usar la IP de la PC de SentinelOps
+   corre en otra maquina de la LAN, usar la IP de la PC de TERO Security
    en vez de `localhost`) como variables de entorno, y correr
    `python remote-agent/agent.py` (requiere Python 3.9+ y el binario de
    trivy y/o nuclei instalado -- ver `remote-agent/README.md` para el

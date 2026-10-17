@@ -160,7 +160,7 @@ export default function Surface() {
       <div className="panel">
         <h2>Agregar dominio a monitorear</h2>
         <p className="empty-hint">
-          Registra un dominio propio (ej. "empresa.com"). SentinelOps descubre subdominios expuestos publicamente
+          Registra un dominio propio (ej. "empresa.com"). TERO Security descubre subdominios expuestos publicamente
           via logs de Certificate Transparency (crt.sh) y chequea periodicamente el certificado SSL que cada uno
           esta sirviendo -- nunca hace un escaneo activo de puertos ni toca infraestructura de terceros.
         </p>

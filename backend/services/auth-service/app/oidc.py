@@ -20,18 +20,20 @@ backend, no una SPA/mobile app que necesite PKCE):
    -> valida el `state`, intercambia el `code` por tokens en el
       token_endpoint (con client_id/secret), valida la firma+claims del
       id_token contra el JWKS del proveedor, y si todo cierra emite el JWT
-      propio de SentinelOps (issue_tokens) para ese usuario.
+      propio de TERO Security (issue_tokens) para ese usuario.
 
 Cache de discovery/JWKS: en memoria de proceso, con un TTL corto -- evita
 golpear al proveedor en cada login sin arriesgarse a operar meses con una
 clave de firma que el proveedor ya rotó.
 """
+import os
 import time
 from urllib.parse import urlencode
 import httpx
 import jwt as pyjwt
 from jwt.exceptions import PyJWTError
 from backend.shared.crypto import decrypt_secret
+from backend.shared.ssrf_guard import UnsafeUrlError, validate_outbound_url
 from app.models import SsoConfig
 
 _CACHE_TTL_SECONDS = 3600
@@ -47,6 +49,28 @@ _jwks_cache: dict[str, tuple[float, dict]] = {}
 _ALLOWED_ID_TOKEN_ALGORITHMS = {"RS256", "RS384", "RS512", "ES256", "ES384", "ES512"}
 
 
+def _private_idp_allowed() -> bool:
+    """Un IdP on-premise (Keycloak/ADFS en la LAN del cliente) vive en una IP
+    privada. Por defecto se bloquea (el issuer lo configura el admin de una
+    organizacion y este servicio hace las requests por el: SSRF). Una
+    instalacion de UNA sola empresa que de verdad use un IdP interno puede
+    poner OIDC_ALLOW_PRIVATE_NETWORK=true en el .env."""
+    return os.getenv("OIDC_ALLOW_PRIVATE_NETWORK", "false").strip().lower() in {"1", "true", "yes"}
+
+
+def check_idp_url(url: str, *, field_name: str = "url") -> None:
+    """Valida una URL del flujo OIDC (issuer, token_endpoint, jwks_uri) con el
+    guard de SSRF compartido. Levanta OidcError si es insegura."""
+    if _private_idp_allowed():
+        if not url or not url.strip().lower().startswith(("http://", "https://")):
+            raise OidcError(f"{field_name} debe ser una URL http(s)")
+        return
+    try:
+        validate_outbound_url(url, field_name=field_name)
+    except UnsafeUrlError as exc:
+        raise OidcError(str(exc)) from exc
+
+
 class OidcError(Exception):
     """Cualquier fallo del flujo OIDC que deba traducirse a un 401/502 para
     el usuario (issuer inalcanzable, id_token invalido, nonce/state que no
@@ -58,13 +82,17 @@ async def _get_json_cached(url: str, cache: dict[str, tuple[float, dict]]) -> di
     cached = cache.get(url)
     if cached and now - cached[0] < _CACHE_TTL_SECONDS:
         return cached[1]
+    check_idp_url(url, field_name="url del proveedor de identidad")
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             data = resp.json()
-    except httpx.HTTPError as exc:
-        raise OidcError(f"no se pudo contactar al proveedor de identidad ({url}): {exc}") from exc
+    except (httpx.HTTPError, ValueError) as exc:
+        # Mensaje generico a proposito: este texto se le devuelve tal cual a
+        # quien llama a /auth/oidc/*, que no esta autenticado; incluir el
+        # error de httpx permitiria sondear hosts internos.
+        raise OidcError("no se pudo contactar al proveedor de identidad") from exc
     cache[url] = (now, data)
     return data
 
@@ -100,8 +128,9 @@ async def exchange_code(config: SsoConfig, code: str, redirect_uri: str) -> dict
     token_endpoint = doc.get("token_endpoint")
     if not token_endpoint:
         raise OidcError("el discovery document del proveedor no tiene token_endpoint")
+    check_idp_url(token_endpoint, field_name="token_endpoint")
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
             resp = await client.post(
                 token_endpoint,
                 data={
@@ -121,7 +150,7 @@ async def exchange_code(config: SsoConfig, code: str, redirect_uri: str) -> dict
             resp.raise_for_status()
             return resp.json()
     except httpx.HTTPError as exc:
-        raise OidcError(f"el proveedor de identidad rechazo el intercambio de code por tokens: {exc}") from exc
+        raise OidcError("el proveedor de identidad rechazo el intercambio de code por tokens") from exc
 
 
 def _select_signing_algorithm(jwks_key: dict) -> str | None:

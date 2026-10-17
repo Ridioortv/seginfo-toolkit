@@ -22,6 +22,9 @@ from backend.shared.security import decode_token
 
 
 class _FakeResponse:
+    status_code = 201
+    text = ""
+
     def raise_for_status(self):
         pass
 

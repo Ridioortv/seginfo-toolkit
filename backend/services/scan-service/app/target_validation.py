@@ -16,6 +16,7 @@ cualquier target que llegue a un driver o al agente remoto ya paso por
 aca."""
 import ipaddress
 import re
+import socket
 
 # Letras/numeros, '.', ':', '/', '@', '_', '-' -- alcanza para hostnames,
 # IPv4/IPv6, CIDR, URLs de nuclei/zap y referencias de imagen de trivy
@@ -37,6 +38,16 @@ import re
 _SAFE_TARGET_RE = re.compile(r"^[A-Za-z0-9/](?:[A-Za-z0-9._:/@\\ ()-]{0,498}[A-Za-z0-9)/])?$")
 
 
+_URL_USERINFO_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/?#\\\s]*@")
+
+
+def strip_url_userinfo(text: str) -> str:
+    """"https://usuario:token@host/x" -> "https://host/x". Para cualquier lugar
+    que MUESTRE o reenvie un target (respuestas de la API, eventos al SIEM):
+    el token de un clone nunca debe verse ahi."""
+    return _URL_USERINFO_RE.sub(r"\1", text) if isinstance(text, str) else text
+
+
 def validate_target(target: str) -> str:
     """Chequeo de SINTAXIS unicamente (seguro para los 2 scanner_type,
     incluido trivy con una referencia de imagen tipo "postgres:16" o
@@ -53,6 +64,14 @@ def validate_target(target: str) -> str:
             "target invalido -- solo se permiten letras, numeros, '.', ':', '/', '@', '_' y '-', "
             "y no puede empezar con '-' (se interpretaria como una opcion de linea de comandos)"
         )
+    if _URL_USERINFO_RE.match(target):
+        # Un token pegado en la URL ("https://x-access-token:TOKEN@github.com/...")
+        # se guardaba en texto plano y lo devolvia la API a TODOS los roles. Para
+        # repos privados usa coderepo-service, que guarda el token cifrado.
+        raise ValueError(
+            "el target no puede llevar usuario/clave en la URL (user:token@host); "
+            "para repositorios privados registralos en Repositorios (el token se guarda cifrado)"
+        )
     return target
 
 
@@ -64,7 +83,7 @@ def validate_target(target: str) -> str:
 # interna del propio cliente no sirve para nada.
 #
 # Lo que SI se bloquea aca es que ese mismo target apunte, en cambio, a la
-# infraestructura INTERNA de SentinelOps (los demas contenedores del mismo
+# infraestructura INTERNA de TERO Security (los demas contenedores del mismo
 # docker-compose, ver docker-compose.yml) o al endpoint de metadata de
 # cloud/link-local (169.254.0.0/16, donde vive 169.254.169.254 en AWS/GCP/
 # Azure) -- nada de eso es nunca un target legitimo de un escaneo, y
@@ -111,12 +130,31 @@ def _host_only(value: str) -> str:
     reject_dangerous_network_target), asi que no hace falta preocuparse
     por un "postgres:16" de trivy aca."""
     host = _SCHEME_RE.sub("", value, count=1)
-    host = host.split("/", 1)[0]
+    # Authority = hasta el primer / ? # o \ (el navegador/curl tratan "\" como "/").
+    for sep in ("/", "?", "#", "\\"):
+        host = host.split(sep, 1)[0]
+    # userinfo ("usuario:clave@host"): el host real es lo que sigue al ULTIMO
+    # "@". Sin esto "http://x@postgres:5432/" no matcheaba la lista de
+    # servicios internos ni la de metadata (bypass del denylist).
+    host = host.rsplit("@", 1)[-1]
     if host.startswith("["):
         return host[1:].split("]", 1)[0]
     if host.count(":") == 1:
         return host.split(":", 1)[0]
     return host
+
+
+def _canonical_numeric_ipv4(host: str) -> str:
+    """Los clientes HTTP/git/curl aceptan formas numericas de IPv4 que
+    ipaddress rechaza: "127.1", "2130706433", "0x7f000001", "0177.0.0.1", "0".
+    Se normalizan con inet_aton (igual que el sistema operativo) para que el
+    denylist las vea como la IP real."""
+    if ":" in host or not host or not re.fullmatch(r"[0-9a-fA-Fx.]+", host):
+        return host
+    try:
+        return socket.inet_ntoa(socket.inet_aton(host))
+    except OSError:
+        return host
 
 
 def reject_dangerous_network_target(target: str) -> None:
@@ -151,6 +189,7 @@ def reject_dangerous_network_target(target: str) -> None:
         raise ValueError(
             f"target '{host}' referencia un servicio interno de la plataforma, no un objetivo de escaneo valido"
         )
+    host = _canonical_numeric_ipv4(host)
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
@@ -160,3 +199,47 @@ def reject_dangerous_network_target(target: str) -> None:
             f"target '{target}' no es un objetivo de escaneo valido (rango reservado/link-local/"
             "loopback -- esto incluye el endpoint de metadata de cloud 169.254.169.254)"
         )
+
+
+def resolved_target_error(target: str) -> str | None:
+    """Chequeo DNS, justo antes de lanzar el escaneo: devuelve un mensaje de
+    error si el hostname del target RESUELVE a una IP peligrosa (loopback,
+    link-local/metadata, 0.0.0.0, multicast, reservada), o None si esta bien
+    (incluye: es una IP literal ya validada, o no resuelve -- ahi el scanner
+    falla solo). reject_dangerous_network_target solo mira el TEXTO del target:
+    un dominio que el atacante controla ("evil.example") con un registro A a
+    169.254.169.254 o a 127.0.0.1 pasaba. RFC1918 sigue permitido (escanear la
+    LAN del cliente es el producto).
+
+    Limitacion conocida: el scanner vuelve a resolver el nombre despues
+    (DNS rebinding con TTL bajo); cerrarlo del todo exige fijar la IP en el
+    scanner, fuera de alcance."""
+    host = _host_only(target).rstrip(".")
+    if not host:
+        return None
+    host = _canonical_numeric_ipv4(host)
+    try:
+        ipaddress.ip_address(host)
+        return None  # IP literal: ya la valido reject_dangerous_network_target
+    except ValueError:
+        pass
+    if "/" in host:  # CIDR u otra cosa que no es un nombre
+        return None
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError, OSError):
+        return None
+    for info in infos:
+        raw = info[4][0].split("%", 1)[0]
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        if getattr(ip, "ipv4_mapped", None) is not None:
+            ip = ip.ipv4_mapped
+        if _is_dangerous_ip(ip):
+            return (
+                f"el nombre '{host}' resuelve a {ip}, una direccion reservada/loopback/link-local "
+                "(incluye el endpoint de metadata de cloud); no es un objetivo de escaneo valido"
+            )
+    return None

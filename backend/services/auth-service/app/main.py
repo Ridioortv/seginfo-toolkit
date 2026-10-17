@@ -3,6 +3,7 @@ issuance, MFA (TOTP), SSO empresarial (OIDC), RBAC."""
 import asyncio
 import os
 import secrets
+import re
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from urllib.parse import urlencode
@@ -30,6 +31,10 @@ from app.schemas import (
     TokenPair,
     MfaEnrollRequest,
     MfaEnrollResponse,
+    MfaStatusResponse,
+    UserAdminCreate,
+    UserAdminOut,
+    UserAdminUpdate,
     MfaVerifyRequest,
     GoogleAuthRequest,
     RefreshRequest,
@@ -40,9 +45,13 @@ from app.schemas import (
     SubscriptionExtendRequest,
     SubscriptionCancelOut,
     SubscriptionPayLinkOut,
+    SubscriptionPayLinkRequest,
     SubscriptionHistoryOut,
 )
-from app.dependencies import get_current_claims, require_role, require_platform_admin, require_org_admin_or_platform_admin
+from app.dependencies import (
+    get_current_claims, require_role, require_platform_admin, require_org_admin_or_platform_admin,
+    require_service_token,
+)
 from app import services, oidc
 
 logger = configure_logging("auth-service")
@@ -70,7 +79,7 @@ async def _reject_if_org_inactive(db: AsyncSession, org, actor_email: str) -> No
     A quien llega hasta aca ya se le verificaron sus credenciales (esta
     funcion se llama DESPUES de authenticate()/Google/SSO, nunca
     antes) -- por eso alcanza esa confianza para, ademas de bloquearlo,
-    ofrecerle de una un link de pago (PayPal por defecto) generado al vuelo
+    ofrecerle de una un link de pago (PayPal y/o Mercado Pago) generado al vuelo
     contra el servidor central de licencias, con actor_email como
     payer_email. El campo "detail" del 402 pasa a ser un objeto (no un
     string plano) para que el frontend pueda mostrar un boton "Pagar
@@ -81,12 +90,13 @@ async def _reject_if_org_inactive(db: AsyncSession, org, actor_email: str) -> No
     await services.record_audit_event(db, actor_email, "auth.login.blocked_subscription", org.id)
     await db.commit()
 
-    payment_url = None
+    # Un link por pasarela disponible (PayPal y/o Mercado Pago): el cliente
+    # elige. payment_url (el de PayPal si hay, si no el primero) se mantiene
+    # por compatibilidad con frontends anteriores.
+    payment_urls: dict[str, str] = {}
     if license_check.is_configured():
-        try:
-            payment_url = await license_check.get_payment_link(actor_email)
-        except license_check.LicenseCheckError as exc:
-            logger.warning("no se pudo generar el link de pago de %s para %s: %s", license_check.PROVIDER_LABEL, org.id, exc)
+        payment_urls = await license_check.get_payment_links(actor_email)
+    payment_url = payment_urls.get("paypal") or next(iter(payment_urls.values()), None)
 
     message = "La suscripcion de esta organizacion no esta al dia."
     if payment_url:
@@ -96,7 +106,7 @@ async def _reject_if_org_inactive(db: AsyncSession, org, actor_email: str) -> No
 
     raise HTTPException(
         status_code=status.HTTP_402_PAYMENT_REQUIRED,
-        detail={"message": message, "payment_url": payment_url},
+        detail={"message": message, "payment_url": payment_url, "payment_urls": payment_urls},
     )
 
 
@@ -183,7 +193,7 @@ async def lifespan(app: FastAPI):
     license_task.cancel()
 
 
-app = FastAPI(title="SentinelOps Auth Service", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="TERO Security Auth Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -213,7 +223,16 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
     existing = await services.get_user_by_email(db, payload.email)
     if existing:
         raise HTTPException(status_code=400, detail="El email ya esta registrado")
+    if not services.self_registration_allowed() and await services.count_users(db) > 0:
+        # El alta abierta esta cerrada en esta instalacion: las cuentas las crea
+        # un administrador (pantalla "Usuarios"). El primer usuario siempre puede.
+        raise HTTPException(
+            status_code=403,
+            detail="El registro abierto esta desactivado. Pidele a un administrador que cree tu cuenta.",
+        )
     default_org = await services.get_default_organization(db)
+    # Rol de menor privilegio ("viewer", solo lectura): quien se registra solo NUNCA elige su rol.
+    # El primer usuario de la instalacion se asciende a admin mas abajo.
     user = await services.create_user(db, payload.email, payload.password, payload.full_name, default_org.id)
     await services.promote_first_user_to_admin_if_needed(db)
     await services.record_audit_event(db, payload.email, "user.register")
@@ -221,7 +240,7 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
     # Recargar con el rol ya resuelto (create_user no lo trae eager-loaded,
     # y promote_first_user_to_admin_if_needed puede haberlo cambiado).
     user = await services.get_user_by_email(db, payload.email)
-    role_name = user.role.name if user.role else "analyst"
+    role_name = user.role.name if user.role else services.SELF_SERVICE_ROLE
     return UserOut(
         id=user.id, email=user.email, full_name=user.full_name,
         role_name=role_name, is_active=user.is_active, mfa_enabled=user.mfa_enabled,
@@ -245,7 +264,7 @@ async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depe
     org = await services.get_organization_by_id(db, user.organization_id) if user.organization_id else None
     if org is not None:
         await _reject_if_org_inactive(db, org, payload.email)
-    role_name = user.role.name if user.role else "analyst"
+    role_name = user.role.name if user.role else services.SELF_SERVICE_ROLE
     access, refresh = services.issue_tokens(user, role_name)
     login_attempts_total.labels(outcome="success").inc()
     await services.record_audit_event(db, payload.email, "auth.login.success")
@@ -272,11 +291,24 @@ async def google_login(payload: GoogleAuthRequest, request: Request, db: AsyncSe
         raise HTTPException(status_code=401, detail="El email de esa cuenta de Google no esta verificado")
     email = claims["email"]
     full_name = claims.get("name", "")
+    if not services.self_registration_allowed():
+        known = await services.get_user_by_email(db, email)
+        if known is None and await services.count_users(db) > 0:
+            raise HTTPException(
+                status_code=403,
+                detail="Esa cuenta de Google no esta autorizada. Pidele a un administrador que te de acceso.",
+            )
     user = await services.get_or_create_google_user(db, email, full_name)
+    # Igual que en /auth/register: si esta es la PRIMERA cuenta de la instalacion,
+    # queda como admin (y platform_admin). Sin esto, el primero en entrar con
+    # Google quedaba como viewer y nadie podia administrar el sistema.
+    await services.promote_first_user_to_admin_if_needed(db)
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Esta cuenta esta desactivada. Contacta a un administrador.")
     org = await services.get_organization_by_id(db, user.organization_id) if user.organization_id else None
     if org is not None:
         await _reject_if_org_inactive(db, org, email)
-    role_name = user.role.name if user.role else "analyst"
+    role_name = user.role.name if user.role else services.SELF_SERVICE_ROLE
     access, refresh = services.issue_tokens(user, role_name)
     login_attempts_total.labels(outcome="success").inc()
     await services.record_audit_event(db, email, "auth.google.login")
@@ -305,7 +337,7 @@ async def refresh(payload: RefreshRequest, db: AsyncSession = Depends(get_db)):
     org = await services.get_organization_by_id(db, user.organization_id) if user.organization_id else None
     if org is not None:
         await _reject_if_org_inactive(db, org, user.email)
-    role_name = user.role.name if user.role else "analyst"
+    role_name = user.role.name if user.role else services.SELF_SERVICE_ROLE
     access, new_refresh = services.issue_tokens(user, role_name)
     return TokenPair(access_token=access, refresh_token=new_refresh)
 
@@ -339,7 +371,16 @@ async def mfa_enroll(
             )
     secret, otpauth_url = await services.enroll_mfa(db, user)
     await db.commit()
-    return MfaEnrollResponse(secret=secret, otpauth_url=otpauth_url)
+    return MfaEnrollResponse(
+        secret=secret, otpauth_url=otpauth_url, qr_code_data_uri=services.mfa_qr_data_uri(otpauth_url)
+    )
+
+
+@app.get("/auth/mfa/status", response_model=MfaStatusResponse)
+async def mfa_status(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
+    """Para que la pantalla "Seguridad" sepa si ofrecer 'Activar' o 'Reemplazar'."""
+    user = await db.get(services.User, claims["sub"])
+    return MfaStatusResponse(enabled=bool(user and user.mfa_enabled))
 
 
 @app.post("/auth/mfa/confirm")
@@ -393,17 +434,191 @@ async def create_organization(
     }
 
 
+# --- Usuarios de la organizacion (alta con rol elegido por un admin) ---
+
+
+def _user_admin_out(u) -> UserAdminOut:
+    return UserAdminOut(
+        id=u.id, email=u.email, full_name=u.full_name,
+        role_name=u.role.name if u.role else services.SELF_SERVICE_ROLE,
+        is_active=u.is_active, mfa_enabled=u.mfa_enabled, auth_provider=u.auth_provider,
+    )
+
+
+@app.get("/auth/organizations/{org_id}/users", response_model=list[UserAdminOut])
+async def list_org_users(
+    org_id: str,
+    claims: dict = Depends(require_org_admin_or_platform_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    return [_user_admin_out(u) for u in await services.list_users_in_org(db, org_id)]
+
+
+@app.post("/auth/organizations/{org_id}/users", response_model=UserAdminOut, status_code=status.HTTP_201_CREATED)
+async def create_org_user(
+    org_id: str,
+    payload: UserAdminCreate,
+    claims: dict = Depends(require_org_admin_or_platform_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Unica via donde se ELIGE el rol de una cuenta nueva: la hace un admin de
+    la organizacion (o un platform_admin). Con password -> cuenta de email y
+    contrasena; sin password -> cuenta que entra con Google, pre-aprobada con
+    este rol."""
+    if payload.role not in services.ASSIGNABLE_ROLES:
+        raise HTTPException(status_code=422, detail=f"Rol invalido. Opciones: {', '.join(services.ASSIGNABLE_ROLES)}")
+    if await services.get_organization_by_id(db, org_id) is None:
+        raise HTTPException(status_code=404, detail="Organizacion no encontrada")
+    if await services.get_user_by_email(db, payload.email):
+        raise HTTPException(status_code=400, detail="El email ya esta registrado")
+    invite_error = await services.invite_email_error(
+        db, org_id, payload.email, caller_is_platform_admin=bool(claims.get("platform_admin")),
+    )
+    if invite_error:
+        raise HTTPException(status_code=422, detail=invite_error)
+    user = await services.admin_create_user(db, org_id, payload.email, payload.full_name, payload.role, payload.password)
+    await services.record_audit_event(
+        db, claims.get("sub", ""), "user.create_by_admin", f"{user.email}:{payload.role}"
+    )
+    await db.commit()
+    return _user_admin_out(user)
+
+
+@app.patch("/auth/organizations/{org_id}/users/{user_id}", response_model=UserAdminOut)
+async def update_org_user(
+    org_id: str,
+    user_id: str,
+    payload: UserAdminUpdate,
+    claims: dict = Depends(require_org_admin_or_platform_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cambia el rol o activa/desactiva una cuenta. Guardas: nadie puede cambiar
+    su propio rol/estado (evita quedarse sin acceso por error) y la
+    organizacion nunca se queda sin al menos un admin activo."""
+    user = await services.get_user_in_org(db, org_id, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en esta organizacion")
+    if user.is_platform_admin and not claims.get("platform_admin"):
+        # Un admin de la organizacion no administra cuentas de plataforma (las que estan por encima de el).
+        raise HTTPException(status_code=403, detail="No podes administrar una cuenta de administrador de plataforma")
+    if payload.role is None and payload.is_active is None:
+        raise HTTPException(status_code=422, detail="Indica que cambiar: role y/o is_active")
+    if payload.role is not None and payload.role not in services.ASSIGNABLE_ROLES:
+        raise HTTPException(status_code=422, detail=f"Rol invalido. Opciones: {', '.join(services.ASSIGNABLE_ROLES)}")
+    if user.id == claims.get("sub"):
+        raise HTTPException(status_code=400, detail="No puedes cambiar tu propio rol ni desactivarte a ti mismo.")
+
+    current_role = user.role.name if user.role else services.SELF_SERVICE_ROLE
+    new_role = payload.role if payload.role is not None else current_role
+    new_active = payload.is_active if payload.is_active is not None else user.is_active
+    loses_admin = current_role == "admin" and user.is_active and (new_role != "admin" or not new_active)
+    if loses_admin and await services.count_active_admins(db, org_id) <= 1:
+        raise HTTPException(status_code=400, detail="La organizacion tiene que conservar al menos un administrador activo.")
+
+    if payload.role is not None and payload.role != current_role:
+        role = await services.get_or_create_role(db, payload.role)
+        user.role_id = role.id
+        user.role = role
+    if payload.is_active is not None:
+        user.is_active = payload.is_active
+    await services.record_audit_event(
+        db, claims.get("sub", ""), "user.update_by_admin", f"{user.email}:role={new_role},active={new_active}"
+    )
+    await db.commit()
+    return _user_admin_out(user)
+
+
+@app.post("/auth/organizations/{org_id}/users/{user_id}/mfa", response_model=MfaEnrollResponse)
+async def admin_mfa_enroll_user(
+    org_id: str,
+    user_id: str,
+    claims: dict = Depends(require_org_admin_or_platform_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """El admin genera el QR de MFA de OTRA cuenta de email y contrasena (alta
+    con MFA vinculado, o telefono perdido). Deja el MFA de esa cuenta
+    DESACTIVADO hasta que se confirme con un codigo real
+    (POST .../mfa/confirm): asi nadie queda bloqueado por un QR que nunca se
+    escaneo. Una cuenta propia usa /auth/mfa/enroll (exige su codigo actual)."""
+    user = await services.get_user_in_org(db, org_id, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en esta organizacion")
+    if user.is_platform_admin and not claims.get("platform_admin"):
+        # Un admin de la organizacion no administra cuentas de plataforma (las que estan por encima de el).
+        raise HTTPException(status_code=403, detail="No podes administrar una cuenta de administrador de plataforma")
+    if user.id == claims.get("sub"):
+        raise HTTPException(status_code=400, detail="Tu propio MFA se cambia desde Seguridad de la cuenta.")
+    if user.auth_provider != "local":
+        raise HTTPException(status_code=400, detail="Esta cuenta entra con Google/SSO: su MFA lo maneja ese proveedor.")
+    await _enforce_rate_limit(f"admin_mfa_enroll:{claims.get('sub')}", limit=20)
+    secret, otpauth_url = await services.enroll_mfa(db, user)
+    user.mfa_enabled = False
+    await services.record_audit_event(db, claims.get("sub", ""), "user.mfa_enroll_by_admin", user.email)
+    await db.commit()
+    return MfaEnrollResponse(
+        secret=secret, otpauth_url=otpauth_url, qr_code_data_uri=services.mfa_qr_data_uri(otpauth_url)
+    )
+
+
+@app.post("/auth/organizations/{org_id}/users/{user_id}/mfa/confirm", response_model=UserAdminOut)
+async def admin_mfa_confirm_user(
+    org_id: str,
+    user_id: str,
+    payload: MfaVerifyRequest,
+    claims: dict = Depends(require_org_admin_or_platform_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Activa el MFA de la cuenta si el codigo de 6 digitos que muestra la app
+    recien vinculada es correcto (prueba de que el QR quedo escaneado)."""
+    user = await services.get_user_in_org(db, org_id, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en esta organizacion")
+    if user.is_platform_admin and not claims.get("platform_admin"):
+        raise HTTPException(status_code=403, detail="No podes administrar una cuenta de administrador de plataforma")
+    await _enforce_rate_limit(f"admin_mfa_confirm:{claims.get('sub')}", limit=10)
+    if not await services.confirm_mfa(db, user, payload.totp_code.strip()):
+        raise HTTPException(status_code=400, detail="El codigo no coincide. Revisa la hora del telefono y proba con el codigo nuevo.")
+    await services.record_audit_event(db, claims.get("sub", ""), "user.mfa_confirm_by_admin", user.email)
+    await db.commit()
+    return _user_admin_out(user)
+
+
 @app.get("/auth/organizations", response_model=list[OrganizationOut])
 async def list_organizations(claims: dict = Depends(require_platform_admin), db: AsyncSession = Depends(get_db)):
     return await services.list_organizations(db)
 
 
+async def require_billing_admin(
+    org_id: str,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """La licencia/suscripcion de PayPal es UNA por instalacion (todas las
+    organizaciones se refrescan con la misma LICENSE_KEY), asi que cancelar el
+    cobro, generar el link de pago o ver el historial afecta a todos los
+    tenants. Un platform_admin siempre puede; el admin de una organizacion solo
+    en instalaciones de UNA sola organizacion (el caso normal de un cliente
+    autohospedado). En instalaciones multi-organizacion lo decide el operador."""
+    if claims.get("platform_admin"):
+        return claims
+    if claims.get("role") == "admin" and claims.get("org_id") == org_id:
+        if len(await services.list_organizations(db)) <= 1:
+            return claims
+        raise HTTPException(
+            status_code=403,
+            detail="La suscripcion es de toda la instalacion; pedile al administrador de plataforma.",
+        )
+    raise HTTPException(status_code=403, detail="Permisos insuficientes para esta organizacion")
+
+
 @app.get("/internal/organizations")
-async def internal_list_organizations(db: AsyncSession = Depends(get_db)):
-    """Endpoint interno (sin auth de usuario -- servicio-a-servicio dentro
-    de la red de docker-compose, mismo patron que /internal/rule-tags de
-    siem-service o /internal/notify de notification-service). Solo expone
-    ids, nada sensible: pensado para que otro servicio pueda recorrer
+async def internal_list_organizations(
+    claims: dict = Depends(require_service_token),
+    db: AsyncSession = Depends(get_db),
+):
+    """Endpoint interno (servicio-a-servicio: exige un JWT de servicio
+    "system:*", ver dependencies.require_service_token; antes era anonimo y
+    listaba los ids de todos los tenants). Solo expone ids, nada sensible: pensado para que otro servicio pueda recorrer
     "todas las organizaciones" sin necesitar un JWT de platform_admin
     (ej. case-service, para sincronizar pending-cases de soar-service de
     cada tenant en un ciclo de fondo -- ver case-service/app/main.py::
@@ -432,6 +647,13 @@ async def set_sso_config(
     org = await services.get_organization_by_id(db, org_id)
     if org is None:
         raise HTTPException(status_code=404, detail="Organizacion no encontrada")
+    # El issuer lo escribe un admin de la organizacion y este servicio hace
+    # requests hacia el (SSRF): se rechaza al guardar si apunta a una red
+    # interna (se vuelve a validar en cada request, ver app/oidc.py).
+    try:
+        oidc.check_idp_url(payload.issuer, field_name="issuer")
+    except oidc.OidcError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     config = await services.upsert_sso_config(
         db, org_id, payload.issuer, payload.client_id, payload.client_secret,
         payload.default_role, payload.enabled,
@@ -460,6 +682,27 @@ async def get_subscription(
     return org
 
 
+@app.post("/auth/organizations/{org_id}/subscription/refresh", response_model=OrganizationOut)
+async def refresh_subscription(
+    org_id: str,
+    claims: dict = Depends(require_org_admin_or_platform_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Vuelve a consultar el servidor central de licencias YA (en vez de esperar
+    al chequeo periodico de LICENSE_CHECK_INTERVAL_HOURS). Lo usa la pantalla
+    de Pagos y licencia al abrirse y el boton "Actualizar": asi, despues de
+    pagar, la fecha nueva aparece enseguida. No otorga nada: solo copia lo que
+    el servidor central ya firmo; si no se puede consultar, deja todo igual."""
+    org = await services.get_organization_by_id(db, org_id)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organizacion no encontrada")
+    await _enforce_rate_limit(f"sub_refresh:{claims.get('sub')}", limit=30)
+    await services.refresh_license_from_central_server(db, org_id)
+    await db.commit()
+    await db.refresh(org)
+    return org
+
+
 @app.post("/auth/organizations/{org_id}/subscription/extend", response_model=OrganizationOut)
 async def extend_subscription(
     org_id: str,
@@ -471,7 +714,7 @@ async def extend_subscription(
     admin de la propia organizacion: extender su propia suscripcion
     "gratis" es exactamente lo que este gate existe para evitar). Es lo
     que se usa hoy, a mano, al confirmar un pago; el dia que el webhook
-    de Mercado Pago este conectado al servidor central de licencias, ese
+    de PayPal este conectado al servidor central de licencias, ese
     webhook llama al equivalente de esto en licensing-server (ver
     licensing-server/app/main.py::extend_client), no a este endpoint
     directamente -- este endpoint sigue sirviendo para instalaciones sin
@@ -490,12 +733,12 @@ async def extend_subscription(
 @app.post("/auth/organizations/{org_id}/subscription/cancel-payment", response_model=SubscriptionCancelOut)
 async def cancel_subscription_payment(
     org_id: str,
-    claims: dict = Depends(require_org_admin_or_platform_admin),
+    claims: dict = Depends(require_billing_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """Autoservicio -- a diferencia de extend_subscription (arriba), esto
     NO otorga ningun beneficio gratis (no toca subscription_expires_at),
-    solo corta el PROXIMO cobro automatico de Mercado Pago -- por eso el
+    solo corta el PROXIMO cobro automatico de PayPal -- por eso el
     admin de la propia organizacion puede llamarlo el mismo, sin
     necesitar a un platform_admin. El acceso sigue activo hasta que
     venza el periodo ya pagado (ver license_check.cancel_subscription en
@@ -523,15 +766,16 @@ async def cancel_subscription_payment(
 @app.post("/auth/organizations/{org_id}/subscription/pay-link", response_model=SubscriptionPayLinkOut)
 async def get_subscription_pay_link(
     org_id: str,
-    claims: dict = Depends(require_org_admin_or_platform_admin),
+    payload: SubscriptionPayLinkRequest = SubscriptionPayLinkRequest(),
+    claims: dict = Depends(require_billing_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Autoservicio -- genera un link de pago (PayPal) para esta
-    organizacion, tanto para pagar por primera vez como para volver a
+    """Autoservicio -- genera un link de pago (PayPal o Mercado Pago, segun
+    `provider`; PayPal si no se manda) para esta organizacion, tanto para pagar por primera vez como para volver a
     suscribirse despues de haber cancelado (ver cancel_subscription_payment
     arriba) mientras el periodo ya pagado todavia no vencio. payer_email
     es el email de QUIEN ESTA LOGUEADO pidiendolo (se resuelve del JWT,
-    nunca se le pide al frontend que lo mande) -- Mercado Pago lo pide
+    nunca se le pide al frontend que lo mande) -- PayPal lo usa
     solo para vincular el pago, no hace falta que sea el admin de la
     organizacion en particular."""
     org = await services.get_organization_by_id(db, org_id)
@@ -546,14 +790,15 @@ async def get_subscription_pay_link(
     user = await services.get_user_by_id(db, claims.get("sub", ""))
     if user is None:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    provider = payload.provider
     try:
-        payment_url = await license_check.get_payment_link(user.email)
+        payment_url = await license_check.get_payment_link(payload.payer_email or user.email, provider)
     except license_check.LicenseCheckError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     if not payment_url:
         raise HTTPException(
             status_code=503,
-            detail=f"{license_check.PROVIDER_LABEL} no esta configurado del lado del servidor central de licencias.",
+            detail=f"{license_check.provider_label(provider)} no esta configurado del lado del servidor central de licencias.",
         )
     await services.record_audit_event(db, claims.get("sub", ""), "organization.subscription.pay_link", org_id)
     await db.commit()
@@ -563,7 +808,7 @@ async def get_subscription_pay_link(
 @app.get("/auth/organizations/{org_id}/subscription/history", response_model=SubscriptionHistoryOut)
 async def get_subscription_history(
     org_id: str,
-    claims: dict = Depends(require_org_admin_or_platform_admin),
+    claims: dict = Depends(require_billing_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """Solo lectura -- historial de pagos/cancelaciones/renovaciones de
@@ -592,12 +837,24 @@ async def get_subscription_history(
 # JWT_SECRET_KEY) y de forma de pasar el org_id/nonce sin necesitar sesiones
 # de servidor (esta API es stateless, como el resto de la plataforma).
 
+_OIDC_BIND_COOKIE = "sentinelops_oidc_bind"
+_OIDC_CLIENT_STATE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
+
+
 def _oidc_redirect_uri(request: Request, org_slug: str) -> str:
     return str(request.url_for("oidc_callback", org_slug=org_slug))
 
 
 @app.get("/auth/oidc/{org_slug}/login")
-async def oidc_login(org_slug: str, request: Request, db: AsyncSession = Depends(get_db)):
+async def oidc_login(
+    org_slug: str, request: Request, cs: str = "", db: AsyncSession = Depends(get_db),
+):
+    # cs = valor aleatorio que la SPA guarda en sessionStorage antes de redirigir y que el
+    # callback devuelve en el fragmento: la SPA solo instala una sesion SSO si coincide, asi
+    # un link armado a mano (/sso/callback#access_token=...) no puede iniciarle sesion a la
+    # victima en la cuenta del atacante.
+    if cs and not _OIDC_CLIENT_STATE_RE.fullmatch(cs):
+        raise HTTPException(status_code=422, detail="cs invalido")
     org = await services.get_organization_by_slug(db, org_slug)
     if org is None:
         raise HTTPException(status_code=404, detail="Organizacion no encontrada")
@@ -606,12 +863,21 @@ async def oidc_login(org_slug: str, request: Request, db: AsyncSession = Depends
         raise HTTPException(status_code=404, detail="Esta organizacion no tiene SSO configurado/habilitado")
 
     nonce = secrets.token_urlsafe(16)
-    state = create_token(org.id, timedelta(minutes=5), {"type": "oidc_state", "nonce": nonce})
+    state = create_token(org.id, timedelta(minutes=5), {"type": "oidc_state", "nonce": nonce, "cs": cs})
     try:
         authorize_url = await oidc.build_authorize_url(config, _oidc_redirect_uri(request, org_slug), state, nonce)
     except oidc.OidcError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return RedirectResponse(authorize_url)
+    response = RedirectResponse(authorize_url)
+    # Liga el flujo al navegador que lo inicio: el callback exige esta cookie
+    # (HttpOnly, SameSite=Lax viaja en la navegacion de vuelta del IdP). Sin ella
+    # un atacante podia hacer que la victima abriera SU url de callback
+    # (code+state del atacante) y dejarla logueada en la cuenta del atacante.
+    response.set_cookie(
+        _OIDC_BIND_COOKIE, nonce, max_age=300, httponly=True, samesite="lax",
+        secure=FRONTEND_URL.lower().startswith("https://"), path="/auth/oidc",
+    )
+    return response
 
 
 @app.get("/auth/oidc/{org_slug}/callback", name="oidc_callback")
@@ -630,6 +896,10 @@ async def oidc_callback(org_slug: str, request: Request, code: str, state: str, 
     if state_claims.get("type") != "oidc_state" or state_claims.get("sub") != org.id:
         raise HTTPException(status_code=401, detail="state no corresponde a esta organizacion")
     nonce = state_claims.get("nonce", "")
+    bound = request.cookies.get(_OIDC_BIND_COOKIE, "")
+    if not nonce or not bound or not secrets.compare_digest(bound.encode(), nonce.encode()):
+        login_attempts_total.labels(outcome="failure").inc()
+        raise HTTPException(status_code=401, detail="El login SSO no se inicio en este navegador -- volve a empezar")
 
     try:
         tokens = await oidc.exchange_code(config, code, _oidc_redirect_uri(request, org_slug))
@@ -644,6 +914,14 @@ async def oidc_callback(org_slug: str, request: Request, code: str, state: str, 
     email = id_claims["email"]
     full_name = id_claims.get("name", "")
     user = await services.get_or_create_oidc_user(db, email, full_name, org, config.default_role)
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Esta cuenta esta desactivada. Contacta a un administrador.")
+    if user.is_platform_admin:
+        # El IdP lo configura el admin de la organizacion; una cuenta con
+        # autoridad de plataforma (por encima del admin de la org) no puede
+        # ser autenticada por un IdP que el admin de una org controla.
+        login_attempts_total.labels(outcome="failure").inc()
+        raise HTTPException(status_code=403, detail="Las cuentas de administrador de plataforma no pueden entrar por SSO de una organizacion")
     if user.organization_id != org.id:
         # Un email que ya existe en OTRA organizacion no puede "entrar" a
         # esta via SSO -- evita que alguien con SSO mal configurado en la
@@ -658,5 +936,10 @@ async def oidc_callback(org_slug: str, request: Request, code: str, state: str, 
     await services.record_audit_event(db, email, "auth.oidc.login", org.id)
     await db.commit()
 
-    fragment = urlencode({"access_token": access, "refresh_token": refresh})
-    return RedirectResponse(f"{FRONTEND_URL}/sso/callback#{fragment}")
+    fragment_params = {"access_token": access, "refresh_token": refresh}
+    if state_claims.get("cs"):
+        fragment_params["cs"] = state_claims["cs"]
+    fragment = urlencode(fragment_params)
+    response = RedirectResponse(f"{FRONTEND_URL}/sso/callback#{fragment}")
+    response.delete_cookie(_OIDC_BIND_COOKIE, path="/auth/oidc")
+    return response

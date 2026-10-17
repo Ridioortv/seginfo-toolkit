@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.crypto import decrypt_secret, encrypt_secret
 from backend.shared.logging import configure_logging
+from backend.shared.ssrf_guard import UnsafeUrlError, validate_outbound_url
 from app.models import RepoScanStatus, RepoTarget, SecretFinding, SecretSeverity
 
 logger = configure_logging("coderepo-service")
@@ -100,6 +101,33 @@ def validate_repo_url(url: str) -> bool:
     git@/ssh:// -- HTTPS + token es mas simple y suficiente, y evita tener
     que manejar claves SSH."""
     return bool(url) and url.startswith("https://")
+
+
+_REPO_URL_USERINFO_RE = re.compile(r"^(https?://)[^/?#\\\s]*@")
+
+
+def strip_repo_url_userinfo(url: str) -> str:
+    """"https://user:token@host/r.git" -> "https://host/r.git" (para mostrar)."""
+    return _REPO_URL_USERINFO_RE.sub(r"\1", url or "")
+
+
+def repo_url_has_userinfo(url: str) -> bool:
+    return bool(_REPO_URL_USERINFO_RE.match(url or ""))
+
+
+def repo_url_safety_error(url: str) -> str | None:
+    """None si la URL es segura de clonar; si no, el motivo. Aplica el guard
+    de SSRF compartido (host que resuelve a loopback/RFC1918/metadata/CGNAT):
+    el repo_url lo escribe un admin de la organizacion y ESTE servicio hace el
+    `git clone`. Una instalacion de una sola empresa con GitLab/Gitea interno
+    puede poner CODEREPO_ALLOW_PRIVATE_NETWORK=true en el .env."""
+    if os.getenv("CODEREPO_ALLOW_PRIVATE_NETWORK", "false").strip().lower() in {"1", "true", "yes"}:
+        return None
+    try:
+        validate_outbound_url(url, field_name="repo_url")
+    except UnsafeUrlError as exc:
+        return str(exc)
+    return None
 
 
 def build_authenticated_clone_url(repo_url: str, token: str | None) -> str:
@@ -278,12 +306,21 @@ def explain_clone_error(stderr: str, branch: str, has_token: bool) -> str:
 async def _clone_repo(repo_url: str, branch: str, token: str | None, dest_dir: str) -> None:
     """Clona el repo COMPLETO (sin --depth 1: necesitamos el historial
     completo de git para gitleaks). Timeout de 180s."""
+    unsafe = repo_url_safety_error(repo_url)
+    if unsafe:
+        raise RuntimeError(f"repo_url no permitido: {unsafe}")
     authenticated_url = build_authenticated_clone_url(repo_url, token)
-    cmd = ["git", "clone", "--branch", branch, "--single-branch", authenticated_url, dest_dir]
+    # -c core.symlinks=false: los symlinks del repo (atacante) se materializan
+    # como archivos de texto planos, no como enlaces. -c http.followRedirects=false:
+    # un repo "publico" no puede redirigir el clone a un host interno.
+    cmd = [
+        "git", "-c", "core.symlinks=false", "-c", "http.followRedirects=false",
+        "clone", "--branch", branch, "--single-branch", authenticated_url, dest_dir,
+    ]
     # GIT_TERMINAL_PROMPT=0: sin credenciales git falla al instante con un
     # error claro en vez de intentar preguntar usuario/contraseña por una
     # terminal que no existe en el contenedor.
-    git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ALLOW_PROTOCOL": "https"}
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=git_env
@@ -324,7 +361,19 @@ async def _run_gitleaks(repo_path: str, warnings: list[str] | None = None) -> li
     que el comando "fallo" cuando en realidad funciono perfecto y
     encontro algo. Si gitleaks no esta instalado o timeoutea, se loguea y
     se devuelve [] (no tumba el resto del sync)."""
-    report_path = os.path.join(repo_path, ".gitleaks-report.json")
+    # El reporte va en un directorio privado FUERA del checkout: dentro del repo
+    # (contenido controlado por el dueño del repo) un archivo/symlink
+    # ".gitleaks-report.json" prearmado hacia otro archivo del contenedor haria
+    # que gitleaks lo pise.
+    report_dir = tempfile.mkdtemp(prefix="coderepo-gitleaks-")
+    try:
+        return await _run_gitleaks_in(repo_path, report_dir, warnings)
+    finally:
+        shutil.rmtree(report_dir, ignore_errors=True)
+
+
+async def _run_gitleaks_in(repo_path: str, report_dir: str, warnings: list[str] | None) -> list[dict]:
+    report_path = os.path.join(report_dir, "report.json")
     cmd = [
         "gitleaks", "detect",
         "--source", repo_path,

@@ -153,8 +153,12 @@ async def _call_connector(connector: Connector, action: str, payload: dict) -> t
             response = await client.post(f"{base_url.rstrip('/')}/{action}", json=payload, headers=headers)
             response.raise_for_status()
         return "executed", ""
+    except httpx.HTTPStatusError as exc:
+        # NO str(exc): el texto de httpx incluye la URL y, ante un header
+        # invalido, el valor del header (la api_key descifrada) -- se guarda en el log.
+        return "failed", f"el conector respondio HTTP {exc.response.status_code}"
     except httpx.HTTPError as exc:
-        return "failed", str(exc)
+        return "failed", f"error de red al llamar al conector ({type(exc).__name__})"
 
 
 async def run_action(
@@ -254,7 +258,7 @@ async def _call_jira(connector: Connector, title: str, description: str, priorit
         detail = exc.response.text[:300] if exc.response is not None else str(exc)
         return "failed", detail, "", ""
     except httpx.HTTPError as exc:
-        return "failed", str(exc), "", ""
+        return "failed", f"error de red al llamar a Jira ({type(exc).__name__})", "", ""
 
 
 async def create_ticket(

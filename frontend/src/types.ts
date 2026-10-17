@@ -342,6 +342,11 @@ export interface SubscriptionPayLinkOut {
   payment_url: string;
 }
 
+export interface SubscriptionPayLinkRequest {
+  provider: "paypal" | "mercadopago";
+  payer_email?: string;
+}
+
 export interface SubscriptionHistoryOut {
   history: string[];
 }
@@ -476,4 +481,17 @@ export interface SecretFindingOut {
   created_at: string;
   is_acknowledged: boolean;
   acknowledged_by: string;
+}
+
+// Espejo de UserAdminOut (auth-service/app/schemas.py): usuarios de una organizacion.
+export type AssignableRole = "admin" | "soc_manager" | "analyst" | "viewer";
+
+export interface UserAdminOut {
+  id: string;
+  email: string;
+  full_name: string;
+  role_name: string;
+  is_active: boolean;
+  mfa_enabled: boolean;
+  auth_provider: string;
 }

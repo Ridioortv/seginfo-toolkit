@@ -17,6 +17,7 @@ from backend.shared.logging import configure_logging
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
 from app.schemas import IpReputationOut, LookupBatchRequest, LookupBatchResponse
+from backend.shared.service_auth import require_service_token
 from app.dependencies import get_current_claims
 from app import services
 
@@ -34,7 +35,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="SentinelOps Threat Intel Service", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="TERO Security Threat Intel Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -63,10 +64,13 @@ async def lookup(ip: str, claims: dict = Depends(get_current_claims), db: AsyncS
 
 
 @app.post("/internal/lookup-batch", response_model=LookupBatchResponse)
-async def internal_lookup_batch(payload: LookupBatchRequest, db: AsyncSession = Depends(get_db)):
-    """Endpoint interno (SIN auth de usuario -- mismo patron que
-    /internal/rule-tags de siem-service o /internal/* de integration-service:
-    pensado para llamadas servicio-a-servicio dentro de la red de
-    docker-compose, no expuesto afuera de ella)."""
+async def internal_lookup_batch(
+    payload: LookupBatchRequest,
+    claims: dict = Depends(require_service_token),
+    db: AsyncSession = Depends(get_db),
+):
+    """Endpoint interno servicio-a-servicio: exige JWT de servicio (antes
+    anonimo, y sin tope de IPs: cualquiera con acceso al puerto podia gastar
+    la cuota de AbuseIPDB). El tamaño del lote esta acotado en el schema."""
     results = await services.lookup_batch(db, payload.ips)
     return LookupBatchResponse(results=results)

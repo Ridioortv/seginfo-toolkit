@@ -1,6 +1,6 @@
 # Configuracion de gitleaks (usada por CI, el hook pre-commit y tools/).
 # Extiende las reglas por defecto y solo permite valores de EJEMPLO conocidos.
-title = "SentinelOps gitleaks"
+title = "TERO Security gitleaks"
 
 [extend]
 useDefault = true

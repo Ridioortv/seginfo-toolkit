@@ -15,9 +15,18 @@ spec:
       labels:
         app: scan-service
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001   # usuario 'sentinelops' de los Dockerfiles
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: scan-service
           image: sentinelops/scan-service:latest
+          securityContext:
+            allowPrivilegeEscalation: false
           ports:
             - containerPort: 8000
           envFrom:

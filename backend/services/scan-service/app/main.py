@@ -39,6 +39,7 @@ from app.schemas import (
 )
 from app.dependencies import get_current_claims, require_role, get_agent_from_key
 from app import services
+from app.models import ScannerType
 
 logger = configure_logging("scan-service")
 scan_jobs_total = Counter("scan_jobs_total", "Jobs de escaneo creados", ["scanner_type"])
@@ -171,6 +172,14 @@ async def lifespan(app: FastAPI):
                     _key = (_entry or {}).get("key")
                     if not _name or not _key:
                         continue
+                    if services.agent_key_is_refused(_key):
+                        # Clave publica del .env.example (igual en todas las
+                        # instalaciones): fuera de desarrollo no se provisiona.
+                        logger.error(
+                            "agente bootstrap omitido: su key es un valor de ejemplo; corre tools/rotar-secretos.ps1",
+                            extra={"agent_name": _name},
+                        )
+                        continue
                     if await services.ensure_bootstrap_agent(db, _name, _key, _org):
                         logger.info("agente bootstrap creado", extra={"agent_name": _name, "org": _org})
                 await db.commit()
@@ -207,7 +216,7 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title="SentinelOps Scan Service", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="TERO Security Scan Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -228,6 +237,24 @@ async def scanners_status(claims: dict = Depends(get_current_claims)):
     return services.scanners_status()
 
 
+# Falco y Zeek observan TODO el host/red (eBPF, captura de paquetes) y guardan texto crudo
+# de eventos (command lines, usuarios, paths) en los resultados de la organizacion: no son
+# algo que un analyst deba lanzar solo. Un agente remoto (en la maquina del cliente) si.
+_HOST_WIDE_SCANNERS = frozenset({ScannerType.falco, ScannerType.zeek})
+_HOST_WIDE_ROLES = frozenset({"admin", "soc_manager"})
+
+
+def _require_host_wide_permission(scanner_type, claims: dict, agent_id: str | None = None) -> None:
+    if agent_id or scanner_type not in _HOST_WIDE_SCANNERS:
+        return
+    if claims.get("platform_admin") or claims.get("role") in _HOST_WIDE_ROLES:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Falco y Zeek observan todo el host y solo pueden lanzarlos un admin o un soc_manager",
+    )
+
+
 @app.post("/scans", response_model=ScanJobOut, status_code=status.HTTP_201_CREATED)
 async def create_scan(
     payload: ScanJobCreate,
@@ -235,6 +262,7 @@ async def create_scan(
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
+    _require_host_wide_permission(payload.scanner_type, claims)
     job = await services.create_scan_job(db, payload, claims.get("sub", ""), org_id_from_claims(claims))
     await db.commit()
     scan_jobs_total.labels(scanner_type=payload.scanner_type.value).inc()
@@ -295,7 +323,7 @@ async def upload_yara_scan(
     db: AsyncSession = Depends(get_db),
 ):
     """Sube uno o varios archivos y los analiza con YARA (reglas propias de
-    SentinelOps) dentro de scan-service. Los archivos se guardan en una
+    TERO Security) dentro de scan-service. Los archivos se guardan en una
     carpeta temporal, SOLO se leen como bytes (YARA nunca ejecuta lo que
     analiza), y la carpeta se borra al terminar el analisis, pase lo que
     pase. Mismo patron que POST /scans/upload (trivy): crea el job y
@@ -409,6 +437,7 @@ async def create_schedule(
     claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
+    _require_host_wide_permission(payload.scanner_type, claims, payload.agent_id)
     organization_id = org_id_from_claims(claims)
     # Mismo chequeo que create_agent_scan (ver mas abajo): si la regla va a
     # correr via un agente remoto, se exige la api key de ESE agente ademas
@@ -513,7 +542,14 @@ async def list_agents(claims: dict = Depends(get_current_claims), db: AsyncSessi
             created_at=a.created_at,
             last_seen_at=a.last_seen_at,
             is_protected=services.is_protected_agent(a),
-            bootstrap_api_key=services.resolve_bootstrap_api_key(a, bootstrap_raw),
+            # La api key de un agente equivale a su identidad (con ella se puede
+            # pedir trabajos y mandar resultados): solo la ven roles que pueden
+            # operar escaneos. Un usuario de solo lectura ("viewer") NO la recibe.
+            bootstrap_api_key=(
+                services.resolve_bootstrap_api_key(a, bootstrap_raw)
+                if claims.get("role") in ("admin", "soc_manager", "analyst")
+                else None
+            ),
         )
         for a in agents
     ]

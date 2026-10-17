@@ -1,4 +1,4 @@
-# Reglas de Semgrep 100% AUTORADAS por SentinelOps (ninguna copiada del
+# Reglas de Semgrep 100% AUTORADAS por TERO Security (ninguna copiada del
 # registro publico de Semgrep ni de ningun paquete de terceros).
 #
 # POR QUE existen como archivo propio en vez de usar `--config auto` o
@@ -6,7 +6,7 @@
 # el ruleset publico "semgrep-rules"/registry se distribuye bajo la
 # "Semgrep Rules License v1.0", que prohibe EXPLICITAMENTE ofrecerlo
 # "as part of a service to third parties" -- exactamente lo que haria
-# SentinelOps si lo usara para escanear el codigo de un cliente y
+# TERO Security si lo usara para escanear el codigo de un cliente y
 # vender eso como parte del producto. El motor de Semgrep en si (CLI,
 # LGPL 2.1) se puede invocar como binario externo sin problema (igual
 # que trivy/nuclei, nunca linkeado), pero las REGLAS que corre tienen
@@ -31,7 +31,7 @@ rules:
       category: security
       cwe: "CWE-95: Eval Injection"
       owasp: "A03:2021 - Injection"
-      author: SentinelOps
+      author: TERO Security
     patterns:
       - pattern-either:
           - pattern: eval(...)
@@ -50,7 +50,7 @@ rules:
       category: security
       cwe: "CWE-78: OS Command Injection"
       owasp: "A03:2021 - Injection"
-      author: SentinelOps
+      author: TERO Security
     patterns:
       - pattern-either:
           - pattern: subprocess.run(..., shell=True, ...)
@@ -70,7 +70,7 @@ rules:
     metadata:
       category: security
       cwe: "CWE-502: Deserialization of Untrusted Data"
-      author: SentinelOps
+      author: TERO Security
     patterns:
       - pattern-either:
           - pattern: pickle.load(...)
@@ -88,7 +88,7 @@ rules:
     metadata:
       category: security
       cwe: "CWE-502: Deserialization of Untrusted Data"
-      author: SentinelOps
+      author: TERO Security
     patterns:
       - pattern-either:
           - pattern: yaml.load($DATA)
@@ -106,7 +106,7 @@ rules:
     metadata:
       category: security
       cwe: "CWE-327: Use of a Broken or Risky Cryptographic Algorithm"
-      author: SentinelOps
+      author: TERO Security
     patterns:
       - pattern-either:
           - pattern: hashlib.md5(...)
@@ -122,7 +122,7 @@ rules:
     metadata:
       category: security
       cwe: "CWE-489: Active Debug Code"
-      author: SentinelOps
+      author: TERO Security
     patterns:
       - pattern-either:
           - pattern: $APP.run(..., debug=True, ...)
@@ -140,7 +140,7 @@ rules:
     metadata:
       category: security
       cwe: "CWE-209: Generation of Error Message Containing Sensitive Information"
-      author: SentinelOps
+      author: TERO Security
     paths:
       include:
         - "*settings*.py"
@@ -159,7 +159,7 @@ rules:
     metadata:
       category: security
       cwe: "CWE-295: Improper Certificate Validation"
-      author: SentinelOps
+      author: TERO Security
     patterns:
       - pattern-either:
           - pattern: requests.get(..., verify=False, ...)
@@ -177,7 +177,7 @@ rules:
     metadata:
       category: security
       cwe: "CWE-347: Improper Verification of Cryptographic Signature"
-      author: SentinelOps
+      author: TERO Security
     patterns:
       - pattern-either:
           - pattern: jwt.decode(..., verify=False, ...)
@@ -194,7 +194,7 @@ rules:
     metadata:
       category: security
       cwe: "CWE-95: Eval Injection"
-      author: SentinelOps
+      author: TERO Security
     patterns:
       - pattern-either:
           - pattern: eval(...)
@@ -211,7 +211,7 @@ rules:
     metadata:
       category: security
       cwe: "CWE-79: Cross-site Scripting"
-      author: SentinelOps
+      author: TERO Security
     patterns:
       - pattern-either:
           - pattern: $EL.innerHTML = $VALUE
@@ -230,6 +230,6 @@ rules:
     metadata:
       category: security
       cwe: "CWE-798: Use of Hard-coded Credentials"
-      author: SentinelOps
+      author: TERO Security
     patterns:
       - pattern-regex: (?i)^\s*(password|secret|api_key|apikey|access_token|private_key)\s*[=:]\s*["'][^"'\s]{6,}["']\s*$

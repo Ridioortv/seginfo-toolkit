@@ -1,5 +1,5 @@
 """Normalizacion de eventos de log al subconjunto de Elastic Common Schema
-(ECS) que usa SentinelOps. Es pura transformacion de datos declarados por el
+(ECS) que usa TERO Security. Es pura transformacion de datos declarados por el
 cliente que ingesta (agentes, forwarders, APIs) -- nunca se ejecuta nada."""
 from datetime import datetime, timezone
 

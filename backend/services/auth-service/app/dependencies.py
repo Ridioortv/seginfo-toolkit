@@ -53,3 +53,12 @@ def require_org_admin_or_platform_admin(org_id: str, claims: dict = Depends(get_
     if claims.get("role") == "admin" and claims.get("org_id") == org_id:
         return claims
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permisos insuficientes para esta organizacion")
+
+
+def require_service_token(claims: dict = Depends(get_current_claims)) -> dict:
+    """Para endpoints /internal/*: solo un JWT de servicio-a-servicio (subject
+    "system:<servicio>", role admin, firmado con el JWT_SECRET_KEY compartido
+    del stack) -- nunca un usuario normal ni una request anonima."""
+    if claims.get("role") != "admin" or not str(claims.get("sub", "")).startswith("system:"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Solo servicios internos")
+    return claims

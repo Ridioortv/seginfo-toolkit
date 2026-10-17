@@ -9,6 +9,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
+from backend.shared.service_auth import service_auth_headers
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
 from app.ecs import normalize_event
 from app.sigma import evaluate_rule
@@ -106,7 +107,10 @@ async def _enrich_alert_with_threat_intel(alert: Alert, event: dict) -> None:
         return
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.post(f"{THREATINTEL_SERVICE_URL}/internal/lookup-batch", json={"ips": ips})
+            response = await client.post(
+                f"{THREATINTEL_SERVICE_URL}/internal/lookup-batch", json={"ips": ips[:50]},
+                headers=service_auth_headers("siem-service"),
+            )
             response.raise_for_status()
             results = response.json().get("results", [])
     except httpx.HTTPError as exc:

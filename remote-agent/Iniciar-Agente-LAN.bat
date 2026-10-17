@@ -1,5 +1,5 @@
 @echo off
-REM Doble-clic para arrancar el Agente LAN de SentinelOps EN ESTA VENTANA
+REM Doble-clic para arrancar el Agente LAN de TERO Security EN ESTA VENTANA
 REM (para probarlo una vez o ver en vivo que esta haciendo). Se detiene si
 REM cerras esta ventana. Para dejarlo instalado y que arranque solo con
 REM Windows, sin tener que abrir nada de nuevo, usa en cambio

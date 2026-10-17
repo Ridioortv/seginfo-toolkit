@@ -15,7 +15,7 @@ class IpReputationCache(Base):
     """Cache de resultados de threat intel por IP. NO lleva organization_id
     a proposito -- a diferencia del resto de las tablas de la plataforma,
     la reputacion de una IP es un hecho global (AbuseIPDB/MISP no
-    distinguen tenants de SentinelOps): dos organizaciones que consultan la
+    distinguen tenants de TERO Security): dos organizaciones que consultan la
     misma IP comparten la misma fila de cache, en vez de gastar cupo de la
     API externa dos veces para el mismo dato. El cache dura 24hs por
     defecto (ver services.py::is_cache_fresh/CACHE_TTL_HOURS)."""

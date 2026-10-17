@@ -16,6 +16,11 @@ resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
+resource "aws_kms_key" "eks_secrets" {
+  description         = "Cifrado de Secrets de Kubernetes (${var.project_name})"
+  enable_key_rotation = true
+}
+
 resource "aws_eks_cluster" "main" {
   name     = "${var.project_name}-cluster"
   role_arn = aws_iam_role.eks_cluster.arn
@@ -25,7 +30,17 @@ resource "aws_eks_cluster" "main" {
     subnet_ids              = concat([for s in aws_subnet.private : s.id], [for s in aws_subnet.public : s.id])
     endpoint_private_access = true
     endpoint_public_access  = true
+    public_access_cidrs     = var.eks_public_access_cidrs
   }
+
+  encryption_config {
+    resources = ["secrets"]
+    provider {
+      key_arn = aws_kms_key.eks_secrets.arn
+    }
+  }
+
+  enabled_cluster_log_types = ["api", "audit", "authenticator"]
 
   depends_on = [aws_iam_role_policy_attachment.eks_cluster_policy]
 }

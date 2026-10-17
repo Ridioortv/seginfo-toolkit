@@ -133,3 +133,25 @@ export async function register(email: string, password: string, fullName: string
     full_name: fullName,
   });
 }
+
+export interface MfaEnrollOut {
+  secret: string;
+  otpauth_url: string;
+  qr_code_data_uri: string;
+}
+
+export async function mfaStatus(): Promise<boolean> {
+  const { data } = await authApi.get<{ enabled: boolean }>("/auth/mfa/status");
+  return data.enabled;
+}
+
+// Si el usuario YA tiene MFA activo, el servidor exige un codigo TOTP valido del
+// dispositivo actual para reemplazarlo (ver mfa_enroll en auth-service).
+export async function mfaEnroll(currentTotpCode?: string): Promise<MfaEnrollOut> {
+  const { data } = await authApi.post<MfaEnrollOut>("/auth/mfa/enroll", { totp_code: currentTotpCode ?? null });
+  return data;
+}
+
+export async function mfaConfirm(totpCode: string): Promise<void> {
+  await authApi.post("/auth/mfa/confirm", { totp_code: totpCode });
+}

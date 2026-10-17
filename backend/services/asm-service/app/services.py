@@ -19,6 +19,7 @@ import httpx
 from sqlalchemy import delete as sql_delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.shared.ingest_auth import ingest_headers
 from backend.shared.logging import configure_logging
 from app.models import (
     AlertSeverity,
@@ -75,7 +76,7 @@ def normalize_domain(raw: str) -> str:
     # un nombre de dominio) y esa IP es privada/loopback/link-local/reservada
     # (incluye 169.254.169.254, el endpoint de metadata de AWS/GCP/Azure),
     # se rechaza aca mismo en el alta -- evita que alguien registre su
-    # propia infraestructura interna (o la de SentinelOps) como "dominio a
+    # propia infraestructura interna (o la de TERO Security) como "dominio a
     # monitorear" y consiga que este servicio le haga un connect TCP/TLS
     # recurrente (el scheduler corre esto cada ASM_CHECK_INTERVAL_HOURS).
     # Esto es defensa en profundidad -- la validacion que realmente importa
@@ -91,6 +92,9 @@ def normalize_domain(raw: str) -> str:
             f"Dominio invalido: '{raw}' -- no se permite monitorear direcciones IP privadas/reservadas/loopback"
         )
     return domain
+
+
+_CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
 
 def is_blocked_target_ip(ip_str: str) -> bool:
@@ -117,6 +121,10 @@ def is_blocked_target_ip(ip_str: str) -> bool:
         or ip.is_reserved
         or ip.is_multicast
         or ip.is_unspecified
+        # 100.64.0.0/10 (CGNAT, RFC 6598): ipaddress no lo marca como privado,
+        # pero es red interna de varios clouds (p.ej. metadata de Alibaba en
+        # 100.100.100.200). Mismo criterio que backend/shared/ssrf_guard.py.
+        or (ip.version == 4 and ip in _CGNAT_NETWORK)
     )
 
 
@@ -228,7 +236,7 @@ async def fetch_crtsh_detailed(domain: str, http_client: httpx.AsyncClient, atte
             response = await http_client.get(
                 CRTSH_URL,
                 params={"q": f"%.{domain}", "output": "json"},
-                headers={"User-Agent": "SentinelOps-ASM/1.0"},
+                headers={"User-Agent": "TERO-Security-ASM/1.0"},
                 timeout=25.0,
             )
             response.raise_for_status()
@@ -306,7 +314,7 @@ async def _do_fetch_tls_certificate(hostname: str, port: int, timeout: float) ->
         # crt.sh) resuelve a una IP privada/loopback/link-local/reservada
         # -- jamas se abre la conexion TLS. Esto es lo que realmente
         # protege contra un dominio PUBLICO que resuelve (o es rebindeado
-        # via DNS) a infraestructura interna de SentinelOps o al endpoint
+        # via DNS) a infraestructura interna de TERO Security o al endpoint
         # de metadata de un cloud provider (169.254.169.254); el chequeo en
         # normalize_domain solo cubre el caso mas obvio (IP literal en el
         # alta).
@@ -588,7 +596,7 @@ async def _forward_alert_to_siem(alert: SurfaceAlert, organization_id: str | Non
     }
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(f"{SIEM_SERVICE_URL}/logs/ingest", json=payload)
+            await client.post(f"{SIEM_SERVICE_URL}/logs/ingest", json=payload, headers=ingest_headers())
     except httpx.HTTPError as exc:
         logger.warning("no se pudo reenviar alerta a siem-service", extra={"alert_id": alert.id, "error": str(exc)})
 

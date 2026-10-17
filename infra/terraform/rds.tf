@@ -16,11 +16,13 @@ resource "aws_security_group" "postgres" {
     cidr_blocks = [var.vpc_cidr]
   }
 
+  # Un data store no necesita salir a internet: egress solo hacia la VPC.
   egress {
+    description = "Trafico de respuesta dentro de la VPC"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.vpc_cidr]
   }
 }
 
@@ -41,4 +43,8 @@ resource "aws_db_instance" "postgres" {
   backup_retention_period = 7
   skip_final_snapshot    = var.environment != "production"
   deletion_protection    = var.environment == "production"
+  iam_database_authentication_enabled = true
+  auto_minor_version_upgrade          = true
+  copy_tags_to_snapshot               = true
+  enabled_cloudwatch_logs_exports     = ["postgresql", "upgrade"]
 }

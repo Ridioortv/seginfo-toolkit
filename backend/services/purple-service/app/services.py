@@ -9,6 +9,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
+from backend.shared.service_auth import service_auth_headers
 from app.models import PurpleExercise
 from app.attack_data import ATTACK_TECHNIQUES
 from app.schemas import TechniqueCoverage, CoverageResult
@@ -24,7 +25,7 @@ def _now() -> datetime:
 
 
 async def fetch_rule_tags(organization_id: str) -> list[dict]:
-    """Llama al endpoint interno (sin auth de usuario) de siem-service que
+    """Llama al endpoint interno de siem-service (con JWT de servicio del tenant) que
     expone id/nombre/tags de reglas Sigma habilitadas, filtradas al tenant
     de quien pidio el reporte de cobertura. Si siem-service no responde,
     devuelve lista vacia (la cobertura se reporta en 0, nunca se inventan
@@ -32,7 +33,7 @@ async def fetch_rule_tags(organization_id: str) -> list[dict]:
     url = f"{SIEM_SERVICE_URL}/internal/rule-tags"
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(url, params={"organization_id": organization_id})
+            response = await client.get(url, headers=service_auth_headers("purple-service", organization_id))
             response.raise_for_status()
             return response.json()
     except httpx.HTTPError as exc:

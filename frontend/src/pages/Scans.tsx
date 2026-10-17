@@ -188,7 +188,7 @@ function ScanResultsPanel({
       {results.data.map((v) => {
         const pkgLine = packageLine(v);
         return (
-          <div key={v.id} className="panel" style={{ background: "rgba(0,0,0,0.03)" }}>
+          <div key={v.id} className="panel panel-sub">
             <div className="inline-form" style={{ alignItems: "center" }}>
               <SeverityBadge value={v.severity} />
               <strong>{v.title}</strong>
@@ -590,7 +590,7 @@ export default function Scans() {
         <p className="empty-hint">
           Subi uno o varios archivos sospechosos (un ejecutable, un script, un documento, un .zip...) y YARA los
           revisa buscando patrones de malware conocidos (webshells, PowerShell ofuscado, reverse shells, ejecutables
-          escondidos dentro de otro archivo, etc.), con las reglas propias de SentinelOps. Los archivos{" "}
+          escondidos dentro de otro archivo, etc.), con las reglas propias de TERO Security. Los archivos{" "}
           <strong>nunca se ejecutan</strong>: solo se leen, y se borran del servidor apenas termina el analisis. Hasta
           50 archivos y 200 MB en total. El resultado aparece abajo en "Escaneos realizados".
         </p>
@@ -860,7 +860,7 @@ export default function Scans() {
         )}
 
         {justCreatedKey && (
-          <div className="panel" style={{ marginTop: 8, border: "1px solid #d9a900" }}>
+          <div className="panel" style={{ marginTop: 8, border: "1px solid var(--warning)" }}>
             <p>
               Agente <strong>{justCreatedKey.agentName}</strong> registrado. Copia esta api key ahora -- no se va a
               volver a mostrar (pegala en la variable <code className="mono">AGENT_API_KEY</code> al configurar
@@ -900,7 +900,7 @@ export default function Scans() {
                   <td>
                     {a.is_protected ? (
                       <span
-                        style={{ color: "var(--text-muted, #8a93a6)" }}
+                        style={{ color: "var(--text-muted)" }}
                         title="Este agente se crea automaticamente al iniciar el servicio y no se puede eliminar para que los escaneres siempre funcionen."
                       >
                         Protegido
@@ -1042,7 +1042,7 @@ export default function Scans() {
           const dockerAgent = agentNameLower.includes("docker");
           if (wanAgent && isLikelyPrivateIpTarget(agentJobTarget)) {
             return (
-              <p className="empty-hint" style={{ color: "#d9a900" }}>
+              <p className="empty-hint" style={{ color: "var(--warning)" }}>
                 Atencion: "{selectedJobAgent?.name}" solo escanea objetivos publicos de internet, y
                 "{agentJobTarget.trim()}" es una IP privada. El escaneo va a fallar al toque -- usa el Agente LAN
                 (remote-agent/agente-lan.ps1, corriendo en una PC con visibilidad real a esa red) para este target.
@@ -1051,7 +1051,7 @@ export default function Scans() {
           }
           if (wanAgent && ["zeek", "falco", "yara"].includes(agentJobScannerType)) {
             return (
-              <p className="empty-hint" style={{ color: "#d9a900" }}>
+              <p className="empty-hint" style={{ color: "var(--warning)" }}>
                 Atencion: "{selectedJobAgent?.name}" no corre {agentJobScannerType} (analiza el propio equipo o
                 archivos locales, no objetivos de internet). Usa el Agente Docker para ese scanner.
               </p>
@@ -1059,7 +1059,7 @@ export default function Scans() {
           }
           const warn = dockerAgent && isLikelyPrivateIpTarget(agentJobTarget);
           return warn ? (
-            <p className="empty-hint" style={{ color: "#d9a900" }}>
+            <p className="empty-hint" style={{ color: "var(--warning)" }}>
               Atencion: "{selectedJobAgent?.name}" corre DENTRO de Docker Desktop y {agentJobScannerType} no puede
               atravesar su NAT hacia una IP de LAN como "{agentJobTarget.trim()}". El escaneo va a fallar al toque
               -- usa el Agente LAN (remote-agent/agente-lan.ps1, corriendo en una PC con visibilidad real a esa
@@ -1129,7 +1129,7 @@ export default function Scans() {
                   </tr>
                   {expandedAgentScanId === j.id && (
                     <tr key={`${j.id}-detail`}>
-                      <td colSpan={7} className="panel" style={{ background: "rgba(0,0,0,0.03)" }}>
+                      <td colSpan={7} className="panel panel-sub">
                         <ScanResultsPanel scanJobId={j.id} status={j.status} errorMessage={j.error_message} />
                       </td>
                     </tr>
@@ -1232,7 +1232,7 @@ export default function Scans() {
                   </tr>
                   {expandedScanId === s.id && (
                     <tr key={`${s.id}-detail`}>
-                      <td colSpan={8} className="panel" style={{ background: "rgba(0,0,0,0.03)" }}>
+                      <td colSpan={8} className="panel panel-sub">
                         <ScanResultsPanel scanJobId={s.id} status={s.status} errorMessage={s.error_message} />
                       </td>
                     </tr>

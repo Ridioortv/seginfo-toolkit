@@ -43,6 +43,26 @@ async def create_channel(db: AsyncSession, payload, organization_id: str) -> Not
     return channel
 
 
+_VISIBLE_CONFIG_KEYS = {"smtp_to"}
+
+
+def redact_channel_config(config: dict) -> dict:
+    """Para roles de solo lectura / analistas: el webhook_url de Slack/Teams
+    equivale a una credencial (quien lo conoce puede publicar en el canal), asi
+    que solo se devuelve host + '/••••'. Lo que no es secreto (destinatario de
+    email) se deja tal cual."""
+    out = {}
+    for key, value in (config or {}).items():
+        if key in _VISIBLE_CONFIG_KEYS:
+            out[key] = value
+        elif key == "webhook_url" and isinstance(value, str) and "://" in value:
+            scheme, rest = value.split("://", 1)
+            out[key] = f"{scheme}://{rest.split('/', 1)[0]}/••••••••"
+        elif value:
+            out[key] = "••••••••"
+    return out
+
+
 async def list_channels(db: AsyncSession, organization_id: str) -> list[NotificationChannel]:
     result = await db.execute(
         select(NotificationChannel)
@@ -137,8 +157,12 @@ async def _send_webhook(channel: NotificationChannel, subject: str, body: str, s
             response = await client.post(url, json=payload)
             response.raise_for_status()
         return "sent", ""
+    except httpx.HTTPStatusError as exc:
+        # NO usar str(exc): el mensaje de httpx incluye la URL completa del
+        # webhook (credencial) y se guarda en NotificationLog.error.
+        return "failed", f"el webhook respondio HTTP {exc.response.status_code}"
     except httpx.HTTPError as exc:
-        return "failed", str(exc)
+        return "failed", f"error de red al llamar al webhook ({type(exc).__name__})"
 
 
 async def send_notification(

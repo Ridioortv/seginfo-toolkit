@@ -1,5 +1,5 @@
 <#
-Arma el paquete de venta de SentinelOps (carpeta limpia + .zip) a partir de lo
+Arma el paquete de venta de TERO Security (carpeta limpia + .zip) a partir de lo
 COMMITEADO en git -- asi nunca se cuela un .env, un log, la carpeta de otro
 proyecto ni el licensing-server (que tiene tus claves privadas).
 
@@ -7,8 +7,8 @@ Uso (desde la raiz del repo, en PowerShell):
     .\tools\empaquetar-release.ps1 -Version 1.0.0
     .\tools\empaquetar-release.ps1 -Version 1.0.0 -IncluirBinariosLAN
 
-El .zip queda en release\SentinelOps-<version>.zip. Si lo queres en .rar,
-abri la carpeta release\SentinelOps-<version>\ con WinRAR y comprimila.
+El .zip queda en release\TERO-Security-<version>.zip. Si lo queres en .rar,
+abri la carpeta release\TERO-Security-<version>\ con WinRAR y comprimila.
 -IncluirBinariosLAN suma remote-agent\bin\*.exe (nuclei/trivy/gitleaks, ~340MB)
 al paquete; sin ese flag el cliente los baja por su cuenta.
 #>
@@ -23,7 +23,7 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 $sucio = git status --porcelain --untracked-files=no
 if ($sucio) { Write-Warning "Hay cambios sin commitear -- NO van en el paquete:`n$sucio" }
 
-$destino = "release\SentinelOps-$Version"
+$destino = "release\TERO-Security-$Version"
 if (Test-Path $destino) { Remove-Item $destino -Recurse -Force }
 New-Item -ItemType Directory -Path $destino | Out-Null
 
@@ -36,7 +36,7 @@ tar -xf $tar -C $destino
 Remove-Item $tar
 
 # 3) Los launchers .exe estan en .gitignore pero son parte del producto.
-foreach ($exe in "SentinelOps - Iniciar.exe", "SentinelOps - Detener.exe") {
+foreach ($exe in "TERO Security - Iniciar.exe", "TERO Security - Detener.exe") {
     if (Test-Path $exe) { Copy-Item $exe $destino }
 }
 if ($IncluirBinariosLAN -and (Test-Path "remote-agent\bin")) {
@@ -54,7 +54,7 @@ $prohibidos = Get-ChildItem $destino -Recurse -Force -File |
 if ($prohibidos) { throw "El paquete contiene archivos que no deben salir: $($prohibidos.FullName -join ', ')" }
 
 # 5) Zip.
-$zip = "release\SentinelOps-$Version.zip"
+$zip = "release\TERO-Security-$Version.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path "$destino\*" -DestinationPath $zip
 "Listo: $zip ($([math]::Round((Get-Item $zip).Length / 1MB, 1)) MB)"

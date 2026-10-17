@@ -1,4 +1,4 @@
-# SentinelOps (seginfo-toolkit)
+# TERO Security (seginfo-toolkit)
 
 Plataforma de ciberseguridad defensiva: gestion de activos, escaneo de vulnerabilidades,
 SIEM/SOAR, gestion de casos, purple team (metricas de deteccion), reportes de
@@ -48,9 +48,9 @@ frontend con `docker-compose.yml`. Ver la tabla de puertos abajo.
 
 ### En Windows, sin usar la linea de comandos
 
-Doble click en `SentinelOps - Iniciar.exe` (raiz del repo): revisa que
+Doble click en `TERO Security - Iniciar.exe` (raiz del repo): revisa que
 Docker Desktop este instalado y corriendo, levanta todo con Docker Compose
-y abre el dashboard solo. `SentinelOps - Detener.exe` para todo sin borrar
+y abre el dashboard solo. `TERO Security - Detener.exe` para todo sin borrar
 los datos. Siguen necesitando Docker Desktop instalado -- ver
 [`launcher/README.md`](./launcher/README.md) para el detalle y como
 recompilarlos.

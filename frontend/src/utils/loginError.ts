@@ -1,7 +1,7 @@
 /**
  * Interpreta el error de una llamada de login/registro (email+password,
  * Google o SSO) y devuelve el mensaje a mostrar y, si corresponde, el link
- * de pago de PayPal para reactivar una organizacion con la
+ * de pago (PayPal y/o Mercado Pago) para reactivar una organizacion con la
  * suscripcion vencida.
  *
  * El login devuelve 402 cuando la organizacion no tiene la suscripcion al
@@ -17,7 +17,11 @@
 export interface LoginErrorResult {
   message: string;
   paymentUrl: string | null;
+  // Un link por pasarela disponible (PayPal y/o Mercado Pago); vacio si no hay.
+  paymentUrls: Partial<Record<PaymentProvider, string>>;
 }
+
+import { isHttpUrl, pickPaymentUrls, type PaymentProvider } from "./payment";
 
 export function parseLoginError(err: unknown, fallback: string): LoginErrorResult {
   const axiosErr = err as { response?: { status?: number; data?: { detail?: unknown } } };
@@ -25,16 +29,22 @@ export function parseLoginError(err: unknown, fallback: string): LoginErrorResul
 
   if (axiosErr?.response?.status === 402) {
     if (detail && typeof detail === "object") {
-      const d = detail as { message?: string; payment_url?: string | null };
+      const d = detail as { message?: string; payment_url?: string | null; payment_urls?: unknown };
+      const paymentUrls = pickPaymentUrls(d.payment_urls);
+      // Servidores anteriores solo mandan payment_url (PayPal): se sigue entendiendo.
+      if (isHttpUrl(d.payment_url) && Object.keys(paymentUrls).length === 0) {
+        paymentUrls.paypal = d.payment_url;
+      }
       return {
         message: d.message ?? "La suscripcion de esta organizacion no esta al dia.",
-        paymentUrl: d.payment_url ?? null,
+        paymentUrl: isHttpUrl(d.payment_url) ? d.payment_url : (Object.values(paymentUrls)[0] ?? null),
+        paymentUrls,
       };
     }
     if (typeof detail === "string") {
-      return { message: detail, paymentUrl: null };
+      return { message: detail, paymentUrl: null, paymentUrls: {} };
     }
   }
 
-  return { message: fallback, paymentUrl: null };
+  return { message: fallback, paymentUrl: null, paymentUrls: {} };
 }

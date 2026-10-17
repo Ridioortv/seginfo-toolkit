@@ -1,7 +1,7 @@
 /**
  * Contenido de la seccion de Ayuda: una guia interactiva, en espanol
  * simple y sin jerga tecnica, que explica que hace cada parte de
- * SentinelOps y como usarla con los botones y formularios reales de la
+ * TERO Security y como usarla con los botones y formularios reales de la
  * plataforma (nunca pide escribir codigo ni JSON a mano).
  *
  * Es contenido estatico -- no llama a ningun servicio -- por eso vive
@@ -29,7 +29,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     label: "Como empezar",
     tagline: "Un recorrido rapido por toda la plataforma",
     overview:
-      "SentinelOps te ayuda a vigilar tus equipos, encontrar fallos de seguridad y responder ante incidentes -- todo con botones y formularios. No hace falta saber programar ni escribir codigo para usar ninguna funcion. Esta guia explica, seccion por seccion, que hace cada parte y en que orden conviene usarlas.",
+      "TERO Security te ayuda a vigilar tus equipos, encontrar fallos de seguridad y responder ante incidentes -- todo con botones y formularios. No hace falta saber programar ni escribir codigo para usar ninguna funcion. Esta guia explica, seccion por seccion, que hace cada parte y en que orden conviene usarlas.",
     steps: [
       { title: "1. Registra tus activos", body: "Empeza por la seccion Activos: ahi cargas los equipos, servidores o dispositivos que quieres vigilar." },
       { title: "2. Lanza un escaneo", body: "Desde Activos (boton \"Escanear (detectar fallos)\") o desde Escaneos, lanza un escaneo para buscar fallos de seguridad automaticamente." },
@@ -47,7 +47,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     label: "Activos",
     tagline: "Que equipos estas vigilando",
     overview:
-      "Un \"activo\" es cualquier equipo, servidor o dispositivo de tu red que quieras vigilar: una notebook, un servidor de archivos, una pagina web, etc. Registrar tus activos es el primer paso, porque le indica a SentinelOps que existe algo para revisar.",
+      "Un \"activo\" es cualquier equipo, servidor o dispositivo de tu red que quieras vigilar: una notebook, un servidor de archivos, una pagina web, etc. Registrar tus activos es el primer paso, porque le indica a TERO Security que existe algo para revisar.",
     steps: [
       {
         title: "Agregar un activo nuevo",
@@ -72,7 +72,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     label: "Escaneos",
     tagline: "Buscar fallos de seguridad automaticamente",
     overview:
-      "Un escaneo revisa un equipo o una red buscando puertos abiertos, software desactualizado y otras debilidades. Esta seccion tiene varios paneles: escaneos inmediatos, escaneos programados (que se repiten solos), agentes de escaneo remoto (para revisar redes internas que SentinelOps no ve desde afuera) y el historial de todo lo ejecutado.",
+      "Un escaneo revisa un equipo o una red buscando puertos abiertos, software desactualizado y otras debilidades. Esta seccion tiene varios paneles: escaneos inmediatos, escaneos programados (que se repiten solos), agentes de escaneo remoto (para revisar redes internas que TERO Security no ve desde afuera) y el historial de todo lo ejecutado.",
     steps: [
       {
         title: "Nuevo escaneo (inmediato)",
@@ -80,11 +80,11 @@ export const HELP_TOPICS: HelpTopic[] = [
       },
       {
         title: "Escaneos programados",
-        body: "Si queres que un escaneo se repita solo (por ejemplo, todas las noches), completa el formulario de \"Escaneos programados\" con nombre, tipo de escaneo, objetivo, frecuencia (diaria o semanal) y hora. Tipos disponibles: nuclei (vulnerabilidades web), zap (analisis pasivo de una pagina web, objetivo = URL), semgrep (revisa codigo fuente con reglas propias, objetivo = repositorio o carpeta), gitleaks (busca claves y contrasenas olvidadas en un repositorio), yara (busca patrones sospechosos en archivos, objetivo = ruta de archivo o carpeta), y zeek / falco (vigilancia de red y del sistema durante una ventana de 1 a 60 minutos que elegis vos; el campo \"Duracion (min)\" aparece solo con esos dos). SentinelOps lo ejecuta automaticamente en cada horario, sin que vuelvas a apretar nada. Se borra con \"Eliminar\" cuando ya no lo necesites.",
+        body: "Si queres que un escaneo se repita solo (por ejemplo, todas las noches), completa el formulario de \"Escaneos programados\" con nombre, tipo de escaneo, objetivo, frecuencia (diaria o semanal) y hora. Tipos disponibles: nuclei (vulnerabilidades web), zap (analisis pasivo de una pagina web, objetivo = URL), semgrep (revisa codigo fuente con reglas propias, objetivo = repositorio o carpeta), gitleaks (busca claves y contrasenas olvidadas en un repositorio), yara (busca patrones sospechosos en archivos, objetivo = ruta de archivo o carpeta), y zeek / falco (vigilancia de red y del sistema durante una ventana de 1 a 60 minutos que elegis vos; el campo \"Duracion (min)\" aparece solo con esos dos). TERO Security lo ejecuta automaticamente en cada horario, sin que vuelvas a apretar nada. Se borra con \"Eliminar\" cuando ya no lo necesites.",
       },
       {
         title: "Agentes de escaneo remoto",
-        body: "Si tenes una red interna que SentinelOps no puede alcanzar desde internet (por ejemplo, la red de tu oficina), instala un \"agente\" en un equipo de esa red: creá el agente aca con un nombre descriptivo (ej. PC-oficina-recepcion), copia la clave que se muestra una sola vez (\"Ya la copie\") y usala para instalarlo. Una vez instalado, el agente queda disponible para recibir trabajos de escaneo.",
+        body: "Si tenes una red interna que TERO Security no puede alcanzar desde internet (por ejemplo, la red de tu oficina), instala un \"agente\" en un equipo de esa red: creá el agente aca con un nombre descriptivo (ej. PC-oficina-recepcion), copia la clave que se muestra una sola vez (\"Ya la copie\") y usala para instalarlo. Una vez instalado, el agente queda disponible para recibir trabajos de escaneo.",
       },
       {
         title: "Escaneos remotos (a traves de un agente)",
@@ -188,7 +188,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     steps: [
       {
         title: "Sincronizacion automatica",
-        body: "SentinelOps revisa periodicamente los resultados de SOAR y crea o actualiza casos por si mismo. Si necesitas forzar esa revision en el momento, usa \"Sincronizar con SOAR ahora\" (visible solo para administradores y jefes de SOC).",
+        body: "TERO Security revisa periodicamente los resultados de SOAR y crea o actualiza casos por si mismo. Si necesitas forzar esa revision en el momento, usa \"Sincronizar con SOAR ahora\" (visible solo para administradores y jefes de SOC).",
       },
       {
         title: "Avanzar un caso",
@@ -213,7 +213,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     label: "Purple Team",
     tagline: "Poner a prueba tus defensas",
     overview:
-      "Un ejercicio de Purple Team sirve para comprobar si tus defensas realmente detectan las tecnicas de ataque mas comunes (segun el catalogo MITRE ATT&CK). Declaras que tecnicas vas a simular y SentinelOps te dice cuales SI fueron detectadas y cuales quedaron como \"brechas\" (gaps) sin cobertura.",
+      "Un ejercicio de Purple Team sirve para comprobar si tus defensas realmente detectan las tecnicas de ataque mas comunes (segun el catalogo MITRE ATT&CK). Declaras que tecnicas vas a simular y TERO Security te dice cuales SI fueron detectadas y cuales quedaron como \"brechas\" (gaps) sin cobertura.",
     steps: [
       {
         title: "Declarar un ejercicio",
@@ -221,7 +221,7 @@ export const HELP_TOPICS: HelpTopic[] = [
       },
       {
         title: "Recalcular cobertura",
-        body: "Despues de ejecutar el ejercicio en la practica, apreta \"Recalcular cobertura\" para que SentinelOps compare las tecnicas declaradas contra lo que realmente se detecto en SIEM.",
+        body: "Despues de ejecutar el ejercicio en la practica, apreta \"Recalcular cobertura\" para que TERO Security compare las tecnicas declaradas contra lo que realmente se detecto en SIEM.",
       },
       {
         title: "Ver los gaps",
@@ -254,7 +254,7 @@ export const HELP_TOPICS: HelpTopic[] = [
   {
     id: "notifications",
     label: "Notificaciones",
-    tagline: "Como te avisa SentinelOps",
+    tagline: "Como te avisa TERO Security",
     overview:
       "Aca configuras por donde queres recibir avisos (por ejemplo email) y podes ver el historial de todo lo que se envio.",
     steps: [
@@ -268,7 +268,7 @@ export const HELP_TOPICS: HelpTopic[] = [
   {
     id: "integrations",
     label: "Integraciones",
-    tagline: "Conectar SentinelOps con tus herramientas reales",
+    tagline: "Conectar TERO Security con tus herramientas reales",
     overview:
       "Las integraciones conectan las acciones automaticas (por ejemplo, bloquear una IP en tu firewall real, o crear un ticket en Jira) con tus sistemas de verdad. Mientras no configures un conector, esas acciones quedan simuladas.",
     steps: [
@@ -287,7 +287,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     ],
     tips: [
       "Las claves de acceso que cargues quedan cifradas: nunca se muestran de nuevo en texto plano despues de guardarlas.",
-      "Sin ningun conector configurado, SentinelOps sigue funcionando igual, pero las acciones de contencion quedan solo simuladas.",
+      "Sin ningun conector configurado, TERO Security sigue funcionando igual, pero las acciones de contencion quedan solo simuladas.",
     ],
   },
   {

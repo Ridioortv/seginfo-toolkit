@@ -1,4 +1,4 @@
-# Agente de escaneo remoto de SentinelOps
+# Agente de escaneo remoto de TERO Security
 
 ## Que problema resuelve
 
@@ -6,12 +6,12 @@
 (Windows/Mac) los contenedores quedan aislados detras de NAT: no ven la
 LAN real de la oficina o del cliente, aunque Docker Desktop este
 instalado en una PC de esa misma red. Por eso un escaneo con nuclei o
-trivy contra un target de esa LAN lanzado desde la UI de SentinelOps no
+trivy contra un target de esa LAN lanzado desde la UI de TERO Security no
 encuentra nada, aunque esa red exista y sea escaneable desde la propia
 PC "por fuera" de Docker.
 
 Este agente es un script chico que corre **fuera** de Docker -- en la
-misma PC donde esta instalado SentinelOps, o en cualquier otra maquina
+misma PC donde esta instalado TERO Security, o en cualquier otra maquina
 de esa LAN con visibilidad real a la red que se quiere escanear -- y
 hace de "brazos y piernas" para los escaneos que scan-service no puede
 alcanzar el mismo.
@@ -33,7 +33,7 @@ del contenedor, que ya trae los permisos de kernel necesarios).
   `scan-service` ya publica (`8003` por defecto, ver
   `docker-compose.yml`).
 - No hay ningun servidor "relay" en internet ni endpoint publico
-  involucrado. El uso tipico de SentinelOps es on-prem/self-hosted en la
+  involucrado. El uso tipico de TERO Security es on-prem/self-hosted en la
   red del propio cliente, asi que el agente solo necesita llegar al
   `scan-service` de esa misma instalacion (via `localhost` si esta en la
   misma PC, o via la IP de la LAN si esta en otra maquina).
@@ -53,7 +53,7 @@ del contenedor, que ya trae los permisos de kernel necesarios).
   tiempo fija (`options.duration_minutes`, 1-60 min, default 5). Es
   exactamente el mismo comando (y las mismas restricciones) que usa
   `scan-service` cuando escanea el mismo desde adentro del contenedor.
-- **`semgrep` y `yara` usan UNICAMENTE reglas propias de SentinelOps**
+- **`semgrep` y `yara` usan UNICAMENTE reglas propias de TERO Security**
   (`backend/services/scan-service/rules/semgrep/sentinelops-rules.yml` y
   `.../rules/yara/sentinelops.yar`), nunca el registro publico de
   semgrep (`--config auto`/`p/...`) ni packs de YARA de terceros -- una
@@ -115,9 +115,9 @@ del contenedor, que ya trae los permisos de kernel necesarios).
     Windows** -- necesitan captura de paquetes / eBPF de Linux. Usa el
     Agente Docker para estos dos (ver "Produccion" mas abajo).
 
-## Paso 1: registrar el agente en SentinelOps
+## Paso 1: registrar el agente en TERO Security
 
-1. Entra a la pagina **Escaneos** de SentinelOps (necesitas rol
+1. Entra a la pagina **Escaneos** de TERO Security (necesitas rol
    `admin`).
 2. En el panel "Agentes de escaneo remoto", clickea "Registrar agente"
    y ponele un nombre descriptivo (ej. `PC-oficina-recepcion` o
@@ -133,7 +133,7 @@ El script se configura con variables de entorno:
 | Variable | Default | Descripcion |
 |---|---|---|
 | `AGENT_API_KEY` | *(requerida)* | La api key del paso 1. |
-| `SCAN_SERVICE_URL` | `http://localhost:8003` | URL de `scan-service`. Si el agente corre en la MISMA PC que SentinelOps, el default alcanza. Si corre en OTRA maquina de la LAN, usa la IP de la PC donde esta SentinelOps, ej. `http://192.168.1.50:8003`. |
+| `SCAN_SERVICE_URL` | `http://localhost:8003` | URL de `scan-service`. Si el agente corre en la MISMA PC que TERO Security, el default alcanza. Si corre en OTRA maquina de la LAN, usa la IP de la PC donde esta TERO Security, ej. `http://192.168.1.50:8003`. |
 | `POLL_INTERVAL_SECONDS` | `10` | Cada cuanto pregunta si hay escaneos nuevos asignados. |
 
 ### Windows (símbolo de sistema / cmd)
@@ -163,7 +163,7 @@ python3 agent.py
 Si todo esta bien configurado vas a ver algo como:
 
 ```
-[agent] SentinelOps - agente de escaneo remoto iniciado.
+[agent] TERO Security - agente de escaneo remoto iniciado.
 [agent]   scan-service: http://localhost:8003
 [agent]   intervalo de polling: 10s
 [agent] Esperando jobs asignados (Ctrl+C para detener)...
@@ -176,7 +176,7 @@ Linux/Mac, un servicio `systemd` o simplemente `nohup`/`screen`/`tmux`.
 
 ## Paso 3: lanzar escaneos remotos
 
-Desde la pagina **Escaneos** de SentinelOps, en el panel "Escaneos
+Desde la pagina **Escaneos** de TERO Security, en el panel "Escaneos
 remotos", elegi el agente registrado, el scanner (`nuclei`, `trivy`,
 `zap`, `semgrep`, `gitleaks`, `yara`, `zeek` o `falco`) y el target, y
 crea el job (para `zeek`/`falco` tambien elegis la duracion en minutos,
@@ -193,7 +193,7 @@ hallazgos se reenvian automaticamente a vuln-service para priorizacion
   agente no haya sido borrado desde la UI.
 - **"no se pudo conectar a scan-service"**: revisa `SCAN_SERVICE_URL` --
   si el agente corre en otra maquina, `localhost` no va a funcionar,
-  necesitas la IP de la LAN de la PC donde esta SentinelOps, y que el
+  necesitas la IP de la LAN de la PC donde esta TERO Security, y que el
   firewall de esa PC permita conexiones entrantes al puerto 8003 desde
   esa otra maquina.
 - **Los jobs quedan en "failed" con "<scanner> no esta instalado o no

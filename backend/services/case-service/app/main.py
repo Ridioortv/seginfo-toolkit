@@ -62,7 +62,7 @@ async def lifespan(app: FastAPI):
     sync_task.cancel()
 
 
-app = FastAPI(title="SentinelOps Case Service", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="TERO Security Case Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -81,7 +81,7 @@ async def health():
 @app.post("/cases", response_model=CaseOut, status_code=status.HTTP_201_CREATED)
 async def create_case(
     payload: CaseCreate,
-    claims: dict = Depends(get_current_claims),
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
     """BUG DE SEGURIDAD (corregido aca): este endpoint no exigia ningun JWT y
@@ -103,7 +103,11 @@ async def create_case(
     services.import_pending_cases_from_soar, que SI emite su propio JWT)."""
     case = await services.create_case(db, payload, org_id_from_claims(claims), claims.get("sub", ""))
     await db.commit()
-    cases_created_total.labels(priority=payload.priority.value, source=payload.source).inc()
+    cases_created_total.labels(
+        priority=payload.priority.value,
+        # source es texto libre del caller: solo valores conocidos como label (cardinalidad acotada).
+        source=payload.source if payload.source in {"manual", "soar-import", "siem", "soar", "alert"} else "otro",
+    ).inc()
     return case
 
 
@@ -130,7 +134,7 @@ async def get_case(case_id: str, claims: dict = Depends(get_current_claims), db:
 async def update_case(
     case_id: str,
     payload: CaseUpdate,
-    claims: dict = Depends(get_current_claims),
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
     case = await services.get_case(db, case_id, org_id_from_claims(claims))
@@ -151,7 +155,7 @@ async def update_case(
 async def add_timeline_entry(
     case_id: str,
     payload: TimelineEntryCreate,
-    claims: dict = Depends(get_current_claims),
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
     case = await services.get_case(db, case_id, org_id_from_claims(claims))

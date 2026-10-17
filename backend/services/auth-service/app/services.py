@@ -1,11 +1,15 @@
 """Business logic for auth-service: organizaciones (tenants), user auth,
 SSO (OIDC), MFA, immutable audit log."""
 import logging
+import os
 import re
 import secrets
 import hashlib
 from datetime import datetime, timedelta, timezone
+import base64
+import io
 import pyotp
+import segno
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -97,7 +101,7 @@ def is_org_active(org: Organization) -> bool:
 
 async def extend_subscription(db: AsyncSession, organization_id: str, days: int) -> Organization | None:
     """Renovacion manual -- lo que usa el operador hoy hasta que el
-    servidor central de licencias este conectado a Mercado Pago (ver
+    servidor central de licencias este conectado a PayPal (ver
     PUT/POST /auth/organizations/{id}/subscription en main.py). Extiende
     desde el vencimiento ACTUAL (o desde ahora si ya venció), nunca desde
     'ahora' a secas -- mismo criterio que licensing-server/app/main.py::extend_client,
@@ -203,6 +207,130 @@ async def get_user_by_id(db: AsyncSession, user_id: str) -> User | None:
     return result.scalar_one_or_none()
 
 
+# Roles que un administrador puede asignar al crear/editar una cuenta:
+#   admin        -> todo, incluida la administracion de usuarios, SSO y pagos
+#   soc_manager  -> opera todo el SOC (escaneos, casos, SOAR, reportes)
+#   analyst      -> ejecuta tareas operativas (escaneos, triage, casos)
+#   viewer       -> SOLO LECTURA: ve el sistema pero no ejecuta ni modifica nada
+# Cada servicio decide con require_role(...) que roles pueden ejecutar cada
+# accion; "viewer" no esta en ninguna lista de escritura, asi que queda de solo
+# lectura sin tocar nada mas.
+ASSIGNABLE_ROLES = ("admin", "soc_manager", "analyst", "viewer")
+# Rol de quien entra SIN que un admin lo haya dado de alta (auto-registro o
+# Google desconocido): minimo privilegio. Nunca se puede auto-elegir.
+SELF_SERVICE_ROLE = "viewer"
+
+
+def self_registration_allowed() -> bool:
+    """ALLOW_SELF_REGISTRATION=false cierra el alta abierta (el instalador lo
+    deja asi en un cliente: solo entran cuentas creadas por un admin). El PRIMER
+    usuario de una instalacion siempre puede registrarse (es el admin inicial)."""
+    return os.getenv("ALLOW_SELF_REGISTRATION", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
+async def list_users_in_org(db: AsyncSession, org_id: str) -> list[User]:
+    result = await db.execute(
+        select(User).options(selectinload(User.role)).where(User.organization_id == org_id).order_by(User.created_at.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def get_user_in_org(db: AsyncSession, org_id: str, user_id: str) -> User | None:
+    result = await db.execute(
+        select(User).options(selectinload(User.role)).where(User.id == user_id, User.organization_id == org_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def count_active_admins(db: AsyncSession, org_id: str) -> int:
+    admin_role = await get_or_create_role(db, "admin")
+    result = await db.execute(
+        select(func.count()).select_from(User).where(
+            User.organization_id == org_id, User.role_id == admin_role.id, User.is_active.is_(True)
+        )
+    )
+    return result.scalar_one()
+
+
+FREE_MAIL_DOMAINS = frozenset({
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com",
+    "yahoo.com", "yahoo.com.ar", "icloud.com", "me.com", "proton.me", "protonmail.com",
+    "aol.com", "gmx.com", "yandex.com", "mail.com", "zoho.com",
+})
+
+
+def _email_domain(email: str) -> str:
+    return (email or "").rsplit("@", 1)[-1].strip().lower()
+
+
+def freemail_invites_allowed() -> bool:
+    return os.getenv("ALLOW_FREEMAIL_INVITES", "false").strip().lower() in {"1", "true", "yes"}
+
+
+async def invite_email_error(db: AsyncSession, org_id: str, email: str, *, caller_is_platform_admin: bool) -> str | None:
+    """Devuelve un mensaje de error si un admin de organizacion NO puede dar de
+    alta ese email, o None si puede.
+
+    Por que existe: users.email es unico a nivel global y el login por Google
+    resuelve la cuenta solo por email. Sin esta regla, el admin de una
+    organizacion podia dar de alta el email de una persona AJENA y, cuando esa
+    persona entraba con Google, quedaba dentro del tenant del atacante (y la
+    organizacion real de esa persona ya no podia darla de alta).
+
+    Regla: en una instalacion con varias organizaciones, el admin solo puede
+    dar de alta emails del MISMO dominio que los usuarios que su organizacion
+    ya tiene; los dominios de correo gratuito (gmail, outlook...) no prueban
+    pertenencia a una empresa, asi que quedan reservados a un platform_admin
+    (o a ALLOW_FREEMAIL_INVITES=true en instalaciones de una sola empresa).
+    Una instalacion con una sola organizacion no tiene tenants contra quien
+    capturar, asi que no se restringe."""
+    if caller_is_platform_admin:
+        return None
+    org_count = (await db.execute(select(func.count()).select_from(Organization))).scalar_one()
+    if org_count <= 1:
+        return None
+    domain = _email_domain(email)
+    if domain in FREE_MAIL_DOMAINS:
+        if freemail_invites_allowed():
+            return None
+        return (
+            "No se pueden dar de alta emails de correo gratuito (gmail, outlook...) en una instalacion con varias "
+            "organizaciones: no prueban que la persona sea de tu empresa. Usa el email corporativo."
+        )
+    result = await db.execute(
+        select(User.email).where(User.organization_id == org_id, User.is_active.is_(True))
+    )
+    if any(_email_domain(e) == domain for (e,) in result.all()):
+        return None
+    return (
+        f"El dominio @{domain} no coincide con el de los usuarios de tu organizacion. "
+        "Pedile a un administrador de plataforma que de de alta ese email."
+    )
+
+
+async def admin_create_user(
+    db: AsyncSession, org_id: str, email: str, full_name: str, role_name: str, password: str | None,
+) -> User:
+    """Alta hecha por un administrador. Con password -> cuenta local (email +
+    contrasena, y MFA que el usuario activa en su primer ingreso). Sin password
+    -> cuenta que entra con Google: queda pre-aprobada con ESTE rol, y la
+    persona solo tiene que iniciar sesion con ese email de Google."""
+    role = await get_or_create_role(db, role_name)
+    user = User(
+        email=email,
+        hashed_password=hash_password(password) if password else None,
+        full_name=full_name,
+        role_id=role.id,
+        organization_id=org_id,
+        auth_provider="local" if password else "google",
+    )
+    db.add(user)
+    await db.flush()
+    await db.refresh(user)
+    user.role = role
+    return user
+
+
 async def get_or_create_role(db: AsyncSession, name: str) -> Role:
     result = await db.execute(select(Role).where(Role.name == name))
     role = result.scalar_one_or_none()
@@ -215,7 +343,7 @@ async def get_or_create_role(db: AsyncSession, name: str) -> Role:
 
 async def create_user(
     db: AsyncSession, email: str, password: str, full_name: str,
-    organization_id: str, role_name: str = "analyst",
+    organization_id: str, role_name: str = SELF_SERVICE_ROLE,
 ) -> User:
     """role_name solo lo pasa codigo interno de confianza (el bootstrap de
     admin, un futuro endpoint admin-only para crear usuarios). El endpoint
@@ -251,6 +379,7 @@ async def promote_first_user_to_admin_if_needed(db: AsyncSession) -> None:
     first_user = result.scalar_one_or_none()
     if first_user is not None:
         first_user.role_id = admin_role.id
+        first_user.role = admin_role  # que el objeto en memoria ya refleje el rol nuevo (lo usa issue_tokens)
         # El primer usuario de todo el sistema tambien queda como
         # administrador de la plataforma (puede crear otras
         # organizaciones) -- en un deploy on-prem de un solo cliente esto
@@ -276,6 +405,23 @@ async def backfill_users_without_organization(db: AsyncSession) -> None:
     await db.flush()
 
 
+async def _adopt_local_account_for_federated_login(db: AsyncSession, user: User, provider: str) -> None:
+    """Si el email ya tenia una cuenta local con password (registro abierto, sin
+    verificar que el email sea de quien se registro) y ahora entra el DUEÑO
+    verificado del email por Google/SSO, la cuenta pasa a ese proveedor y se
+    borran el password y el MFA locales. Sin esto, quien registro primero el
+    email de otra persona conservaba su password y seguia entrando a la misma
+    cuenta (pre-claim)."""
+    if user.is_platform_admin:
+        return
+    if user.auth_provider == "local" and user.hashed_password is not None:
+        user.hashed_password = None
+        user.mfa_enabled = False
+        user.mfa_secret = None
+        user.auth_provider = provider
+        await db.flush()
+
+
 async def get_or_create_google_user(db: AsyncSession, email: str, full_name: str) -> User:
     """Login/registro con Google: el token ya viene verificado por Google, asi
     que si el email no existe se crea la cuenta directamente (sin password,
@@ -287,8 +433,9 @@ async def get_or_create_google_user(db: AsyncSession, email: str, full_name: str
     get_or_create_oidc_user) donde la organizacion la determina la URL."""
     user = await get_user_by_email(db, email)
     if user is not None:
+        await _adopt_local_account_for_federated_login(db, user, "google")
         return user
-    role = await get_or_create_role(db, "analyst")
+    role = await get_or_create_role(db, SELF_SERVICE_ROLE)
     default_org = await get_default_organization(db)
     user = User(
         email=email, hashed_password=None, full_name=full_name, role_id=role.id,
@@ -310,6 +457,10 @@ async def get_or_create_oidc_user(db: AsyncSession, email: str, full_name: str, 
     /auth/oidc/{slug}/... que arranco el flujo, no el dominio del email."""
     user = await get_user_by_email(db, email)
     if user is not None:
+        # Solo se adopta si la cuenta ya es de ESTA organizacion: el IdP de la
+        # org B no puede tocar (ni borrarle el password) a un usuario de la org A.
+        if user.organization_id == organization.id:
+            await _adopt_local_account_for_federated_login(db, user, "oidc")
         return user
     role = await get_or_create_role(db, default_role)
     user = User(
@@ -329,6 +480,10 @@ async def authenticate(db: AsyncSession, email: str, password: str, totp_code: s
     # Google -- no tienen password, asi que el login con email/password
     # simplemente falla en vez de romper contra passlib.
     if user is None or user.hashed_password is None or not verify_password(password, user.hashed_password):
+        return None
+    if not user.is_active:
+        # Cuenta desactivada por un admin: mismo mensaje generico que un login
+        # fallido (no revela que la cuenta existe).
         return None
     if user.mfa_enabled:
         if not totp_code or not pyotp.TOTP(user.mfa_secret).verify(totp_code, valid_window=1):
@@ -365,8 +520,21 @@ async def enroll_mfa(db: AsyncSession, user: User) -> tuple[str, str]:
     secret = pyotp.random_base32()
     user.mfa_secret = secret
     await db.flush()
-    otpauth_url = pyotp.TOTP(secret).provisioning_uri(name=user.email, issuer_name="SentinelOps")
+    otpauth_url = pyotp.TOTP(secret).provisioning_uri(name=user.email, issuer_name="TERO Security")
     return secret, otpauth_url
+
+
+def mfa_qr_data_uri(otpauth_url: str) -> str:
+    """QR (SVG, data URI) del otpauth:// para escanear con Google Authenticator,
+    Authy, Microsoft Authenticator, 1Password, Bitwarden, etc. Se genera en el
+    servidor: el secreto nunca sale a un servicio de QR de terceros."""
+    # OJO: svg_inline() NO incluye xmlns; como <img src="data:..."> el navegador no
+    # dibuja un SVG sin xmlns (queda un cuadro blanco). save(..., svgns=True) lo agrega.
+    buf = io.BytesIO()
+    segno.make(otpauth_url, error="m").save(
+        buf, kind="svg", scale=6, border=3, dark="#000000", light="#ffffff", xmldecl=False, svgns=True
+    )
+    return "data:image/svg+xml;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 async def confirm_mfa(db: AsyncSession, user: User, totp_code: str) -> bool:

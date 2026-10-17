@@ -1,4 +1,4 @@
-"""Crea (una sola vez) el producto y el plan de PayPal de SentinelOps:
+"""Crea (una sola vez) el producto y el plan de PayPal de TERO Security:
 USD 250 cada 30 dias, renovacion automatica. Imprime el PAYPAL_PLAN_ID que
 hay que pegar en licensing-server/.env.
 
@@ -58,7 +58,7 @@ async def main(price: str, days: int) -> int:
 
         r = await client.post(
             f"{base}/v1/catalogs/products", headers=headers,
-            json={"name": "SentinelOps", "type": "SERVICE", "category": "SOFTWARE"},
+            json={"name": "TERO Security", "type": "SERVICE", "category": "SOFTWARE"},
         )
         if r.status_code >= 400:
             print("PayPal rechazo la creacion del producto:", r.status_code, r.text[:400])
@@ -69,7 +69,7 @@ async def main(price: str, days: int) -> int:
             f"{base}/v1/billing/plans", headers=headers,
             json={
                 "product_id": product_id,
-                "name": f"SentinelOps USD {price} cada {days} dias",
+                "name": f"TERO Security USD {price} cada {days} dias",
                 "billing_cycles": [{
                     "frequency": {"interval_unit": "DAY", "interval_count": days},
                     "tenure_type": "REGULAR",

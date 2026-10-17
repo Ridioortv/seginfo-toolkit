@@ -69,7 +69,17 @@ async def _get_access_token(client: httpx.AsyncClient) -> str:
         headers={"Authorization": f"Basic {basic}", "Content-Type": "application/x-www-form-urlencoded"},
         data={"grant_type": "client_credentials"},
     )
-    resp.raise_for_status()
+    if resp.status_code in (401, 403):
+        # Antes esto era un raise_for_status() sin atrapar: el cliente veia un
+        # "Internal Server Error" sin pista de la causa (casi siempre, credenciales
+        # de sandbox con PAYPAL_ENV=live o al reves, o un secret mal pegado).
+        raise PayPalError(
+            f"PayPal rechazo las credenciales (HTTP {resp.status_code}). Revisa PAYPAL_CLIENT_ID y "
+            f"PAYPAL_CLIENT_SECRET en el servidor y que PAYPAL_ENV (hoy: {PAYPAL_ENV}) coincida con el "
+            "tipo de credenciales (sandbox o live)."
+        )
+    if resp.status_code >= 400:
+        raise PayPalError(f"PayPal no entrego el token de acceso: HTTP {resp.status_code}")
     return resp.json()["access_token"]
 
 
@@ -93,7 +103,7 @@ async def create_subscription_approval_link(
             "plan_id": plan_id,
             "custom_id": license_key,
             "application_context": {
-                "brand_name": "SentinelOps",
+                "brand_name": "TERO Security",
                 "user_action": "SUBSCRIBE_NOW",
                 "return_url": PAYPAL_RETURN_URL,
                 "cancel_url": PAYPAL_CANCEL_URL,
@@ -115,6 +125,25 @@ async def create_subscription_approval_link(
     if not approve_link:
         raise PayPalError("la respuesta de PayPal no incluyo un link 'approve'")
     return subscription_id, approve_link
+
+
+async def get_subscription_status(subscription_id: str) -> str | None:
+    """Estado de una suscripcion en PayPal (APPROVAL_PENDING, APPROVED, ACTIVE,
+    SUSPENDED, CANCELLED, EXPIRED). None si PayPal no la conoce (404). Se usa
+    para no crear una SEGUNDA suscripcion cuando ya hay una cobrando."""
+    if not is_configured():
+        raise PayPalError("PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET no configurados")
+    async with httpx.AsyncClient(timeout=15) as client:
+        token = await _get_access_token(client)
+        resp = await client.get(
+            f"{_base_url()}/v1/billing/subscriptions/{subscription_id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if resp.status_code == 404:
+            return None
+        if resp.status_code >= 400:
+            raise PayPalError(f"no se pudo consultar la suscripcion: {resp.status_code} {resp.text[:300]}")
+        return str(resp.json().get("status", "")).upper() or None
 
 
 async def cancel_subscription(subscription_id: str, reason: str = "Cancelada por el cliente") -> None:

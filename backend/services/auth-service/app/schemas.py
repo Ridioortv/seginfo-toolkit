@@ -1,5 +1,6 @@
 """Pydantic request/response schemas for auth-service."""
 from datetime import datetime
+from typing import Literal
 from pydantic import BaseModel, EmailStr, Field
 
 
@@ -18,7 +19,7 @@ class OrganizationOut(BaseModel):
 class SubscriptionExtendRequest(BaseModel):
     """Renovacion manual de la suscripcion de una organizacion -- lo que
     usa el operador hoy (a mano, tras confirmar un pago) hasta que el
-    servidor central de licencias este conectado a Mercado Pago; ese
+    servidor central de licencias este conectado a PayPal; ese
     webhook, el dia que exista, va a llamar al mismo endpoint."""
 
     days: int = Field(default=30, ge=1, le=3650)
@@ -26,7 +27,7 @@ class SubscriptionExtendRequest(BaseModel):
 
 class SubscriptionCancelOut(BaseModel):
     """Respuesta del autoservicio "Cancelar suscripcion" -- cancelled
-    confirma que Mercado Pago recibio la cancelacion (no se cobra mas),
+    confirma que la pasarela (PayPal / Mercado Pago) recibio la cancelacion (no se cobra mas),
     pero el acceso sigue activo hasta valid_until (el periodo ya pagado
     no se corta)."""
 
@@ -34,9 +35,18 @@ class SubscriptionCancelOut(BaseModel):
     valid_until: datetime
 
 
+class SubscriptionPayLinkRequest(BaseModel):
+    """Con que pasarela se quiere pagar. Sin body, PayPal (como antes).
+    payer_email es opcional: el email de la cuenta de Mercado Pago del
+    pagador, si es distinto del email de su usuario."""
+
+    provider: Literal["paypal", "mercadopago"] = "paypal"
+    payer_email: EmailStr | None = Field(default=None, max_length=254)
+
+
 class SubscriptionPayLinkOut(BaseModel):
-    """Link de pago (Mercado Pago) para pagar por primera vez o volver a
-    suscribirse tras cancelar -- ver POST .../subscription/pay-link."""
+    """Link de pago (PayPal o Mercado Pago) para pagar por primera vez o
+    volver a suscribirse tras cancelar -- ver POST .../subscription/pay-link."""
 
     payment_url: str
 
@@ -59,7 +69,7 @@ class OrganizationCreate(BaseModel):
 
     name: str = Field(..., min_length=1)
     admin_email: EmailStr
-    admin_password: str = Field(min_length=12)
+    admin_password: str = Field(min_length=12, max_length=128)
     admin_full_name: str = ""
 
 
@@ -88,7 +98,7 @@ class SsoConfigOut(BaseModel):
 
 class UserCreate(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=12)
+    password: str = Field(min_length=12, max_length=128)
     full_name: str = ""
     # role_name NO es parte del payload publico a proposito: si lo fuera,
     # cualquiera podria auto-registrarse como admin. El primer usuario que
@@ -112,8 +122,10 @@ class UserOut(BaseModel):
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str
-    totp_code: str | None = None
+    # Tope generoso (las contrasenas nuevas llegan a 128): evita pasarle megabytes al hash
+    # (bcrypt/passlib levanta PasswordSizeError con >4096 -> 500) y gastar CPU gratis.
+    password: str = Field(max_length=1024)
+    totp_code: str | None = Field(default=None, max_length=16)
 
 
 class TokenPair(BaseModel):
@@ -125,10 +137,17 @@ class TokenPair(BaseModel):
 class MfaEnrollResponse(BaseModel):
     secret: str
     otpauth_url: str
+    # QR listo para mostrar en <img src=...> (data URI SVG) -- compatible con
+    # cualquier app TOTP estandar (RFC 6238).
+    qr_code_data_uri: str = ""
+
+
+class MfaStatusResponse(BaseModel):
+    enabled: bool
 
 
 class MfaVerifyRequest(BaseModel):
-    totp_code: str
+    totp_code: str = Field(max_length=16)
 
 
 class MfaEnrollRequest(BaseModel):
@@ -137,13 +156,38 @@ class MfaEnrollRequest(BaseModel):
     ej. perdio el dispositivo) -- ver el chequeo en app/main.py::mfa_enroll.
     En el primer enrolamiento (mfa_enabled todavia False) se ignora."""
 
-    totp_code: str | None = None
+    totp_code: str | None = Field(default=None, max_length=16)
 
 
 class GoogleAuthRequest(BaseModel):
-    credential: str
+    credential: str = Field(max_length=8192)
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    refresh_token: str = Field(max_length=8192)
 
+
+
+class UserAdminCreate(BaseModel):
+    """Alta de una cuenta hecha por un ADMIN (la unica via donde se elige el rol).
+    Con password: cuenta de email+contrasena. Sin password: cuenta que entra con
+    Google (pre-aprobada con este rol)."""
+    email: EmailStr
+    full_name: str = ""
+    role: str
+    password: str | None = Field(default=None, min_length=12, max_length=128)
+
+
+class UserAdminUpdate(BaseModel):
+    role: str | None = None
+    is_active: bool | None = None
+
+
+class UserAdminOut(BaseModel):
+    id: str
+    email: EmailStr
+    full_name: str
+    role_name: str
+    is_active: bool
+    mfa_enabled: bool
+    auth_provider: str

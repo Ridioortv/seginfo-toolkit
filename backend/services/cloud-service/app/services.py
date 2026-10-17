@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.crypto import decrypt_secret, encrypt_secret
+from backend.shared.ingest_auth import ingest_headers
 from backend.shared.logging import configure_logging
 from app.models import (
     CloudAccount,
@@ -315,7 +316,7 @@ async def _forward_finding_to_siem(finding: CloudFinding, organization_id: str |
     }
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(f"{SIEM_SERVICE_URL}/logs/ingest", json=payload)
+            await client.post(f"{SIEM_SERVICE_URL}/logs/ingest", json=payload, headers=ingest_headers())
     except httpx.HTTPError as exc:
         logger.warning("no se pudo reenviar hallazgo a siem-service", extra={"finding_id": finding.id, "error": str(exc)})
 

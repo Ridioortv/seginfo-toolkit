@@ -1,4 +1,4 @@
-# Estado del proyecto SentinelOps (seginfo-toolkit)
+# Estado del proyecto TERO Security (seginfo-toolkit)
 
 Alcance: plataforma de ciberseguridad DEFENSIVA (SIEM/SOAR, gestion de vulnerabilidades
 en modo escaneo, gestion de casos, cumplimiento, reportes, dashboard). No incluye
@@ -309,7 +309,7 @@ Pedido de Manu: "los scaneres... todos tardan mucho y openvas no anda directamen
      via setuid/setgid en cualquier binario que corra adentro.
    - Red Docker propia `gvm_internal` (`internal: true`, sin salida a
      internet) para TODO el stack GVM/OpenVAS -- ningun otro servicio de
-     SentinelOps (postgres, redis, el resto de los microservicios)
+     TERO Security (postgres, redis, el resto de los microservicios)
      comparte esa red. `scan-service` no la necesita: habla con `gvmd`
      por el socket unix montado (`gvmd_socket_vol`), no por red. Asi,
      aunque `ospd-openvas` se vea comprometido, no tiene ningun camino de
@@ -1181,7 +1181,7 @@ testearla aislada es bajo comparado con el resto de la suite) y
 a poder escanear tu LAN real con nmap/nuclei/openvas salvo nmap. Para
 `192.168.0.143` con openvas, corre `remote-agent/Instalar-Agente-LAN.bat`
 + `Iniciar-Agente-LAN.bat` en una PC con visibilidad real a esa red (puede
-ser la misma PC donde corre SentinelOps) y elegi ese agente ("Agente
+ser la misma PC donde corre TERO Security) y elegi ese agente ("Agente
 LAN") en el selector en vez de "Agente Docker" (el que probablemente
 elegiste, llamado "gvm" o similar en tu lista de agentes). Si "Agente
 LAN" no aparece en el selector, es que agente-lan.ps1 no esta corriendo
@@ -1205,14 +1205,14 @@ caso puntual -- esto es la hipotesis mas probable dado lo que hay en
 el repo, no una confirmacion.
 
 **Punto 2 (licensing-server especificamente, no el resto de
-SentinelOps)**: revise `app/db.py`, `Dockerfile` y `.env.example` --
+TERO Security)**: revise `app/db.py`, `Dockerfile` y `.env.example` --
 ya esta escrito a proposito para andar igual en los dos caminos desde
 el principio (toggle SQLite/Postgres por `DATABASE_URL`, puerto
 leido de `$PORT`, sin threads/websockets/cron en proceso, health
 check en `/health`). Respuesta: SI, anda igual en Render que en local
 -- las unicas diferencias son de plataforma (el plan free duerme sin
 trafico, agrega latencia en el primer request), no de codigo. El
-resto de SentinelOps (scan-service, openvas, etc.) NO esta pensado
+resto de TERO Security (scan-service, openvas, etc.) NO esta pensado
 para Render -- se distribuye como RAR on-prem a proposito (requiere
 Docker socket, capabilities de red privilegiadas, visibilidad de LAN
 real -- nada de eso existe en una plataforma como Render), asi que el
@@ -1226,7 +1226,7 @@ entorno declaradas con `sync: false` (las pide Render al crear el
 servicio, nunca quedan en el repo) salvo `ADMIN_TOKEN`
 (`generateValue: true`, Render lo genera solo) y los valores no
 sensibles que ya tenian default en `.env.example` (URLs de retorno de
-PayPal/Mercado Pago, `PAYPAL_ENV=sandbox`). Verifique la sintaxis
+PayPal, `PAYPAL_ENV=sandbox`). Verifique la sintaxis
 parseando el YAML con `python3 -c "import yaml; yaml.safe_load(...)"`
 y confirme contra la documentacion oficial de Render (`runtime: docker`
 reemplaza al campo viejo `env: docker`; `autoDeployTrigger` reemplaza

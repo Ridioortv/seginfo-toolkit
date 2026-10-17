@@ -1,7 +1,12 @@
 """Pydantic schemas for integration-service."""
 from datetime import datetime
 from typing import Literal
-from pydantic import BaseModel, Field
+import re
+from pydantic import BaseModel, Field, field_validator
+
+
+def _hide_urls(value: str) -> str:
+    return re.sub(r"https?://[^\s'\"<>]+", "[url oculta]", value or "")
 
 ConnectorKind = Literal["firewall", "edr", "ticketing"]
 
@@ -58,6 +63,11 @@ class ActionLogOut(BaseModel):
     class Config:
         from_attributes = True
 
+    @field_validator("error")
+    @classmethod
+    def _error_without_urls(cls, v: str) -> str:
+        return _hide_urls(v)
+
 
 class CreateTicketRequest(BaseModel):
     title: str
@@ -80,3 +90,8 @@ class TicketLogOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+    @field_validator("error")
+    @classmethod
+    def _error_without_urls(cls, v: str) -> str:
+        return _hide_urls(v)

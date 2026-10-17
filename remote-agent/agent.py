@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SentinelOps - agente de escaneo remoto.
+"""TERO Security - agente de escaneo remoto.
 
 Que problema resuelve
 ----------------------
@@ -9,7 +9,7 @@ LAN real de la oficina/cliente aunque el propio Docker Desktop este
 instalado en una maquina de esa misma LAN. Este agente resuelve eso
 corriendo FUERA de Docker -- como un script Python comun en la PC que
 tenga visibilidad real a la red que se quiere escanear (puede ser la
-misma PC donde corre SentinelOps, o cualquier otra maquina de esa LAN).
+misma PC donde corre TERO Security, o cualquier otra maquina de esa LAN).
 
 Como funciona (modelo de seguridad)
 ------------------------------------
@@ -23,7 +23,7 @@ self-hosted, dentro de la misma red del cliente.
 
 El agente se autentica con una api key propia (nunca con el usuario/JWT
 de una persona) via el header 'X-Agent-Key'. La key se genera UNA vez,
-al registrar el agente desde la UI de SentinelOps (pagina Escaneos ->
+al registrar el agente desde la UI de TERO Security (pagina Escaneos ->
 "Agentes de escaneo remoto"), y se pega aca en la config -- scan-service
 solo guarda su hash, nunca la key en texto plano.
 
@@ -35,11 +35,11 @@ eligiendo cual por job (campo scanner_type):
   - nuclei   : deteccion por plantillas (se excluyen dos/fuzz/intrusive).
   - zap      : DAST pasivo (spider + analisis pasivo) contra una URL --
                NUNCA escaneo activo/de ataque.
-  - semgrep  : SAST con reglas PROPIAS de SentinelOps unicamente (ver
+  - semgrep  : SAST con reglas PROPIAS de TERO Security unicamente (ver
                SEMGREP_RULES_DIR mas abajo) -- jamas 'auto'/'p/...'.
   - gitleaks : secretos/credenciales en el historial de git de un repo.
   - yara     : patrones/indicadores conocidos en un archivo/directorio,
-               con reglas PROPIAS de SentinelOps (ver YARA_RULES_FILE).
+               con reglas PROPIAS de TERO Security (ver YARA_RULES_FILE).
   - zeek     : captura/analisis pasivo de red durante una ventana de
                tiempo FIJA (options.duration_minutes) -- requiere
                permisos de captura de paquetes en esta maquina.
@@ -63,7 +63,7 @@ Requisitos
     yara     -> yara (ver VirusTotal/yara)
     zeek     -> zeek (ver zeek/zeek -- Linux unicamente en la practica)
     falco    -> falco (ver falcosecurity/falco -- Linux + eBPF/kernel)
-  Para semgrep/yara, ademas, las reglas PROPIAS de SentinelOps tienen que
+  Para semgrep/yara, ademas, las reglas PROPIAS de TERO Security tienen que
   estar copiadas en esta maquina (ver SEMGREP_RULES_DIR/YARA_RULES_FILE
   mas abajo -- por defecto, ./rules/semgrep y ./rules/yara relativos a
   donde corre este script; los originales viven en
@@ -77,7 +77,7 @@ Configuracion (variables de entorno)
   SCAN_SERVICE_URL       Default: http://localhost:8003
                          URL del scan-service a donde hacer polling. Si
                          el agente corre en OTRA maquina de la LAN (no
-                         en la misma PC que SentinelOps), usar la IP de
+                         en la misma PC que TERO Security), usar la IP de
                          esa PC en vez de localhost, ej:
                          http://192.168.1.50:8003
   AGENT_API_KEY          Requerido. La api key que te mostro la UI al
@@ -1034,7 +1034,7 @@ def main() -> None:
             "NOTA: sin binario para: " + ", ".join(faltantes) + " -- esos jobs volveran con un mensaje claro."
         )
 
-    log("SentinelOps - agente de escaneo remoto iniciado.")
+    log("TERO Security - agente de escaneo remoto iniciado.")
     log(f"  scan-service: {SCAN_SERVICE_URL}")
     log(f"  intervalo de polling: {POLL_INTERVAL_SECONDS}s")
     log("Esperando jobs asignados (Ctrl+C para detener)...")

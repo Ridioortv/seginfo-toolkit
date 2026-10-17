@@ -195,7 +195,7 @@ export default function CodeRepos() {
       <div className="panel">
         <h2>Conectar repositorio</h2>
         <p className="empty-hint">
-          SentinelOps solo <strong>lee</strong> el repositorio que conectes -- nunca escribe en el, nunca ejecuta
+          TERO Security solo <strong>lee</strong> el repositorio que conectes -- nunca escribe en el, nunca ejecuta
           codigo del repositorio ni corre instalacion de dependencias. Con esa lectura clona el repositorio
           periodicamente y corre <code>gitleaks</code> (busca contraseñas y claves commiteadas por error,
           revisando tambien todo el historial de git, no solo el codigo actual) y <code>trivy</code> (busca

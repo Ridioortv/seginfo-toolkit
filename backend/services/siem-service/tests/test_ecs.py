@@ -1,5 +1,5 @@
 """Tests para app/ecs.py: normalizacion de eventos crudos al subconjunto de
-ECS que usa SentinelOps, y el helper get_by_path que usa sigma.py para leer
+ECS que usa TERO Security, y el helper get_by_path que usa sigma.py para leer
 campos anidados. Pura transformacion de datos, sin red ni OpenSearch."""
 from app.ecs import normalize_event, get_by_path
 

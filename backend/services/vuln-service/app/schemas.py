@@ -22,7 +22,7 @@ class FindingIn(BaseModel):
 class IngestRequest(BaseModel):
     scan_job_id: str | None = None
     asset_id: str | None = None
-    scanner_type: str = ""
+    scanner_type: str = Field(default="", max_length=50)
     findings: list[FindingIn] = Field(default_factory=list)
     # NO hay campo organization_id aca a proposito: ese dato viene del JWT
     # de servicio-a-servicio que ahora exige main.py::ingest (org_id_from_

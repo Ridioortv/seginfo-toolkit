@@ -1,7 +1,8 @@
 """Pydantic schemas for notification-service."""
 from datetime import datetime
 from typing import Literal
-from pydantic import BaseModel, Field
+import re
+from pydantic import BaseModel, Field, field_validator
 
 ChannelType = Literal["email", "slack_webhook", "generic_webhook"]
 
@@ -64,6 +65,14 @@ class NotifyLogOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+    @field_validator("error")
+    @classmethod
+    def _hide_urls(cls, value: str) -> str:
+        """El webhook_url es una credencial (se enmascara para roles bajos en
+        GET /channels): ninguna URL completa sale en el error de un envio, ni
+        siquiera en filas guardadas antes de este fix."""
+        return re.sub(r"https?://[^\s'\"<>]+", "[url oculta]", value or "")
 
 
 class NotifyResult(BaseModel):

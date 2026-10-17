@@ -26,16 +26,21 @@ RUN mkdir -p /root/.cache/trivy && trivy image --download-db-only --cache-dir /r
 
 # Gitleaks (secretos/credenciales en todo el historial de git): no tiene
 # paquete apt ni script de instalacion propio, asi que se resuelve la
-# ultima release de GitHub en build-time (mismo patron que nuclei en
+# version FIJA (ARG GITLEAKS_VERSION, verificada contra el checksums.txt de la release; actualizala a mano) (mismo patron que nuclei en
 # scan-service/Dockerfile, para no hardcodear una version que quede
 # vieja) y se descarga el tarball ya compilado para linux_x64.
-RUN GITLEAKS_VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
-        | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'].lstrip('v'))") \
-    && curl -sSL -o /tmp/gitleaks.tar.gz \
+ARG GITLEAKS_VERSION=8.28.0
+# El tarball se guarda con su nombre REAL: el checksums.txt lista ese
+# nombre y `sha256sum -c` abre el archivo por el nombre que figura ahi.
+RUN cd /tmp \
+    && curl -fsSL -O \
         "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-    && tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks \
+    && curl -fsSL -O \
+        "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt" \
+    && grep " gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz\$" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" | sha256sum -c - \
+    && tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -C /usr/local/bin gitleaks \
     && chmod +x /usr/local/bin/gitleaks \
-    && rm /tmp/gitleaks.tar.gz
+    && rm -f "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" "gitleaks_${GITLEAKS_VERSION}_checksums.txt"
 
 COPY backend/services/coderepo-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

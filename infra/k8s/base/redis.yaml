@@ -16,11 +16,19 @@ spec:
       containers:
         - name: redis
           image: redis:7.2-alpine
+          # Redis exige contrasena (REDIS_PASSWORD, del Secret sentinelops-secrets).
+          command: ["sh", "-c", "exec redis-server --requirepass \"$REDIS_PASSWORD\""]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelops-secrets
+                  key: REDIS_PASSWORD
           ports:
             - containerPort: 6379
           readinessProbe:
             exec:
-              command: ["redis-cli", "ping"]
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
             initialDelaySeconds: 5
             periodSeconds: 5
 ---

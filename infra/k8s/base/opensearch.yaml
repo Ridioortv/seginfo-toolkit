@@ -22,17 +22,20 @@ spec:
           env:
             - name: discovery.type
               value: "single-node"
-            - name: DISABLE_SECURITY_PLUGIN
-              value: "true"
+            # Plugin de seguridad ACTIVO: usuario admin + contrasena fuerte del Secret.
+            - name: OPENSEARCH_INITIAL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: sentinelops-secrets
+                  key: OPENSEARCH_ADMIN_PASSWORD
             - name: OPENSEARCH_JAVA_OPTS
               value: "-Xms512m -Xmx512m"
           ports:
             - containerPort: 9200
           readinessProbe:
-            httpGet:
-              path: /_cluster/health
-              port: 9200
-            initialDelaySeconds: 15
+            exec:
+              command: ["sh", "-c", "curl -sfk -u \"admin:$OPENSEARCH_INITIAL_ADMIN_PASSWORD\" https://localhost:9200/_cluster/health"]
+            initialDelaySeconds: 30
             periodSeconds: 10
 ---
 apiVersion: v1

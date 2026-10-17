@@ -1,5 +1,5 @@
 # ==========================================================================
-# SentinelOps - Agente LAN NATIVO (PowerShell puro).
+# TERO Security - Agente LAN NATIVO (PowerShell puro).
 # NO requiere Python, ni instalar NADA: usa PowerShell + .NET, que ya
 # vienen con Windows. Corre en el host, ejecuta nuclei/trivy contra el
 # target del job y reporta a scan-service. Se autentica como el agente
@@ -31,7 +31,7 @@ $scriptPath = Join-Path $scriptDir "agente-lan.ps1"
 $root       = Split-Path -Parent $scriptDir
 $envFile    = Join-Path $root ".env"
 $logPath    = Join-Path $scriptDir "agente-lan.log"
-$TaskName   = "SentinelOps Agente LAN"
+$TaskName   = "TERO Security Agente LAN"
 
 function Write-Log([string]$msg) {
     # Escribe en pantalla (si hay consola visible, ej. corriendo a mano) Y
@@ -51,6 +51,20 @@ function Write-Log([string]$msg) {
 # -- no instala nada nuevo, y no pide ser administrador (se registra para
 # tu propio usuario, con permisos normales).
 # --------------------------------------------------------------------------
+function Protect-InstallDir {
+    # La tarea corre este script (y los .exe de bin\) con -ExecutionPolicy Bypass cada vez que
+    # se inicia sesion: si OTRO usuario local pudiera escribir en esta carpeta, podria cambiar el
+    # script y ejecutar codigo como vos. Se deja la carpeta del agente escribible solo por tu
+    # usuario, SYSTEM y los Administradores (SIDs, funciona en cualquier idioma). Best-effort.
+    $dir = Split-Path -Parent $scriptPath
+    try {
+        & icacls $dir /inheritance:r /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" /T /C | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "icacls devolvio $LASTEXITCODE" }
+    } catch {
+        Write-Host "Aviso: no pude restringir los permisos de $dir ($($_.Exception.Message)). Revisa a mano que solo tu usuario pueda escribir ahi."
+    }
+}
+
 function Install-AgentTask {
     $psExe = (Get-Process -Id $PID).Path
     $existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -74,6 +88,8 @@ function Install-AgentTask {
         }
     }
 
+    Protect-InstallDir
+
     $action = New-ScheduledTaskAction -Execute $psExe `
         -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
     $trigger = New-ScheduledTaskTrigger -AtLogOn
@@ -84,7 +100,7 @@ function Install-AgentTask {
 
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
         -Principal $principal -Settings $settings `
-        -Description "SentinelOps: agente LAN, escanea la red real (192.168.x.x, etc.) desde este host. Instalado por agente-lan.ps1 -Install." `
+        -Description "TERO Security: agente LAN, escanea la red real (192.168.x.x, etc.) desde este host. Instalado por agente-lan.ps1 -Install." `
         -Force | Out-Null
 
     Write-Host "Instalado: el Agente LAN va a arrancar solo cada vez que inicies sesion en Windows."
@@ -92,7 +108,7 @@ function Install-AgentTask {
     try {
         Start-ScheduledTask -TaskName $TaskName
         Start-Sleep -Seconds 2
-        Write-Host "Listo. Revisa la tabla de agentes en SentinelOps (pestana Escaneos) -- 'Agente LAN' deberia mostrar 'Ultima vez visto' con la hora de ahora en unos segundos."
+        Write-Host "Listo. Revisa la tabla de agentes en TERO Security (pestana Escaneos) -- 'Agente LAN' deberia mostrar 'Ultima vez visto' con la hora de ahora en unos segundos."
         Write-Host "Log en: $logPath"
     } catch {
         Write-Host "Se instalo, pero no pude arrancarlo ya mismo ($($_.Exception.Message)). Va a arrancar solo la proxima vez que inicies sesion."
@@ -440,7 +456,7 @@ function Submit-Result([string]$jobId, [string]$status, $findings, [string]$err,
 # agent.py, dentro de un contenedor Linux) para esos dos.
 # ==========================================================================
 
-# Reglas PROPIAS de SentinelOps para semgrep/yara -- NUNCA un ruleset de
+# Reglas PROPIAS de TERO Security para semgrep/yara -- NUNCA un ruleset de
 # terceros (ver rules/semgrep/sentinelops-rules.yml y
 # rules/yara/sentinelops.yar en la raiz del repo para el porque). Default:
 # relativo a $root (este script vive en remote-agent/, con backend/ al
@@ -700,7 +716,7 @@ $startupSemgrepPath = Resolve-ScannerBinary "semgrep"
 $startupGitleaksPath = Resolve-ScannerBinary "gitleaks"
 $startupYaraPath = Resolve-ScannerBinary "yara"
 Write-Log "============================================================"
-Write-Log "SentinelOps - Agente LAN (PowerShell nativo) iniciado."
+Write-Log "TERO Security - Agente LAN (PowerShell nativo) iniciado."
 Write-Log "nuclei:   $(if ($startupNucleiPath) { "disponible ($startupNucleiPath)" } else { "no instalado (ni en el PATH ni en $BundledBinDir) -- esos jobs van a fallar con un mensaje claro" })"
 Write-Log "trivy:    $(if ($startupTrivyPath) { "disponible ($startupTrivyPath)" } else { "no instalado (ni en el PATH ni en $BundledBinDir) -- esos jobs van a fallar con un mensaje claro" })"
 Write-Log "zap:      $(if ($startupZapPath) { "disponible ($startupZapPath)" } else { "no instalado (ni en el PATH ni en $BundledBinDir) -- esos jobs van a fallar con un mensaje claro" })"
@@ -823,7 +839,7 @@ while ($true) {
             }
 
             if (($scanner -eq "zeek") -or ($scanner -eq "falco")) {
-                Submit-Result $jobId "failed" @() "'$scanner' no esta soportado en el Agente LAN nativo de Windows (necesita captura de paquetes / eBPF de Linux). Usa el Agente Docker de SentinelOps para correr este scanner."
+                Submit-Result $jobId "failed" @() "'$scanner' no esta soportado en el Agente LAN nativo de Windows (necesita captura de paquetes / eBPF de Linux). Usa el Agente Docker de TERO Security para correr este scanner."
                 Write-Log "job $($jobId.Substring(0,8)): rechazado -- '$scanner' requiere el Agente Docker, no el Agente LAN nativo"
                 continue
             }

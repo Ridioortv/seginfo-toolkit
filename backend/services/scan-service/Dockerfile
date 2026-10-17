@@ -59,16 +59,21 @@ RUN nuclei -update-templates -silent || true
 # detalle de licencia/alcance por herramienta.
 
 # Gitleaks (secretos/credenciales en historial de git, MIT): mismo
-# patron que nuclei arriba -- no tiene paquete apt, se resuelve la
-# ultima release de GitHub en build-time. Mismo mecanismo ya probado en
+# patron que nuclei arriba -- no tiene paquete apt; version FIJA via ARG
+# GITLEAKS_VERSION, verificada contra el checksums.txt de la release. Mismo mecanismo que en
 # produccion en coderepo-service/Dockerfile.
-RUN GITLEAKS_VERSION=$(curl -s https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
-        | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'].lstrip('v'))") \
-    && curl -sSL -o /tmp/gitleaks.tar.gz \
+ARG GITLEAKS_VERSION=8.28.0
+# El tarball se guarda con su nombre REAL: el checksums.txt lista ese
+# nombre y `sha256sum -c` abre el archivo por el nombre que figura ahi.
+RUN cd /tmp \
+    && curl -fsSL -O \
         "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-    && tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks \
+    && curl -fsSL -O \
+        "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt" \
+    && grep " gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz\$" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" | sha256sum -c - \
+    && tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -C /usr/local/bin gitleaks \
     && chmod +x /usr/local/bin/gitleaks \
-    && rm /tmp/gitleaks.tar.gz
+    && rm -f "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" "gitleaks_${GITLEAKS_VERSION}_checksums.txt"
 
 # OWASP ZAP (DAST pasivo, Apache 2.0): necesita un JRE -- default-jre-
 # headless se instala aparte (no en el apt-get de mas arriba, para que
@@ -161,7 +166,7 @@ RUN python -m venv /opt/semgrep-venv \
     && ln -s /opt/semgrep-venv/bin/semgrep /usr/local/bin/semgrep \
     && semgrep --version
 
-# Reglas PROPIAS de SentinelOps para semgrep/yara -- NUNCA un ruleset de
+# Reglas PROPIAS de TERO Security para semgrep/yara -- NUNCA un ruleset de
 # terceros (ver rules/semgrep/sentinelops-rules.yml y
 # rules/yara/sentinelops.yar para el porque exacto de cada caso). Las
 # usan app/scanners/semgrep.py (SEMGREP_RULES_DIR) y

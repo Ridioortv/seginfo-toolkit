@@ -1,8 +1,9 @@
 """siem-service entrypoint: ingesta de logs, normalizacion ECS-lite,
 evaluacion de reglas Sigma y generacion de alertas. Ver app/sigma.py para
 el motor de deteccion y app/opensearch_client.py para el almacen de logs."""
+import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, make_asgi_app
 from sqlalchemy import text
@@ -12,6 +13,8 @@ from backend.shared.database import get_db, engine, Base
 from backend.shared.logging import configure_logging
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
+from backend.shared.ingest_auth import ingest_token_valid, org_ingest_token
+from backend.shared.service_auth import require_service_token
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import (
     IngestLogsRequest, IngestLogsResponse, SigmaRuleCreate, SigmaRuleUpdate, SigmaRuleOut,
@@ -51,16 +54,33 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             "UPDATE alerts SET threat_intel = '{}' WHERE threat_intel IS NULL"
         ))
-    try:
-        await opensearch_client.ensure_index(os_client)
-    except Exception as exc:  # OpenSearch puede no estar arriba todavia en dev
-        logger.warning("no se pudo asegurar el indice de OpenSearch al arrancar", extra={"error": str(exc)})
+    # OpenSearch (con el plugin de seguridad) tarda en arrancar: se reintenta en
+    # segundo plano hasta que el indice quede creado, sin bloquear el arranque.
+    index_task = asyncio.create_task(_ensure_index_with_retry())
     logger.info("siem-service iniciado")
     yield
+    index_task.cancel()
     await os_client.close()
 
 
-app = FastAPI(title="SentinelOps SIEM Service", version="0.1.0", lifespan=lifespan)
+async def _ensure_index_with_retry(attempts: int = 60, delay_seconds: float = 5.0) -> None:
+    for attempt in range(1, attempts + 1):
+        try:
+            await opensearch_client.ensure_index(os_client)
+            logger.info("indice de OpenSearch listo", extra={"attempt": attempt})
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "OpenSearch todavia no esta listo, se reintenta",
+                extra={"error": str(exc), "attempt": attempt},
+            )
+            await asyncio.sleep(delay_seconds)
+    logger.error("no se pudo asegurar el indice de OpenSearch tras varios intentos")
+
+
+app = FastAPI(title="TERO Security SIEM Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -77,11 +97,30 @@ async def health():
 
 
 @app.post("/logs/ingest", response_model=IngestLogsResponse, status_code=status.HTTP_201_CREATED)
-async def ingest_logs(payload: IngestLogsRequest, db: AsyncSession = Depends(get_db)):
+async def ingest_logs(
+    payload: IngestLogsRequest,
+    x_ingest_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    # El token maestro (servicios internos) escribe en cualquier org; un token
+    # derivado (forwarder externo de un tenant) solo en SU organizacion.
+    if not ingest_token_valid(x_ingest_token, payload.organization_id or DEFAULT_ORGANIZATION_ID):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token de ingesta invalido")
     indexed, alerts_created = await services.ingest_events(db, os_client, payload)
     await db.commit()
     logs_ingested_total.inc(indexed)
     return IngestLogsResponse(indexed=indexed, alerts_created=alerts_created)
+
+
+@app.get("/logs/ingest-token")
+async def get_org_ingest_token(claims: dict = Depends(require_role("admin"))):
+    """Token de ingesta para forwarders EXTERNOS de la organizacion del admin
+    (header X-Ingest-Token, con organization_id en el body). Solo sirve para
+    esta organizacion; no es el token maestro de los servicios internos."""
+    token = org_ingest_token(org_id_from_claims(claims))
+    if token is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="SIEM_INGEST_TOKEN no esta configurado")
+    return {"organization_id": org_id_from_claims(claims), "header": "X-Ingest-Token", "token": token}
 
 
 @app.get("/logs/search")
@@ -154,16 +193,16 @@ async def seed_default_rules(
 
 
 @app.get("/internal/rule-tags")
-async def internal_rule_tags(organization_id: str | None = None, db: AsyncSession = Depends(get_db)):
-    """Endpoint interno (sin auth de usuario -- pensado para llamadas
-    servicio-a-servicio dentro de la red de docker-compose, ej.
-    purple-service) que expone solo id/nombre/tags de reglas habilitadas,
-    para que purple-service pueda calcular cobertura de deteccion contra
-    tecnicas MITRE ATT&CK sin exponer el detalle completo de la regla.
-    organization_id lo manda purple-service (su propio tenant, del JWT de
-    quien pidio el reporte de cobertura) -- si no lo manda, se asume la
-    organizacion default."""
-    rules = await services.list_rules(db, organization_id or DEFAULT_ORGANIZATION_ID, enabled_only=True)
+async def internal_rule_tags(
+    claims: dict = Depends(require_service_token),
+    db: AsyncSession = Depends(get_db),
+):
+    """Endpoint interno servicio-a-servicio (ej. purple-service): exige un JWT
+    de servicio y la organizacion sale de SUS claims (org_id), no de un
+    query param -- antes era anonimo y aceptaba cualquier organization_id.
+    Expone solo id/nombre/tags de reglas habilitadas, para que
+    purple-service calcule cobertura contra tecnicas MITRE ATT&CK."""
+    rules = await services.list_rules(db, org_id_from_claims(claims), enabled_only=True)
     return [{"id": r.id, "name": r.name, "tags": r.tags} for r in rules]
 
 

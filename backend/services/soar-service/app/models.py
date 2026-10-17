@@ -7,7 +7,7 @@ conectores reales contra firewall/EDR; el diseño ya deja el lugar para
 enchufarlos sin cambiar el modelo de playbooks."""
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, DateTime, JSON, Boolean, Enum as SAEnum, Text
+from sqlalchemy import String, DateTime, JSON, Boolean, Enum as SAEnum, Text, Index, func
 from sqlalchemy.orm import Mapped, mapped_column
 from backend.shared.database import Base
 import enum
@@ -34,7 +34,6 @@ class Playbook(Base):
     opcionalmente tags de regla) + lista ordenada de pasos (accion + params)."""
 
     __tablename__ = "playbooks"
-
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     # NULL a proposito (no backfillea a DEFAULT_ORGANIZATION_ID como el resto
     # de las tablas de este proyecto): los playbooks sincronizados desde YAML
@@ -43,7 +42,7 @@ class Playbook(Base):
     # asignada todavia". Un playbook creado a mano via POST /playbooks SI
     # lleva el organization_id de quien lo creo, y solo ese tenant lo ve.
     organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
     min_severity: Mapped[str] = mapped_column(String(20), default="high")
     rule_tags: Mapped[list] = mapped_column(JSON, default=list)
@@ -52,6 +51,12 @@ class Playbook(Base):
     source_file: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
+# El nombre es unico POR organizacion (las built-in, organization_id NULL, cuentan
+# como un "tenant" mas via COALESCE). Antes era unico a nivel instalacion: un tenant
+# podia saber, por el 409 al crear, que otro ya usaba un nombre.
+Index("uq_playbooks_org_name", func.coalesce(Playbook.organization_id, ""), Playbook.name, unique=True)
 
 
 class PlaybookRun(Base):

@@ -1,4 +1,4 @@
-# Arquitectura — SentinelOps
+# Arquitectura — TERO Security
 
 ## Vision general
 
@@ -102,7 +102,7 @@ Docker Desktop (Windows/Mac) los contenedores quedan detras de NAT y no ven
 la LAN real de la oficina/cliente, asi que un escaneo de trivy/nuclei contra
 esa LAN lanzado desde `scan-service` no encuentra nada. `remote-agent/agent.py`
 (o su equivalente nativo para Windows, `remote-agent/agente-lan.ps1`) corre en
-una PC con visibilidad real a esa red (la misma donde esta SentinelOps, u otra
+una PC con visibilidad real a esa red (la misma donde esta TERO Security, u otra
 de la LAN), hace polling saliente contra `scan-service` (nunca al reves, no
 requiere abrir puertos entrantes), se autentica con una API key propia (nunca
 el JWT de un usuario) y solo sabe correr trivy/nuclei en modo deteccion --

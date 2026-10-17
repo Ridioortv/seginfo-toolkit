@@ -35,6 +35,8 @@ jobs:
                      notification-service report-service siem-service soar-service; do
             pip install --quiet -r backend/services/$svc/requirements.txt
           done
+          # solo para los tests de auth-service (SQLite en memoria en vez de Postgres)
+          pip install --quiet aiosqlite
       - name: Correr pytest por servicio
         run: |
           status=0
@@ -46,6 +48,11 @@ jobs:
             (cd backend/services/$svc && python3 -m pytest -q) || { rc=$?; [ $rc -eq 5 ] || status=1; }
           done
           exit $status
+      - name: Tests del servidor de licencias (venv aparte)
+        run: |
+          python3 -m venv /tmp/lic-venv
+          /tmp/lic-venv/bin/pip install --quiet -r licensing-server/requirements.txt pytest
+          cd licensing-server && /tmp/lic-venv/bin/python -m pytest -q tests
 
   frontend-build:
     name: Frontend - typecheck + build

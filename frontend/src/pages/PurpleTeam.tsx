@@ -231,7 +231,7 @@ export default function PurpleTeam() {
                     </tr>
                     {expandedId === e.id && (
                       <tr>
-                        <td colSpan={5} className="panel" style={{ background: "rgba(0,0,0,0.03)" }}>
+                        <td colSpan={5} className="panel panel-sub">
                           {last?.gaps && last.gaps.length > 0 ? (
                             <>
                               <strong>Tecnicas declaradas sin regla de deteccion:</strong>

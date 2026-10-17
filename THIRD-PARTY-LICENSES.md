@@ -3,11 +3,11 @@
 Los textos completos de cada licencia estan en la carpeta `licenses/`. Las librerias
 de Python/JavaScript estan en `THIRD-PARTY-DEPENDENCIES.md`.
 
-SentinelOps invoca los siguientes motores de escaneo como **binarios
+TERO Security invoca los siguientes motores de escaneo como **binarios
 externos** (via subprocess, nunca importados ni enlazados como libreria
-dentro del codigo de SentinelOps). Cada uno conserva su propia licencia
+dentro del codigo de TERO Security). Cada uno conserva su propia licencia
 open-source; ninguna de ellas impone condiciones que impidan vender
-SentinelOps como producto comercial, siempre que se respeten los avisos
+TERO Security como producto comercial, siempre que se respeten los avisos
 de copyright de abajo y, en el caso de Semgrep y YARA, que **nunca** se
 distribuyan/usen las reglas de terceros mencionadas (ver el detalle en
 cada seccion).
@@ -35,7 +35,7 @@ que se actualice una de estas dependencias.
   Nuclei.
 - **Repositorio:** https://github.com/projectdiscovery/nuclei
 - **Texto completo de la licencia:** https://github.com/projectdiscovery/nuclei/blob/dev/LICENSE.md
-- Se invoca tal cual se distribuye oficialmente. SentinelOps solo usa las
+- Se invoca tal cual se distribuye oficialmente. TERO Security solo usa las
   plantillas de deteccion estandar (categorias de severidad/deteccion),
   nunca las categorias `dos`/`fuzz`/`intrusive`.
 
@@ -46,7 +46,7 @@ que se actualice una de estas dependencias.
   Security Project de la OWASP Foundation).
 - **Repositorio:** https://github.com/zaproxy/zaproxy
 - **Texto completo de la licencia:** https://github.com/zaproxy/zaproxy/blob/main/LICENSE
-- SentinelOps lo corre unicamente en modo **pasivo** (`-quickurl`/
+- TERO Security lo corre unicamente en modo **pasivo** (`-quickurl`/
   `-quickout` del Quick Start de linea de comandos de ZAP: spider +
   analisis pasivo). Nunca se usa `-quickattack` ni ningun modo de
   escaneo activo.
@@ -59,18 +59,18 @@ que se actualice una de estas dependencias.
 - **Repositorio:** https://github.com/semgrep/semgrep
 - **Texto completo de la licencia:** https://github.com/semgrep/semgrep/blob/develop/LICENSE
 - El motor se invoca como **binario externo via subprocess** (nunca se
-  importa ni se enlaza como libreria dentro del codigo de SentinelOps),
+  importa ni se enlaza como libreria dentro del codigo de TERO Security),
   que es precisamente la forma de uso que la LGPL-2.1 permite sin
   imponer condiciones de licenciamiento sobre el software que lo invoca.
-- **Importante -- reglas:** SentinelOps usa UNICAMENTE reglas propias,
-  escritas por el equipo de SentinelOps
+- **Importante -- reglas:** TERO Security usa UNICAMENTE reglas propias,
+  escritas por el equipo de TERO Security
   (`backend/services/scan-service/rules/semgrep/sentinelops-rules.yml`).
   **Nunca** se usa el registro publico de reglas de Semgrep (`--config
   auto`, `p/...`, `r/...`, el paquete `semgrep-rules`), porque ese
   registro se distribuye bajo la "Semgrep Rules License v1.0", una
   licencia separada de la del motor que prohibe explicitamente ofrecer
   esas reglas como parte de un servicio a terceros -- incompatible con
-  venderlas embebidas en SentinelOps.
+  venderlas embebidas en TERO Security.
 
 ## Gitleaks
 
@@ -109,8 +109,8 @@ SOFTWARE.
 - **Repositorio:** https://github.com/VirusTotal/yara
 - **Texto completo:** `licenses/yara-BSD-3-Clause.txt` (copia del archivo COPYING oficial).
 
-- **Importante -- reglas:** SentinelOps usa UNICAMENTE reglas propias,
-  escritas por el equipo de SentinelOps
+- **Importante -- reglas:** TERO Security usa UNICAMENTE reglas propias,
+  escritas por el equipo de TERO Security
   (`backend/services/scan-service/rules/yara/sentinelops.yar`). No se
   incluye ningun pack de reglas YARA de terceros (muchos mezclan
   licencias incompatibles entre si o con uso comercial).
@@ -124,7 +124,7 @@ SOFTWARE.
 - **Texto completo:** `licenses/zeek-BSD-3-Clause.txt`.
 - **Repositorio:** https://github.com/zeek/zeek
 - **Texto completo de la licencia:** https://github.com/zeek/zeek/blob/master/COPYING
-- SentinelOps lo corre como job de **duracion fija** (ventana
+- TERO Security lo corre como job de **duracion fija** (ventana
   configurable de 1 a 60 minutos, default 5): captura y clasifica
   trafico de red durante esa ventana y reporta lo detectado, en vez de
   quedar corriendo como daemon permanente.
@@ -136,7 +136,7 @@ SOFTWARE.
   Computing Foundation, CNCF).
 - **Repositorio:** https://github.com/falcosecurity/falco
 - **Texto completo de la licencia:** https://github.com/falcosecurity/falco/blob/master/COPYING
-- SentinelOps lo corre como job de **duracion fija** (ventana
+- TERO Security lo corre como job de **duracion fija** (ventana
   configurable de 1 a 60 minutos, default 5, via su propio flag nativo
   `-M <segundos>`): observa eventos de runtime durante esa ventana y
   reporta lo detectado, en vez de quedar corriendo como daemon
@@ -158,4 +158,4 @@ SOFTWARE.
 | Falco | Apache-2.0 | N/A | Si |
 
 Ninguno de estos 8 motores, usados de esta forma, impide vender
-SentinelOps como producto comercial a terceros.
+TERO Security como producto comercial a terceros.

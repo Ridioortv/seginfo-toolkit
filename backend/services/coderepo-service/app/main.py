@@ -87,7 +87,7 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title="SentinelOps Code Repository Scan Service", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="TERO Security Code Repository Scan Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -105,7 +105,7 @@ def _target_out(target: RepoTarget) -> RepoTargetOut:
     return RepoTargetOut(
         id=target.id,
         name=target.name,
-        repo_url=target.repo_url,
+        repo_url=services.strip_repo_url_userinfo(target.repo_url),
         branch=target.branch,
         has_token=bool(target.github_token_encrypted),
         is_enabled=target.is_enabled,
@@ -135,6 +135,14 @@ async def create_repo(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="repo_url debe empezar con https:// (no se soportan git@/ssh://)",
         )
+    if services.repo_url_has_userinfo(payload.repo_url):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="repo_url no puede llevar usuario/clave (user:token@); usa el campo github_token",
+        )
+    unsafe = services.repo_url_safety_error(payload.repo_url)
+    if unsafe:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"repo_url no permitido: {unsafe}")
     target = await services.create_target(db, payload, org_id_from_claims(claims), claims.get("sub", ""))
     await db.commit()
     logger.info("repositorio agregado", extra={"repo_target_id": target.id, "actor": claims.get("sub")})

@@ -40,10 +40,16 @@ def build_client() -> AsyncOpenSearch:
     host = os.getenv("OPENSEARCH_HOST", "opensearch")
     port = int(os.getenv("OPENSEARCH_PORT", "9200"))
     use_ssl = os.getenv("OPENSEARCH_USE_SSL", "false").lower() == "true"
+    # Con la seguridad de OpenSearch activa hace falta usuario/contrasena.
+    # verify_certs=False: el certificado es el interno de OpenSearch y el trafico
+    # nunca sale de la red de Docker (el puerto solo se publica en 127.0.0.1).
+    password = os.getenv("OPENSEARCH_ADMIN_PASSWORD") or os.getenv("OPENSEARCH_PASSWORD")
+    auth = (os.getenv("OPENSEARCH_USER", "admin"), password) if password else None
     return AsyncOpenSearch(
         hosts=[{"host": host, "port": port}],
         http_compress=True,
         use_ssl=use_ssl,
+        http_auth=auth,
         verify_certs=False,
         ssl_show_warn=False,
         timeout=10,

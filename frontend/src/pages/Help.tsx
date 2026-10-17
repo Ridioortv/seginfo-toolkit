@@ -62,7 +62,7 @@ export default function Help() {
     <div>
       <PageHeader
         title="Ayuda"
-        subtitle="Una guia interactiva, en espanol simple, de que hace cada seccion de SentinelOps y como usarla -- sin necesidad de escribir codigo."
+        subtitle="Una guia interactiva, en espanol simple, de que hace cada seccion de TERO Security y como usarla -- sin necesidad de escribir codigo."
       />
 
       <div className="panel">
@@ -110,7 +110,7 @@ export default function Help() {
               <ol className="help-steps">
                 {activeTopic.steps.map((step, idx) => (
                   <li key={idx}>
-                    <strong>{step.title}</strong>
+                    <strong>{step.title.replace(/^\d+\.\s*/, "")}</strong>
                     <p>{step.body}</p>
                   </li>
                 ))}

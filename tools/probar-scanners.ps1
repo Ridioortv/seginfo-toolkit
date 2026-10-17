@@ -1,4 +1,4 @@
-# Prueba de punta a punta de los scanners de SentinelOps contra TU stack real.
+# Prueba de punta a punta de los scanners de TERO Security contra TU stack real.
 # Inicia sesion, lanza un escaneo de cada tipo (local en scan-service y por cada
 # agente remoto) y muestra una tabla OK / FALLA con el motivo.
 #
@@ -7,6 +7,7 @@
 # Opciones:
 #   -NucleiTarget http://scanme.nmap.org   host publico de pruebas (permitido por nmap.org)
 #   -IncluirZap                            suma ZAP (tarda varios minutos)
+#   -SoloAgentes                           saltea los escaneos locales y las subidas (reintento rapido)
 #   -TimeoutSeg 300                        espera maxima por escaneo
 #   -AuthUrl http://localhost:8001 -ScanUrl http://localhost:8003
 # La password se pide por consola (no queda en ningun archivo).
@@ -16,7 +17,8 @@ param(
     [string]$NucleiTarget = "http://scanme.nmap.org",
     [string]$TrivyImage = "alpine:3.19",
     [int]$TimeoutSeg = 300,
-    [switch]$IncluirZap
+    [switch]$IncluirZap,
+    [switch]$SoloAgentes
 )
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
@@ -24,7 +26,7 @@ $ProgressPreference = "SilentlyContinue"
 function Say($m, $c = "Gray") { Write-Host $m -ForegroundColor $c }
 
 # ---------- login ----------
-$email = Read-Host "Email de SentinelOps"
+$email = Read-Host "Email de TERO Security"
 $sec = Read-Host "Password" -AsSecureString
 $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
 $body = @{ email = $email; password = $plain }
@@ -43,6 +45,13 @@ function Api($method, $path, $obj = $null) {
     $p = @{ Method = $method; Uri = "$ScanUrl$path"; Headers = $H }
     if ($obj -ne $null) { $p.ContentType = "application/json"; $p.Body = ($obj | ConvertTo-Json -Depth 6) }
     Invoke-RestMethod @p
+}
+
+# Windows PowerShell 5.1 entrega un array JSON como UN solo objeto anidado: se aplana aca.
+function ApiList($path) {
+    $r = Api Get $path
+    if ($null -eq $r) { return @() }
+    return @($r | ForEach-Object { $_ })
 }
 
 $rows = New-Object System.Collections.Generic.List[object]
@@ -74,6 +83,7 @@ function Cerrar($grupo, $scanner, $j, $okStates) {
 }
 
 # ---------- 0) disponibilidad de binarios en scan-service ----------
+if (-not $SoloAgentes) {
 Say "`n[0] Binarios en scan-service..." Cyan
 $st = Api Get "/scanners/status"
 foreach ($p in $st.PSObject.Properties) {
@@ -122,14 +132,17 @@ if (-not $curl) {
 }
 Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 
+} # fin de -not $SoloAgentes
+
 # ---------- 3) agentes remotos ----------
 Say "[3] Agentes remotos..." Cyan
-$agents = @(Api Get "/agents")
+try {
+$agents = @(ApiList "/agents")
 if ($agents.Count -eq 0) { Add-Row "agentes" "-" "FALLA" "-" "No hay agentes registrados (revisar BOOTSTRAP_AGENTS en .env y logs de scan-service)" }
 foreach ($a in $agents) {
     $g = "agente: $($a.name)"
     if (-not $a.bootstrap_api_key) {
-        Add-Row $g "-" "OMITIDO" "-" "Agente creado a mano: su key no se puede leer desde la API"
+        Add-Row $g "-" "OMITIDO" "-" "No veo la key de este agente: si tu cuenta es Solo lectura (viewer), subile el rol a Analista en Usuarios y roles; si el agente se creo a mano, su key no se puede leer desde la API"
         continue
     }
     $vistoHace = $null
@@ -149,12 +162,14 @@ foreach ($a in $agents) {
             $t0 = Get-Date
             while ($j.status -notin @("completed", "failed") -and ((Get-Date) - $t0).TotalSeconds -lt $TimeoutSeg) {
                 Start-Sleep -Seconds 4
-                $j = (@(Api Get "/agent-scans") | Where-Object { $_.id -eq $jid } | Select-Object -First 1)
+                $j = (@(ApiList "/agent-scans") | Where-Object { $_.id -eq $jid } | Select-Object -First 1)
             }
             Cerrar $g $c.s $j @("completed")
         } catch { Add-Row $g $c.s "FALLA" "-" $_.Exception.Message }
     }
 }
+
+} catch { Add-Row "agentes" "-" "FALLA" "-" $_.Exception.Message }
 
 # ---------- resumen ----------
 Say "`n================ RESULTADO ================" Cyan

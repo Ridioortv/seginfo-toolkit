@@ -1,7 +1,7 @@
 """Origenes CORS permitidos, compartido por los 11 microservicios.
 
 Antes cada `main.py` tenia `allow_origins=["*"]` hardcodeado -- eso deja
-que CUALQUIER pagina web (no solo el frontend de SentinelOps) le pida al
+que CUALQUIER pagina web (no solo el frontend de TERO Security) le pida al
 navegador de un usuario logueado que haga requests autenticados contra
 la API, si a esa pagina se le ocurre. Con JWT en el header Authorization
 (no en una cookie) el riesgo practico es acotado -- un sitio de terceros

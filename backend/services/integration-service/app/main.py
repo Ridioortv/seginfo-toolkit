@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="SentinelOps Integration Service", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="TERO Security Integration Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -137,7 +137,7 @@ async def list_action_logs(claims: dict = Depends(get_current_claims), db: Async
 @app.post("/internal/actions/block-ip", response_model=ActionLogOut)
 async def internal_block_ip(
     payload: BlockIpRequest,
-    claims: dict = Depends(get_current_claims),
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
     """Endpoint de servicio-a-servicio (soar-service dispara esto desde un
@@ -159,7 +159,7 @@ async def internal_block_ip(
 @app.post("/internal/actions/isolate-host", response_model=ActionLogOut)
 async def internal_isolate_host(
     payload: IsolateHostRequest,
-    claims: dict = Depends(get_current_claims),
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
     """Endpoint de servicio-a-servicio (soar-service dispara esto desde un
@@ -181,7 +181,7 @@ async def list_tickets(claims: dict = Depends(get_current_claims), db: AsyncSess
 @app.post("/internal/actions/create-ticket", response_model=TicketLogOut)
 async def internal_create_ticket(
     payload: CreateTicketRequest,
-    claims: dict = Depends(get_current_claims),
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
     """Endpoint de servicio-a-servicio (soar-service dispara esto desde un

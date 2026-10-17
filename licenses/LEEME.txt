@@ -1,6 +1,6 @@
 CARPETA licenses/ - TEXTOS DE LICENCIA DE COMPONENTES DE TERCEROS
 
-SentinelOps (codigo propio) se rige por el archivo LICENSE de la raiz.
+TERO Security (codigo propio) se rige por el archivo LICENSE de la raiz.
 Los programas de terceros que usa conservan su propia licencia:
 
   Trivy ............ Apache-2.0 ... APACHE-2.0.txt + trivy-NOTICE.txt

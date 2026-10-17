@@ -135,15 +135,18 @@ async def add_timeline_entry(db: AsyncSession, case: Case, payload, actor: str) 
 
 
 async def list_organization_ids() -> list[str]:
-    """Consulta auth-service/internal/organizations (sin JWT -- endpoint
-    interno de servicio-a-servicio, ver su docstring) para saber que
+    """Consulta auth-service/internal/organizations (con un JWT de servicio
+    "system:case-service", ver su docstring) para saber que
     organizaciones existen, sin necesitar un token de platform_admin.
     Best-effort: si auth-service no responde, devuelve lista vacia (el
     ciclo de sincronizacion simplemente no hace nada esa vuelta, ver
     app/main.py::_soar_sync_loop)."""
+    token = create_access_token("system:case-service", "admin")
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(f"{AUTH_SERVICE_URL}/internal/organizations")
+            resp = await client.get(
+                f"{AUTH_SERVICE_URL}/internal/organizations", headers={"Authorization": f"Bearer {token}"}
+            )
             resp.raise_for_status()
             return [org["id"] for org in resp.json()]
     except httpx.HTTPError as exc:

@@ -1,6 +1,6 @@
-# SentinelOps -- esqueleto de Terraform (AWS)
+# TERO Security -- esqueleto de Terraform (AWS)
 
-Infraestructura base de referencia para correr SentinelOps en AWS:
+Infraestructura base de referencia para correr TERO Security en AWS:
 VPC (subredes publicas/privadas + NAT), un cluster EKS con un node
 group administrado, RDS Postgres, ElastiCache Redis, un dominio
 OpenSearch administrado, y un repositorio ECR por microservicio.

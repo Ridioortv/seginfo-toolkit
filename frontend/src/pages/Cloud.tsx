@@ -213,7 +213,7 @@ export default function Cloud() {
           La cuenta de AWS que conectes necesita una politica IAM de <strong>solo lectura</strong>, con unicamente
           estos permisos: <code>ec2:DescribeInstances</code>, <code>ec2:DescribeSecurityGroups</code>,{" "}
           <code>s3:ListAllMyBuckets</code>, <code>s3:GetBucketAcl</code>, <code>s3:GetBucketPolicyStatus</code>,{" "}
-          <code>s3:GetPublicAccessBlock</code> y <code>s3:GetBucketLocation</code>. SentinelOps nunca necesita ni usa
+          <code>s3:GetPublicAccessBlock</code> y <code>s3:GetBucketLocation</code>. TERO Security nunca necesita ni usa
           permisos de escritura, y nunca modifica nada en la cuenta de AWS del cliente -- solo lee inventario y
           reporta configuraciones riesgosas.
         </p>

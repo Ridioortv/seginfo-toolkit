@@ -15,9 +15,20 @@ spec:
       labels:
         app: vuln-service
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001   # usuario 'sentinelops' de los Dockerfiles
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: vuln-service
           image: sentinelops/vuln-service:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8000
           envFrom:

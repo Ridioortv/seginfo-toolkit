@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { login, loginWithGoogle, register } from "../services/api";
+import { login, loginWithGoogle, mfaStatus, register } from "../services/api";
 import { useAuthStore } from "../store/auth";
 import { parseLoginError } from "../utils/loginError";
+import { PAYMENT_PROVIDERS, type PaymentProvider } from "../utils/payment";
+import { generateClientState, storeClientState } from "../utils/ssoState";
+import Icon, { BrandMark } from "../components/Icon";
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 
@@ -35,7 +38,7 @@ export default function Login() {
   const [fullName, setFullName] = useState("");
   const [totpCode, setTotpCode] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
+  const [paymentUrls, setPaymentUrls] = useState<Partial<Record<PaymentProvider, string>>>({});
   const [loading, setLoading] = useState(false);
   const [orgSlug, setOrgSlug] = useState("");
   const setTokens = useAuthStore((s) => s.setTokens);
@@ -45,18 +48,19 @@ export default function Login() {
   // El login (email/password, Google o SSO) devuelve 402 cuando la
   // organizacion no tiene la suscripcion al dia (ver
   // _reject_if_org_inactive en auth-service/app/main.py). Ese 402 trae
-  // el "detail" como objeto ({message, payment_url}), no como string
-  // plano -- payment_url viene armado por el servidor central de
-  // licencias (PayPal) si esta configurado, o null si esta
+  // el "detail" como objeto ({message, payment_url, payment_urls}), no como
+  // string plano -- payment_urls trae un link por pasarela (PayPal y/o
+  // Mercado Pago) armado por el servidor central de licencias si esta
+  // configurado, o vacio si esta
   // instalacion todavia gestiona los pagos a mano (ahi solo se muestra
   // el mensaje, sin boton).
   function applyLoginError(err: unknown, fallback: string) {
     // Logica de interpretacion del error extraida a utils/loginError.ts
     // (funcion pura, testeada sin renderizar este componente) -- aca solo
     // queda volcar el resultado al estado del formulario.
-    const { message, paymentUrl: url } = parseLoginError(err, fallback);
+    const { message, paymentUrls: urls } = parseLoginError(err, fallback);
     setError(message);
-    setPaymentUrl(url);
+    setPaymentUrls(urls);
   }
 
   function handleSsoLogin(e: React.FormEvent) {
@@ -66,7 +70,12 @@ export default function Login() {
     // URL de autorizacion del proveedor OIDC de esta organizacion y
     // redirige para alla; el flujo entero pasa por fuera de esta SPA hasta
     // volver a /sso/callback con los tokens en el fragmento de la URL.
-    window.location.href = `${AUTH_BASE_URL}/auth/oidc/${encodeURIComponent(orgSlug.trim())}/login`;
+    const cs = generateClientState();
+    if (!storeClientState(cs)) {
+      setError("Tu navegador bloquea el almacenamiento de sesion; el login SSO no puede completarse de forma segura.");
+      return;
+    }
+    window.location.href = `${AUTH_BASE_URL}/auth/oidc/${encodeURIComponent(orgSlug.trim())}/login?cs=${encodeURIComponent(cs)}`;
   }
 
   useEffect(() => {
@@ -75,7 +84,7 @@ export default function Login() {
     async function handleGoogleCredential(response: { credential: string }) {
       setLoading(true);
       setError(null);
-      setPaymentUrl(null);
+      setPaymentUrls({});
       try {
         const tokens = await loginWithGoogle(response.credential);
         setTokens(tokens.access_token, tokens.refresh_token);
@@ -114,11 +123,19 @@ export default function Login() {
     e.preventDefault();
     setLoading(true);
     setError(null);
-    setPaymentUrl(null);
+    setPaymentUrls({});
     try {
       const tokens = await login(email, password, totpCode || undefined);
       setTokens(tokens.access_token, tokens.refresh_token);
-      navigate("/");
+      // Si la cuenta todavia no tiene MFA, se lleva directo a "Seguridad de la
+      // cuenta" para que vea el QR y lo active (si falla la consulta, entra normal).
+      let needsMfaSetup = false;
+      try {
+        needsMfaSetup = !(await mfaStatus());
+      } catch {
+        needsMfaSetup = false;
+      }
+      navigate(needsMfaSetup ? "/security" : "/", needsMfaSetup ? { state: { firstLogin: true } } : undefined);
     } catch (err) {
       applyLoginError(err, "Credenciales invalidas o MFA requerido.");
     } finally {
@@ -135,7 +152,7 @@ export default function Login() {
     e.preventDefault();
     setLoading(true);
     setError(null);
-    setPaymentUrl(null);
+    setPaymentUrls({});
     // BUG (corregido aca): antes esto envolvia register() Y el login()
     // posterior en el mismo try/catch, asi que si la cuenta se creaba bien
     // pero el login automatico fallaba (ej. 402 porque la organizacion
@@ -176,14 +193,39 @@ export default function Login() {
   function toggleMode() {
     setMode((m) => (m === "login" ? "register" : "login"));
     setError(null);
-    setPaymentUrl(null);
+    setPaymentUrls({});
   }
 
   return (
     <div className="app-shell">
+      <section className="login-hero" aria-hidden="true">
+        <div className="sidebar-brand">
+          <BrandMark />
+          <span className="brand-name">
+            TERO Security
+            <small>Defensive platform</small>
+          </span>
+        </div>
+        <div>
+          <h2>
+            Toda tu seguridad defensiva, <em>en un solo lugar</em>.
+          </h2>
+          <p>
+            Inventario, escaneos, vulnerabilidades, SIEM, SOAR y casos en una plataforma que corre en tu propia
+            infraestructura.
+          </p>
+        </div>
+        <ul className="login-points">
+          <li><Icon name="lock" /> Se instala en tu propia infraestructura</li>
+          <li><Icon name="shield" /> Multi-organizacion, roles y MFA</li>
+          <li><Icon name="activity" /> Deteccion, respuesta y reportes</li>
+        </ul>
+        <span className="login-copy">TERO Security</span>
+      </section>
+      <div className="login-side">
       <form className="login-card" onSubmit={mode === "login" ? handleSubmit : handleRegisterSubmit}>
-        <h1>SentinelOps</h1>
-        <p>{mode === "login" ? "Acceso a la plataforma de seguridad" : "Crear una cuenta nueva"}</p>
+        <h1>{mode === "login" ? "Bienvenido" : "Crea tu cuenta"}</h1>
+        <p>{mode === "login" ? "Ingresa a la plataforma de seguridad de TERO Security" : "Crear una cuenta nueva en TERO Security"}</p>
 
         {mode === "register" && (
           <div className="field">
@@ -211,8 +253,8 @@ export default function Login() {
 
         {mode === "login" && (
           <div className="field">
-            <label htmlFor="totp">Codigo MFA (si esta activado)</label>
-            <input id="totp" type="text" value={totpCode} onChange={(e) => setTotpCode(e.target.value)} placeholder="123456" />
+            <label htmlFor="totp">Codigo MFA de 6 digitos (si lo activaste)</label>
+            <input id="totp" type="text" inputMode="numeric" autoComplete="one-time-code" value={totpCode} onChange={(e) => setTotpCode(e.target.value)} placeholder="123456" />
           </div>
         )}
 
@@ -226,19 +268,22 @@ export default function Login() {
 
         {error && <p className="error-text">{error}</p>}
 
-        {paymentUrl && (
+        {Object.keys(paymentUrls).length > 0 && (
           <>
-            <a
-              className="btn-primary"
-              href={paymentUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ display: "block", textAlign: "center", textDecoration: "none", marginTop: 8 }}
-            >
-              Pagar membresia
-            </a>
+            {PAYMENT_PROVIDERS.filter((p) => paymentUrls[p.id]).map((p) => (
+              <a
+                key={p.id}
+                className="btn-primary"
+                href={paymentUrls[p.id]}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ marginTop: 8 }}
+              >
+                {Object.keys(paymentUrls).length > 1 ? `Pagar con ${p.label}` : "Pagar membresia"}
+              </a>
+            ))}
             <p className="empty-hint" style={{ marginTop: 8 }}>
-              Se abre la pagina de PayPal en una pestana nueva. Despues de pagar, esperá un minuto y volvé a
+              Se abre la pagina de pago en una pestana nueva. Despues de pagar, esperá un minuto y volvé a
               intentar ingresar -- el acceso se reactiva solo, no hace falta avisarle a nadie.
             </p>
           </>
@@ -276,6 +321,7 @@ export default function Login() {
           </>
         )}
       </form>
+      </div>
     </div>
   );
 }

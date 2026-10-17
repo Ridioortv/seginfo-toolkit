@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Rota los secretos locales de SentinelOps (.env) por valores aleatorios fuertes.
+  Rota los secretos locales de TERO Security (.env) por valores aleatorios fuertes.
 
 .DESCRIPTION
   Reemplaza en .env: JWT_SECRET_KEY, ENCRYPTION_KEY, POSTGRES_PASSWORD y las
@@ -76,7 +76,7 @@ $pgUser = Get-EnvValue 'POSTGRES_USER'; if (-not $pgUser) { $pgUser = 'sentinelo
 
 Write-Host ""
 Write-Host "Estado actual de los secretos (sin mostrar valores):" -ForegroundColor Cyan
-foreach ($k in 'JWT_SECRET_KEY','ENCRYPTION_KEY','POSTGRES_PASSWORD','REMOTE_AGENT_DOCKER_KEY','REMOTE_AGENT_LAN_KEY','REMOTE_AGENT_WAN_KEY') {
+foreach ($k in 'JWT_SECRET_KEY','ENCRYPTION_KEY','POSTGRES_PASSWORD','REDIS_PASSWORD','SIEM_INGEST_TOKEN','REMOTE_AGENT_DOCKER_KEY','REMOTE_AGENT_LAN_KEY','REMOTE_AGENT_WAN_KEY') {
     $v = Get-EnvValue $k
     $estado = if ($null -eq $v) { 'FALTA' } elseif (Test-Weak $v) { 'DEBIL / ejemplo' } else { 'ok (se rota igual)' }
     Write-Host ("  {0,-26} {1}" -f $k, $estado)
@@ -92,6 +92,8 @@ $new = @{
     JWT_SECRET_KEY    = New-HexSecret 48
     ENCRYPTION_KEY    = New-HexSecret 48
     POSTGRES_PASSWORD = New-HexSecret 24
+    REDIS_PASSWORD    = New-HexSecret 24
+    SIEM_INGEST_TOKEN = New-HexSecret 32
 }
 if (-not $SinAgentes) {
     $new['REMOTE_AGENT_DOCKER_KEY'] = New-HexSecret 32

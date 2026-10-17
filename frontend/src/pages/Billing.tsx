@@ -7,9 +7,12 @@ import type {
   SubscriptionCancelOut,
   SubscriptionHistoryOut,
   SubscriptionPayLinkOut,
+  SubscriptionPayLinkRequest,
 } from "../types";
 import PageHeader from "../components/PageHeader";
+import PaymentMethodModal from "../components/PaymentMethodModal";
 import { formatDate } from "../utils/format";
+import { isHttpUrl, providerLabel, type PaymentProvider } from "../utils/payment";
 
 // Pagos, licencia y baja del servicio -- todo lo que un admin de
 // organizacion (o un platform_admin) necesita para administrar su propia
@@ -55,23 +58,59 @@ export default function Billing() {
 
   const [payError, setPayError] = useState<string | null>(null);
   const [payUrl, setPayUrl] = useState<string | null>(null);
+  const [payProvider, setPayProvider] = useState<PaymentProvider | null>(null);
+  const [payModalOpen, setPayModalOpen] = useState(false);
 
-  const payLink = useMutation({
+  // Vuelve a consultar el servidor central de licencias ya (sin esperar al chequeo
+  // periodico): se llama al abrir la pantalla y con el boton "Actualizar", asi
+  // despues de pagar aparece la fecha nueva enseguida.
+  const refreshLicense = useMutation({
     mutationFn: async () =>
-      (await authApi.post<SubscriptionPayLinkOut>(`/auth/organizations/${activeOrgId}/subscription/pay-link`)).data,
-    onSuccess: (data) => {
+      (await authApi.post<OrganizationOut>(`/auth/organizations/${activeOrgId}/subscription/refresh`)).data,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["subscription", activeOrgId] });
+      queryClient.invalidateQueries({ queryKey: ["subscription-history", activeOrgId] });
+    },
+  });
+
+  // El boton "Generar link de pago" abre una ventanita para elegir la
+  // pasarela (PayPal o Mercado Pago); recien al elegir se pide el link.
+  const payLink = useMutation({
+    mutationFn: async (req: SubscriptionPayLinkRequest) =>
+      (await authApi.post<SubscriptionPayLinkOut>(`/auth/organizations/${activeOrgId}/subscription/pay-link`, req))
+        .data,
+    onSuccess: (data, req) => {
       setPayError(null);
+      setPayModalOpen(false);
+      if (!isHttpUrl(data.payment_url)) {
+        setPayUrl(null);
+        setPayProvider(null);
+        setPayError("El servidor devolvio un link de pago invalido. Contacta al operador.");
+        return;
+      }
       setPayUrl(data.payment_url);
+      setPayProvider(req.provider);
       window.open(data.payment_url, "_blank", "noopener,noreferrer");
     },
     onError: (error: unknown) => {
       const detail =
         (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
         "No se pudo generar el link de pago. Intenta de nuevo en unos minutos o contacta al operador.";
-      setPayError(detail);
+      setPayError(typeof detail === "string" ? detail : "No se pudo generar el link de pago.");
       setPayUrl(null);
+      setPayProvider(null);
     },
   });
+
+  function choosePaymentMethod(provider: PaymentProvider, payerEmail?: string) {
+    setPayError(null);
+    payLink.mutate({ provider, ...(payerEmail ? { payer_email: payerEmail } : {}) });
+  }
+
+  function closePayModal() {
+    setPayModalOpen(false);
+    setPayError(null);
+  }
 
   // --- Dar de baja ---
 
@@ -113,8 +152,15 @@ export default function Billing() {
   // esta pagina (no de la query cacheada por organizacion), asi que se
   // limpia a mano cada vez que cambia activeOrgId.
   useEffect(() => {
+    if (activeOrgId) refreshLicense.mutate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeOrgId]);
+
+  useEffect(() => {
     setPayError(null);
     setPayUrl(null);
+    setPayProvider(null);
+    setPayModalOpen(false);
     setCancelError(null);
     setCancelResult(null);
     setConfirmingCancel(false);
@@ -168,6 +214,11 @@ export default function Billing() {
           <div className="panel">
             <h2>Estado de la licencia</h2>
             {subscription.isLoading && <p className="empty-hint">Consultando...</p>}
+            <p>
+              <button className="btn-secondary" onClick={() => refreshLicense.mutate()} disabled={refreshLicense.isPending}>
+                {refreshLicense.isPending ? "Actualizando..." : "Actualizar estado"}
+              </button>
+            </p>
             {subscription.data && (
               <p>
                 {isExpired ? (
@@ -191,16 +242,23 @@ export default function Billing() {
           <div className="panel">
             <h2>Pagar / renovar</h2>
             <p className="empty-hint">
-              Genera un link de PayPal (USD 250 cada 30 dias) para pagar por primera vez, o para volver a suscribirte si habias
-              cancelado el cobro automatico.
+              Elegi PayPal (USD 250 cada 30 dias) o Mercado Pago (en pesos, USD 250 al cambio del dia) para pagar por
+              primera vez, o para volver a suscribirte si habias cancelado el cobro automatico.
             </p>
-            <button className="btn-primary" onClick={() => payLink.mutate()} disabled={payLink.isPending}>
-              {payLink.isPending ? "Generando link..." : "Generar link de pago"}
+            <button
+              className="btn-primary"
+              onClick={() => {
+                setPayError(null);
+                setPayModalOpen(true);
+              }}
+              disabled={payLink.isPending}
+            >
+              Generar link de pago
             </button>
-            {payError && <p className="error-text">{payError}</p>}
-            {payUrl && !payError && (
+            {payError && !payModalOpen && <p className="error-text">{payError}</p>}
+            {payUrl && !payError && payProvider && (
               <p className="empty-hint">
-                Se abrio PayPal en una pestana nueva. Si no se abrio,{" "}
+                Se abrio {providerLabel(payProvider)} en una pestana nueva. Si no se abrio,{" "}
                 <a href={payUrl} target="_blank" rel="noopener noreferrer">
                   hace click aca
                 </a>
@@ -208,6 +266,14 @@ export default function Billing() {
               </p>
             )}
           </div>
+
+          <PaymentMethodModal
+            open={payModalOpen}
+            pendingProvider={payLink.isPending ? (payLink.variables?.provider ?? null) : null}
+            error={payError}
+            onSelect={choosePaymentMethod}
+            onClose={closePayModal}
+          />
 
           <div className="panel">
             <h2>Dar de baja</h2>

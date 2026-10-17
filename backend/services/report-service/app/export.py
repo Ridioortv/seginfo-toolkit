@@ -75,7 +75,7 @@ def export_to_pdf(report_type: str, data: dict) -> bytes:
     )
 
     story = [
-        Paragraph(f"SentinelOps -- {title}", styles["Title"]),
+        Paragraph(f"TERO Security -- {title}", styles["Title"]),
         Paragraph(f"Generado: {generated_at}", styles["Normal"]),
         Spacer(1, 0.5 * cm),
         table,

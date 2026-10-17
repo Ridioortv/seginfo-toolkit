@@ -1,8 +1,8 @@
-# SentinelOps -- launcher para Windows
+# TERO Security -- launcher para Windows
 
 Codigo fuente (Go) de los dos ejecutables que viven en la raiz del repo:
 
-- `SentinelOps - Iniciar.exe`: revisa que Docker Desktop este instalado y
+- `TERO Security - Iniciar.exe`: revisa que Docker Desktop este instalado y
   corriendo (intenta abrirlo si no lo esta), crea `.env` a partir de
   `.env.example` si es la primera vez, corre
   `docker compose up -d --build`, espera a que los 11 microservicios
@@ -13,7 +13,7 @@ Codigo fuente (Go) de los dos ejecutables que viven en la raiz del repo:
   navegador por defecto. Si alguno no responde a tiempo, muestra su log
   real (`docker compose logs`) para que se pueda diagnosticar sin abrir
   una terminal aparte.
-- `SentinelOps - Detener.exe`: corre `docker compose down` (no borra los
+- `TERO Security - Detener.exe`: corre `docker compose down` (no borra los
   datos -- los volumenes, como el de Postgres, se conservan).
 
 Ambos asumen que estan ubicados en la raiz del repo, junto a
@@ -35,8 +35,8 @@ Requiere Go 1.21+. Desde la raiz del repo:
 
 ```bash
 cd launcher
-GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o "../SentinelOps - Iniciar.exe" ./cmd/iniciar
-GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o "../SentinelOps - Detener.exe" ./cmd/detener
+GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o "../TERO Security - Iniciar.exe" ./cmd/iniciar
+GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o "../TERO Security - Detener.exe" ./cmd/detener
 ```
 
 Se puede compilar desde Linux/Mac sin instalar nada de Windows (Go

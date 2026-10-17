@@ -250,7 +250,7 @@ export default function Vulnerabilities() {
                     </tr>
                     {expandedId === v.id && (
                       <tr key={`${v.id}-detail`}>
-                        <td colSpan={10} className="panel" style={{ background: "rgba(0,0,0,0.03)" }}>
+                        <td colSpan={10} className="panel panel-sub">
                           {v.description && (
                             <p style={{ marginTop: 0 }}>{v.description}</p>
                           )}

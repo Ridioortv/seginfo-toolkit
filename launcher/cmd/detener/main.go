@@ -1,4 +1,4 @@
-// SentinelOps - Detener.exe
+// TERO Security - Detener.exe
 //
 // Para toda la plataforma (docker compose down) sin borrar los datos
 // (los volumenes, como el de Postgres, se conservan).
@@ -14,7 +14,7 @@ import (
 
 func main() {
 	fmt.Println("========================================")
-	fmt.Println(" SentinelOps - deteniendo la plataforma")
+	fmt.Println(" TERO Security - deteniendo la plataforma")
 	fmt.Println("========================================")
 	fmt.Println()
 

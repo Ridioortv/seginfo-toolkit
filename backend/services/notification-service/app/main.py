@@ -43,7 +43,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="SentinelOps Notification Service", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="TERO Security Notification Service", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -72,7 +72,16 @@ async def create_channel(
 
 @app.get("/channels", response_model=list[ChannelOut])
 async def list_channels(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
-    return await services.list_channels(db, org_id_from_claims(claims))
+    channels = await services.list_channels(db, org_id_from_claims(claims))
+    if claims.get("role") in ("admin", "soc_manager"):
+        return channels
+    # El resto de los roles ve los canales pero nunca el webhook completo.
+    out = []
+    for channel in channels:
+        item = ChannelOut.model_validate(channel)
+        item.config = services.redact_channel_config(item.config)
+        out.append(item)
+    return out
 
 
 @app.patch("/channels/{channel_id}", response_model=ChannelOut)
@@ -107,7 +116,7 @@ async def delete_channel(
 @app.post("/notify", response_model=NotifyResult)
 async def notify(
     payload: NotifyRequest,
-    claims: dict = Depends(get_current_claims),
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
     # Se pisa cualquier organization_id que venga en el body con el del JWT
@@ -129,7 +138,7 @@ async def list_logs(claims: dict = Depends(get_current_claims), db: AsyncSession
 @app.post("/internal/notify", response_model=NotifyResult)
 async def internal_notify(
     payload: NotifyRequest,
-    claims: dict = Depends(get_current_claims),
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
     db: AsyncSession = Depends(get_db),
 ):
     """Igual que POST /notify pero para llamadas servicio-a-servicio (ej.

@@ -1,0 +1,40 @@
+# OPCIONAL (no esta en kustomization.yaml): aislamiento de red para el namespace.
+# Aplicar solo despues de probarlo en tu cluster: ajusta el namespace/labels de TU
+# ingress controller (aca: ingress-nginx) o el sitio quedara inaccesible desde afuera.
+#   kubectl apply -f networkpolicy.yaml.example
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: sentinelops
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-same-namespace
+  namespace: sentinelops
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-controller
+  namespace: sentinelops
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx

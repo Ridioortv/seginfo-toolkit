@@ -21,7 +21,7 @@ class NotifyAction(ActionExecutor):
 
     async def execute(self, params: dict, context: dict) -> ActionResult:
         alert = context.get("alert", {})
-        subject = params.get("subject") or f"SentinelOps - Alerta {alert.get('severity', '')}: {alert.get('rule_name', '')}"
+        subject = params.get("subject") or f"TERO Security - Alerta {alert.get('severity', '')}: {alert.get('rule_name', '')}"
         body = params.get("body") or f"El playbook disparo esta notificacion a partir de la alerta {alert.get('id', '')}."
         channel_ids = params.get("channel_ids")  # None = todos los canales habilitados
 

@@ -1,7 +1,7 @@
 # Dependencias de terceros (librerias)
 
 Complementa `THIRD-PARTY-LICENSES.md` (motores de escaneo). Lista las librerias
-que usan los servicios de SentinelOps, con la licencia declarada por cada
+que usan los servicios de TERO Security, con la licencia declarada por cada
 paquete. Se genero a partir de los `requirements.txt` de los servicios
 (resolviendo dependencias transitivas) y del `package-lock.json` del frontend.
 Ninguna es GPL/AGPL/SSPL; las unicas con copyleft son `semgrep` (LGPL-2.1, se
@@ -19,7 +19,7 @@ propio paquete instalado y en su sitio oficial (PyPI / npm).
 | redis:7.2-alpine | BSD-3-Clause (version 7.2.x; las 7.4 y posteriores NO son BSD, por eso se fija) |
 | opensearchproject/opensearch:2.16.0 | Apache-2.0 |
 
-## Launcher de Windows (`SentinelOps - Iniciar.exe` / `Detener.exe`)
+## Launcher de Windows (`TERO Security - Iniciar.exe` / `Detener.exe`)
 
 Estan escritos en Go sin librerias externas; incluyen la libreria estandar y el runtime de Go, bajo BSD-3-Clause, Copyright The Go Authors (texto en `licenses/go-BSD-3-Clause.txt`).
 

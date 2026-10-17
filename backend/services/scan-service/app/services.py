@@ -12,10 +12,13 @@ from datetime import datetime, timezone, timedelta
 import httpx
 from sqlalchemy import select, or_, and_, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from backend.shared.ingest_auth import ingest_headers
 from backend.shared.logging import configure_logging
 from backend.shared.security import create_access_token
 from app.models import ScanJob, ScanStatus, ScanSchedule, ScanAgent, AgentScanJob, ScannerType
 from app.scanners import get_driver, DRIVERS
+from app.schemas import _NON_NETWORK_SCANNER_TYPES
+from app.target_validation import strip_url_userinfo, resolved_target_error
 
 logger = configure_logging("scan-service")
 
@@ -658,6 +661,16 @@ async def execute_scan_job(
                 logger.warning("scanner no disponible", extra={"job_id": job_id, "scanner": job.scanner_type.value})
                 return
 
+            if target_override is None and job.scanner_type not in _NON_NETWORK_SCANNER_TYPES:
+                dns_error = await asyncio.to_thread(resolved_target_error, job.target)
+                if dns_error:
+                    job.status = ScanStatus.failed
+                    job.error_message = dns_error
+                    job.finished_at = _now()
+                    await db.commit()
+                    logger.warning("escaneo bloqueado: el target resuelve a una direccion peligrosa", extra={"job_id": job_id})
+                    return
+
             job.status = ScanStatus.running
             job.started_at = _now()
             await db.commit()
@@ -737,6 +750,19 @@ async def execute_scan_job(
             shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
+def _warn_if_ingest_rejected(resp: httpx.Response, job_id: str, target: str = "vuln-service") -> None:
+    """httpx NO lanza excepcion ante un 4xx/5xx: sin mirar el status, un
+    rechazo de vuln-service (p.ej. un 500 por un valor que no entra en una
+    columna) dejaba el escaneo "completed" con N hallazgos pero sin ningun
+    registro en vuln-service, y no quedaba rastro en ningun log. Solo se
+    registra el codigo y un fragmento del cuerpo (nunca el payload)."""
+    if resp.status_code >= 400:
+        logger.warning(
+            "%s rechazo los hallazgos del escaneo (HTTP %s)", target, resp.status_code,
+            extra={"job_id": job_id, "status_code": resp.status_code, "body": resp.text[:200]},
+        )
+
+
 async def _forward_findings_to_vuln_service(job: ScanJob) -> None:
     """Best-effort: si vuln-service no responde, el job de escaneo ya quedo
     guardado igual (los findings estan en ScanJob.findings); esto solo
@@ -759,10 +785,11 @@ async def _forward_findings_to_vuln_service(job: ScanJob) -> None:
     token = create_access_token("system:scan-service", "admin", org_id=job.organization_id)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(
+            resp = await client.post(
                 f"{VULN_SERVICE_URL}/vulnerabilities/ingest", json=payload,
                 headers={"Authorization": f"Bearer {token}"},
             )
+        _warn_if_ingest_rejected(resp, job.id)
     except httpx.HTTPError as exc:
         logger.warning("no se pudo reenviar hallazgos a vuln-service", extra={"job_id": job.id, "error": str(exc)})
 
@@ -774,7 +801,7 @@ def _findings_to_siem_events(scanner_type: str, target: str, asset_id: str | Non
     para severidad critica/alta de este mismo pipeline)."""
     return [
         {
-            "host": target,
+            "host": strip_url_userinfo(target),
             "event_action": "scan_finding",
             "event_category": "vulnerability",
             "event_outcome": "success",
@@ -796,7 +823,7 @@ async def _forward_findings_to_siem_service(job: ScanJob) -> None:
     }
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(f"{SIEM_SERVICE_URL}/logs/ingest", json=payload)
+            await client.post(f"{SIEM_SERVICE_URL}/logs/ingest", json=payload, headers=ingest_headers())
     except httpx.HTTPError as exc:
         logger.warning("no se pudo reenviar hallazgos a siem-service", extra={"job_id": job.id, "error": str(exc)})
 
@@ -864,6 +891,28 @@ def is_protected_agent(agent) -> bool:
     return value == "bootstrap"
 
 
+KNOWN_EXAMPLE_AGENT_KEYS = frozenset({
+    "cambiame-key-agente-docker", "cambiame-key-agente-lan", "cambiame-key-agente-wan",
+})
+
+
+def agent_key_is_refused(key: str) -> bool:
+    """True si esta key NO debe provisionarse ni aceptarse: los 3 valores de
+    ejemplo del .env.example (publicos, iguales en todas las instalaciones) se
+    rechazan siempre; cualquier otro placeholder/key corta solo fuera de
+    ENVIRONMENT=development."""
+    if key in KNOWN_EXAMPLE_AGENT_KEYS:
+        return True
+    return is_placeholder_agent_key(key) and os.getenv("ENVIRONMENT", "development") != "development"
+
+
+def is_placeholder_agent_key(key: str) -> bool:
+    """True si la key es un valor de ejemplo conocido (.env.example) o demasiado
+    corta para ser aleatoria."""
+    lowered = (key or "").lower()
+    return len(lowered) < 24 or "cambiame" in lowered or "changeme" in lowered
+
+
 def resolve_bootstrap_api_key(agent, bootstrap_agents_raw: str) -> str | None:
     """Si `agent` es uno de los definidos en BOOTSTRAP_AGENTS (el mismo
     JSON que main.py::lifespan usa para auto-crearlos), devuelve su api
@@ -894,6 +943,9 @@ async def ensure_bootstrap_agent(db: AsyncSession, name: str, api_key: str, orga
     estaba. La key la elige el operador (en .env), a diferencia de
     create_agent que la genera el servidor -- por eso aca no se devuelve la
     key en texto plano: ya la tiene quien configuro el .env."""
+    if agent_key_is_refused(api_key):
+        logger.error("agente bootstrap rechazado: su key es un valor de ejemplo", extra={"agent_name": name})
+        return False
     key_hash = _hash_agent_key(api_key)
     existing = (await db.execute(select(ScanAgent).where(ScanAgent.key_hash == key_hash))).scalar_one_or_none()
     if existing is not None:
@@ -1079,6 +1131,9 @@ async def get_agent(db: AsyncSession, agent_id: str, organization_id: str) -> Sc
 
 
 async def get_agent_by_key(db: AsyncSession, api_key: str) -> ScanAgent | None:
+    if agent_key_is_refused(api_key):
+        # Filas ya provisionadas con una key de ejemplo (instalaciones previas): dejan de valer.
+        return None
     result = await db.execute(select(ScanAgent).where(ScanAgent.key_hash == _hash_agent_key(api_key)))
     return result.scalar_one_or_none()
 
@@ -1209,7 +1264,11 @@ async def poll_agent_jobs(db: AsyncSession, agent: ScanAgent, max_jobs: int = 5)
         # gracia, huerfano tras 10 min) lo hace agent_can_claim_job abajo,
         # no el query, para poder testear esa regla sin DB real.
         stale_before = now - timedelta(minutes=10)
+        # Un agente (aunque sea bootstrap/"worker universal") solo ve jobs de
+        # SU organizacion: antes el query no filtraba por organization_id y
+        # una key de bootstrap podia leer target/options de todos los tenants.
         query = select(AgentScanJob).where(
+            AgentScanJob.organization_id == agent.organization_id,
             or_(
                 AgentScanJob.status == "pending",
                 and_(
@@ -1217,12 +1276,14 @@ async def poll_agent_jobs(db: AsyncSession, agent: ScanAgent, max_jobs: int = 5)
                     AgentScanJob.assigned_at.isnot(None),
                     AgentScanJob.assigned_at < stale_before,
                 ),
-            )
+            ),
         )
     else:
         # Un agente normal solo ve SUS propios jobs pendientes.
         query = select(AgentScanJob).where(
-            AgentScanJob.agent_id == agent.id, AgentScanJob.status == "pending"
+            AgentScanJob.agent_id == agent.id,
+            AgentScanJob.organization_id == agent.organization_id,
+            AgentScanJob.status == "pending",
         )
     # .with_for_update(skip_locked=True): ver el docstring de arriba -- sin
     # esto, dos polls concurrentes (misma api key en dos procesos, o dos
@@ -1276,6 +1337,10 @@ async def get_agent_job_for_agent(db: AsyncSession, agent: ScanAgent, job_id: st
     # los ejecuta todos.
     if agent.created_by != "bootstrap" and job.agent_id != agent.id:
         return None
+    # Ningun agente toca jobs de otra organizacion (el worker bootstrap solo
+    # los ejecuta todos DENTRO de su organizacion).
+    if job.organization_id != agent.organization_id:
+        return None
     return job
 
 
@@ -1311,10 +1376,11 @@ async def _forward_agent_findings_to_vuln_service(job: AgentScanJob) -> None:
     token = create_access_token("system:scan-service", "admin", org_id=job.organization_id)
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(
+            resp = await client.post(
                 f"{VULN_SERVICE_URL}/vulnerabilities/ingest", json=payload,
                 headers={"Authorization": f"Bearer {token}"},
             )
+        _warn_if_ingest_rejected(resp, job.id)
     except httpx.HTTPError as exc:
         logger.warning(
             "no se pudo reenviar hallazgos de agente remoto a vuln-service",
@@ -1330,7 +1396,7 @@ async def _forward_agent_findings_to_siem_service(job: AgentScanJob) -> None:
     }
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(f"{SIEM_SERVICE_URL}/logs/ingest", json=payload)
+            await client.post(f"{SIEM_SERVICE_URL}/logs/ingest", json=payload, headers=ingest_headers())
     except httpx.HTTPError as exc:
         logger.warning(
             "no se pudo reenviar hallazgos de agente remoto a siem-service",

@@ -20,6 +20,7 @@ const STATUS_CLASS: Record<string, string> = {
   completed: "badge badge-success",
   failed: "badge badge-critical",
   running: "badge badge-medium",
+  assigned: "badge badge-medium",
   pending: "badge badge-medium",
   simulated: "badge badge-neutral",
   executed: "badge badge-success",

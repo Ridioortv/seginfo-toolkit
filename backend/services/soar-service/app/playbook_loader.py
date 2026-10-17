@@ -29,7 +29,11 @@ async def sync_playbooks_from_yaml(db: AsyncSession) -> int:
         if not name:
             continue
 
-        result = await db.execute(select(Playbook).where(Playbook.name == name))
+        # Solo las plantillas built-in (organization_id NULL): un playbook de un
+        # tenant con el mismo nombre es otra fila y la sincronizacion no lo toca.
+        result = await db.execute(
+            select(Playbook).where(Playbook.name == name, Playbook.organization_id.is_(None))
+        )
         existing = result.scalar_one_or_none()
         if existing is None:
             db.add(

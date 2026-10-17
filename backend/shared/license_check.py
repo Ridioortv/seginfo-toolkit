@@ -22,6 +22,7 @@ Formato de la respuesta firmada (ver licensing-server/app/main.py):
     {"license_key": str, "valid": bool, "valid_until": iso8601|null, "checked_at": iso8601}
 firmada con Ed25519 sobre json.dumps(payload, sort_keys=True,
 separators=(",", ":")).encode(), en base64 en el header X-Signature."""
+import asyncio
 import base64
 import json
 import logging
@@ -37,11 +38,15 @@ logger = logging.getLogger("license_check")
 LICENSE_SERVER_URL = os.getenv("LICENSE_SERVER_URL", "").rstrip("/")
 LICENSE_KEY = os.getenv("LICENSE_KEY", "")
 LICENSE_SERVER_PUBLIC_KEY = os.getenv("LICENSE_SERVER_PUBLIC_KEY", "")
-# Pasarela con la que esta instalacion cobra la suscripcion (USD 250 cada 30
-# dias): "paypal" (default) o "mercadopago". El servidor central de licencias
-# tiene ambas; esto solo elige a cual le pide el link de pago / la cancelacion.
-PAYMENT_PROVIDER = os.getenv("PAYMENT_PROVIDER", "paypal").strip().lower()
-PROVIDER_LABEL = {"paypal": "PayPal", "mercadopago": "Mercado Pago"}.get(PAYMENT_PROVIDER, PAYMENT_PROVIDER)
+# Pasarelas de cobro de la suscripcion (cada 30 dias): PayPal (USD 250) y
+# Mercado Pago (pesos, USD 250 al cambio del dia). El cliente elige cual en
+# "Pagos y licencia" (o en el login bloqueado). "paypal" es la de siempre.
+PROVIDER_LABELS = {"paypal": "PayPal", "mercadopago": "Mercado Pago"}
+DEFAULT_PROVIDER = "paypal"
+
+
+def provider_label(provider: str) -> str:
+    return PROVIDER_LABELS.get(provider, provider)
 
 
 class LicenseCheckError(Exception):
@@ -106,72 +111,25 @@ async def check_license() -> tuple[bool, datetime | None]:
     return valid, valid_until
 
 
-async def cancel_mercadopago_subscription() -> None:
-    """Le pide al servidor central que cancele el PROXIMO cobro
-    automatico de Mercado Pago vinculado a esta LICENSE_KEY (ver
-    licensing-server/app/main.py::mercadopago_cancel_subscription) --
-    lo que dispara el boton de autoservicio "Cancelar suscripcion" en
-    la organizacion (ver auth-service/app/main.py). No cambia
-    subscription_expires_at ni acá ni del lado del servidor central: el
-    periodo ya pagado sigue corriendo hasta que venza, is_org_active()
-    no se entera de esto hasta esa fecha. No hace falta verificar
-    ninguna firma acá (a diferencia de check_license): esto no le da
-    ningun permiso extra al cliente, solo corta un cobro futuro."""
+async def cancel_subscription() -> None:
+    """Le pide al servidor central que cancele el PROXIMO cobro de esta
+    LICENSE_KEY, sea cual sea la pasarela con la que se pago (PayPal y/o
+    Mercado Pago -- ver licensing-server/app/main.py::cancel_any_subscription):
+    es lo que dispara el boton de autoservicio "Cancelar suscripcion". El
+    periodo ya pagado sigue corriendo hasta que venza, y no hace falta
+    verificar firma: esto no da ningun permiso extra, solo corta un cobro
+    futuro."""
     if not is_configured():
         raise LicenseCheckError("LICENSE_SERVER_URL/LICENSE_KEY no configurados")
 
-    url = f"{LICENSE_SERVER_URL}/license/{LICENSE_KEY}/mercadopago/cancel-subscription"
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(url)
-            resp.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        detail = exc.response.text[:300] if exc.response is not None else str(exc)
-        raise LicenseCheckError(f"el servidor central rechazo la cancelacion: {detail}") from exc
-    except httpx.HTTPError as exc:
-        raise LicenseCheckError(f"no se pudo contactar al servidor central de licencias: {exc}") from exc
-
-
-async def get_mercadopago_payment_link(payer_email: str) -> str | None:
-    """Le pide al servidor central un link de pago (Mercado Pago) para
-    ESTA license_key -- autoservicio para cuando la suscripcion esta
-    vencida (ver _reject_if_org_inactive en auth-service/app/main.py),
-    asi quien intenta entrar puede pagar y recuperar el acceso sin
-    escribirle al operador. Devuelve None (no LicenseCheckError) si el
-    servidor central esta arriba pero Mercado Pago no esta configurado
-    del lado suyo (503) -- eso no es un fallo de red/firma, es "esta
-    instalacion no ofrece pago automatico", y el caller ya sabe mostrar
-    el mensaje generico de "contacta al operador" en ese caso."""
-    if not is_configured():
-        raise LicenseCheckError("LICENSE_SERVER_URL/LICENSE_KEY no configurados")
-
-    url = f"{LICENSE_SERVER_URL}/license/{LICENSE_KEY}/mercadopago/subscription-link"
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(url, json={"payer_email": payer_email})
-            if resp.status_code == 503:
-                return None
-            resp.raise_for_status()
-            body = resp.json()
-    except httpx.HTTPStatusError as exc:
-        detail = exc.response.text[:300] if exc.response is not None else str(exc)
-        raise LicenseCheckError(f"el servidor central rechazo la generacion del link de pago: {detail}") from exc
-    except httpx.HTTPError as exc:
-        raise LicenseCheckError(f"no se pudo contactar al servidor central de licencias: {exc}") from exc
-    return body.get("init_point")
-
-
-async def cancel_paypal_subscription() -> None:
-    """Igual que cancel_mercadopago_subscription pero para PayPal (ver
-    licensing-server/app/main.py::paypal_cancel_subscription): corta el
-    PROXIMO cobro; el periodo ya pagado sigue corriendo hasta que venza."""
-    if not is_configured():
-        raise LicenseCheckError("LICENSE_SERVER_URL/LICENSE_KEY no configurados")
-
-    url = f"{LICENSE_SERVER_URL}/license/{LICENSE_KEY}/paypal/cancel-subscription"
+    url = f"{LICENSE_SERVER_URL}/license/{LICENSE_KEY}/cancel-subscription"
+    legacy_url = f"{LICENSE_SERVER_URL}/license/{LICENSE_KEY}/paypal/cancel-subscription"
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(url)
+            if resp.status_code == 404 and _is_route_missing(resp):
+                # Servidor central viejo (solo PayPal), anterior al endpoint generico.
+                resp = await client.post(legacy_url)
             resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         detail = exc.response.text[:300] if exc.response is not None else str(exc)
@@ -180,15 +138,40 @@ async def cancel_paypal_subscription() -> None:
         raise LicenseCheckError(f"no se pudo contactar al servidor central de licencias: {exc}") from exc
 
 
-async def get_paypal_payment_link(payer_email: str) -> str | None:
-    """Pide al servidor central el link de aprobacion de PayPal (suscripcion
-    de USD 250 cada 30 dias) para ESTA license_key. Devuelve None si el
-    servidor central esta arriba pero PayPal no esta configurado de su lado
-    (503) -- el caller muestra entonces el mensaje de "contacta al operador"."""
+def _error_detail(resp: httpx.Response) -> str:
+    """El motivo que mando el servidor central ({"detail": "..."}) o, si no es
+    JSON, el principio del cuerpo -- para mostrarle al usuario algo legible en
+    vez de un JSON crudo."""
+    try:
+        detail = resp.json().get("detail")
+        if isinstance(detail, str) and detail:
+            return detail[:300]
+    except (ValueError, AttributeError):
+        pass
+    return resp.text[:300]
+
+
+def _is_route_missing(resp: httpx.Response) -> bool:
+    """404 de FastAPI cuando la RUTA no existe ({"detail":"Not Found"}), a
+    diferencia de un 404 nuestro ("license_key desconocida", etc.)."""
+    try:
+        return resp.json().get("detail") == "Not Found"
+    except ValueError:
+        return False
+
+
+async def get_payment_link(payer_email: str, provider: str = DEFAULT_PROVIDER) -> str | None:
+    """Pide al servidor central el link de aprobacion de la suscripcion
+    (PayPal: USD 250 cada 30 dias; Mercado Pago: el equivalente en pesos) para
+    ESTA license_key. Devuelve None si el servidor central esta arriba pero esa
+    pasarela no esta configurada de su lado (503) -- el caller muestra
+    entonces el mensaje de "contacta al operador"."""
+    if provider not in PROVIDER_LABELS:
+        raise LicenseCheckError(f"pasarela de pago desconocida: {provider}")
     if not is_configured():
         raise LicenseCheckError("LICENSE_SERVER_URL/LICENSE_KEY no configurados")
 
-    url = f"{LICENSE_SERVER_URL}/license/{LICENSE_KEY}/paypal/subscription-link"
+    url = f"{LICENSE_SERVER_URL}/license/{LICENSE_KEY}/{provider}/subscription-link"
     try:
         async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.post(url, json={"payer_email": payer_email})
@@ -197,26 +180,32 @@ async def get_paypal_payment_link(payer_email: str) -> str | None:
             resp.raise_for_status()
             body = resp.json()
     except httpx.HTTPStatusError as exc:
-        detail = exc.response.text[:300] if exc.response is not None else str(exc)
+        if exc.response is not None and exc.response.status_code == 409:
+            # Ya hay una suscripcion activa: mensaje claro para mostrar tal cual.
+            try:
+                raise LicenseCheckError(str(exc.response.json().get("detail"))) from exc
+            except ValueError:
+                pass
+        detail = _error_detail(exc.response) if exc.response is not None else str(exc)
         raise LicenseCheckError(f"el servidor central rechazo la generacion del link de pago: {detail}") from exc
     except httpx.HTTPError as exc:
         raise LicenseCheckError(f"no se pudo contactar al servidor central de licencias: {exc}") from exc
     return body.get("approval_url")
 
 
-async def get_payment_link(payer_email: str) -> str | None:
-    """Link de pago con la pasarela configurada (PAYMENT_PROVIDER)."""
-    if PAYMENT_PROVIDER == "mercadopago":
-        return await get_mercadopago_payment_link(payer_email)
-    return await get_paypal_payment_link(payer_email)
+async def get_payment_links(payer_email: str) -> dict[str, str]:
+    """Un link por cada pasarela disponible ({"paypal": url, "mercadopago": url}),
+    para el login bloqueado por falta de pago. Una pasarela que falla o no
+    esta configurada simplemente no aparece: el cliente paga con la otra."""
+    async def _one(provider: str) -> tuple[str, str | None]:
+        try:
+            return provider, await get_payment_link(payer_email, provider)
+        except LicenseCheckError as exc:
+            logger.warning("no se pudo generar el link de %s: %s", provider_label(provider), exc)
+            return provider, None
 
-
-async def cancel_subscription() -> None:
-    """Cancela el proximo cobro con la pasarela configurada (PAYMENT_PROVIDER)."""
-    if PAYMENT_PROVIDER == "mercadopago":
-        await cancel_mercadopago_subscription()
-    else:
-        await cancel_paypal_subscription()
+    results = await asyncio.gather(*(_one(p) for p in PROVIDER_LABELS))
+    return {provider: url for provider, url in results if url}
 
 
 async def get_subscription_history() -> list[str]:

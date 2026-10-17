@@ -264,8 +264,8 @@ async def run_scheduled_report(session_factory, schedule_id: str) -> None:
                 f"{NOTIFICATION_SERVICE_URL}/notify",
                 headers={"Authorization": auth_header},
                 json={
-                    "subject": f"SentinelOps - {title} ({_now().strftime('%Y-%m-%d')})",
-                    "body": f"Reporte programado '{title}' generado automaticamente por SentinelOps. Se adjunta en PDF.",
+                    "subject": f"TERO Security - {title} ({_now().strftime('%Y-%m-%d')})",
+                    "body": f"Reporte programado '{title}' generado automaticamente por TERO Security. Se adjunta en PDF.",
                     "severity": "info",
                     "channel_ids": [channel_id],
                     "attachments": [

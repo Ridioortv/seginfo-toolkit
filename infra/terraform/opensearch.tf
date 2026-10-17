@@ -11,11 +11,13 @@ resource "aws_security_group" "opensearch" {
     cidr_blocks = [var.vpc_cidr]
   }
 
+  # Un data store no necesita salir a internet: egress solo hacia la VPC.
   egress {
+    description = "Trafico de respuesta dentro de la VPC"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.vpc_cidr]
   }
 }
 
@@ -48,6 +50,17 @@ resource "aws_opensearch_domain" "main" {
   }
 
   domain_endpoint_options {
-    enforce_https = true
+    enforce_https       = true
+    tls_security_policy = "Policy-Min-TLS-1-2-2019-07"
+  }
+
+  # Control de acceso fino: usuario maestro con contrasena (nada de acceso anonimo).
+  advanced_security_options {
+    enabled                        = true
+    internal_user_database_enabled = true
+    master_user_options {
+      master_user_name     = "admin"
+      master_user_password = var.opensearch_master_password
+    }
   }
 }

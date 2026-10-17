@@ -15,9 +15,20 @@ spec:
       labels:
         app: case-service
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001   # usuario 'sentinelops' de los Dockerfiles
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: case-service
           image: sentinelops/case-service:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8000
           envFrom:

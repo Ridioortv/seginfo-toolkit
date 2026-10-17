@@ -14,7 +14,7 @@ class IpReputationOut(BaseModel):
 
 
 class LookupBatchRequest(BaseModel):
-    ips: list[str] = Field(default_factory=list)
+    ips: list[str] = Field(default_factory=list, max_length=50)
 
 
 class LookupBatchResponse(BaseModel):

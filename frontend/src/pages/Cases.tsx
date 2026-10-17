@@ -162,7 +162,7 @@ export default function Cases() {
                     </tr>
                     {expandedId === c.id && (
                       <tr>
-                        <td colSpan={7} className="panel" style={{ background: "rgba(0,0,0,0.03)" }}>
+                        <td colSpan={7} className="panel panel-sub">
                           {c.description && <p>{c.description}</p>}
 
                           <div className="inline-form">

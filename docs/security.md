@@ -1,4 +1,4 @@
-# SentinelOps -- modelo de amenazas (STRIDE)
+# TERO Security -- modelo de amenazas (STRIDE)
 
 Este documento aplica STRIDE (Spoofing, Tampering, Repudiation, Information
 Disclosure, Denial of Service, Elevation of Privilege) a la arquitectura descrita
@@ -40,7 +40,7 @@ infraestructura de `docker-compose.yml` / `infra/`. No cubre el codigo de tercer
 |---|---|---|
 | Filtrar vulnerabilidades/CVEs de un cliente a otro | Multi-tenant con aislamiento por fila (`organization_id` en cada tabla de cada servicio, filtrado en cada query -- ver `backend/shared/tenancy.py`); el JWT lleva `org_id` y cada endpoint lo usa para scopear sus consultas | Auditoria periodica de que todo query nuevo filtre por `organization_id` (revisar en code review, no hay un enforcement automatico a nivel de DB tipo RLS todavia) |
 | Exponer secretos (JWT secret, password de DB) en el repo | `.env` esta en `.gitignore`; `infra/k8s/base/secret.yaml` tambien; Terraform usa `TF_VAR_db_password` en vez de un default | Adoptar un secret manager real (Vault, AWS Secrets Manager) en vez de Secrets planos de k8s |
-| El endpoint interno `/internal/rule-tags` de siem-service devuelve datos de reglas sin autenticar | Solo expone id/nombre/tags (nunca la logica de deteccion completa) y se asume red interna no expuesta a internet | Restringir por NetworkPolicy de k8s a los Pods que realmente lo necesitan (purple-service) |
+| Los endpoints internos (`/internal/rule-tags` de siem-service, `/internal/lookup-batch` de threatintel, `/internal/organizations` de auth) los llame alguien que no es un servicio | Exigen un JWT de servicio (`system:*`, `backend/shared/service_auth.py`); `rule-tags` toma la organizacion de los claims, no de un parametro | Restringir ademas por NetworkPolicy de k8s a los Pods que realmente los necesitan |
 
 ## Denial of Service
 
@@ -55,6 +55,24 @@ infraestructura de `docker-compose.yml` / `infra/`. No cubre el codigo de tercer
 |---|---|---|
 | Un usuario sin rol admin ejecuta una accion de contencion real | RBAC via claim `role` en el JWT, verificado con `require_role(...)` en cada endpoint sensible (crear conectores, generar reportes, etc.) | Auditoria periodica de que rol tiene acceso a que endpoint, a medida que se agregan mas roles |
 | SOAR/integration-service ejecutan una accion real sin que un humano lo decida | Doble capa de dry-run independiente: `SOAR_DRY_RUN` e `INTEGRATION_DRY_RUN`, ambas en `"true"` por defecto en `docker-compose.yml`, `.env.example` e `infra/k8s/base/configmap.yaml`. Pasar a `"false"` es un cambio explicito de configuracion, nunca el valor de fabrica | Requerir ademas un conector configurado (ya implementado: sin conector habilitado, la accion queda `failed` aunque el dry-run este apagado) -- agregar una segunda aprobacion humana (four-eyes) antes de la primera ejecucion real en un cliente nuevo |
+
+## Controles agregados en la auditoria (tanda 3)
+
+| Amenaza | Mitigacion actual | Pendiente |
+|---|---|---|
+| Un admin de organizacion da de alta el email de una persona ajena y la captura cuando entra con Google | `invite_email_error` (auth-service): con varias organizaciones, solo emails del mismo dominio que los usuarios de la org; correo gratuito (gmail, outlook...) reservado al platform_admin (o `ALLOW_FREEMAIL_INVITES=true` en instalaciones de una sola empresa) | Flujo de invitacion con confirmacion por email |
+| Un dominio del atacante que resuelve a 127.0.0.1 / 169.254.169.254 usado como target de escaneo | `resolved_target_error` resuelve el DNS justo antes de lanzar el escaner y rechaza loopback/link-local/reservado (RFC1918 permitido a proposito) | DNS rebinding con TTL bajo (exigiria fijar la IP en el escaner) |
+| Un analyst lee el filesystem del contenedor de scan-service via `gitleaks`/`semgrep` con un path local | `ScanJobCreate`/`ScanScheduleCreate` exigen una URL git http(s) para esos escaneres dentro del contenedor; los paths locales solo en un agente remoto | - |
+| Un analyst lanza Falco/Zeek (eBPF/captura de todo el host) | Solo `admin` o `soc_manager` pueden lanzarlos en el contenedor | Limite de concurrencia/duracion por organizacion |
+| Un link armado a mano `/sso/callback#access_token=...` deja a la victima en la cuenta del atacante | La SPA exige el valor `cs` (sessionStorage, un solo uso) que auth-service devuelve en el fragmento; sin coincidencia descarta la sesion | - |
+| Nombre de playbook SOAR como oraculo de existencia entre organizaciones | Unico por organizacion (indice `uq_playbooks_org_name`) | - |
+| Binario de gitleaks cambia entre builds | `ARG GITLEAKS_VERSION` fijo + verificacion contra `checksums.txt` de la release | Actualizar la version a mano de forma periodica |
+| Instalacion nueva con los chequeos de entorno inertes (`ENVIRONMENT=development`) | El launcher crea `.env` con `ENVIRONMENT=production` (todos los secretos ya son aleatorios) | Instalaciones copiadas a mano de `.env.example`: cambiar a `production` tras poner secretos propios |
+| Otros usuarios locales de Windows leen `.env` o modifican el script del agente LAN | `icacls` (usuario actual + SYSTEM + Administradores) sobre `.env` (launcher) y sobre la carpeta del agente (`agente-lan.ps1 -Install`) | Probar en un Windows real |
+| Fuerza bruta de login cuando Redis cae | `check_rate_limit` usa un contador en memoria del proceso como respaldo (antes dejaba pasar todo) | Con varias replicas el limite efectivo es por proceso |
+| Entradas gigantes en auth (password de MBs al hash, tokens enormes) | Topes de tamano en los schemas (password 128 al crear / 1024 al ingresar, TOTP 16, tokens 8192) | - |
+| Claves de agente en el historial de git (`.env.bak`, commit 68e11a5) | Rotar con `tools\rotar-claves-agentes.ps1`; `.env*`/`*.bak` estan en `.gitignore` | Si el repo es publico, valorar limpiar el historial (git filter-repo) tras rotar |
+| Pods de k8s como root / sin aislamiento de red | `runAsNonRoot` + `runAsUser: 1001` en cada Deployment; `networkpolicy.yaml.example` opcional | Aplicar y probar la politica de red en tu cluster |
 
 ## Resumen
 
