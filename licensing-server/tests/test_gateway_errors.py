@@ -196,3 +196,41 @@ def test_mismatch_diagnostic_survives_users_me_failure(client, monkeypatch):
     _patch_http(monkeypatch, mp, _mismatch_handler({"message": "x"}, me_status=500))
     d = client.post("/license/k-g12/mercadopago/subscription-link", json={}).json()["detail"]
     assert "no se pudo detectar" in d and "MP_TEST_PAYER_EMAIL" in d
+
+
+def _bad_request_handler(allow_without_email: bool, seen: list):
+    def handler(request):
+        u = str(request.url)
+        if "dolarapi" in u:
+            return httpx.Response(200, json={"venta": 1500})
+        import json as _j
+        body = _j.loads(request.content)
+        seen.append(body.get("payer_email"))
+        if "payer_email" in body:
+            return httpx.Response(400, json={"message": "User bad request", "status": 400})
+        if allow_without_email:
+            return httpx.Response(201, json={"id": "PRE-NOEMAIL", "init_point": "https://mp.test/checkout"})
+        return httpx.Response(400, json={"message": "payer_email is required", "status": 400})
+    return handler
+
+
+def test_user_bad_request_retries_without_payer_email_and_succeeds(client, monkeypatch):
+    _new(client, "k-g13")
+    seen: list = []
+    _patch_http(monkeypatch, mp, _bad_request_handler(True, seen))
+    monkeypatch.setattr(mp, "MP_TEST_PAYER_EMAIL", "test_user_1@testuser.com")
+    r = client.post("/license/k-g13/mercadopago/subscription-link", json={})
+    assert r.status_code == 200 and r.json()["approval_url"] == "https://mp.test/checkout"
+    assert seen == ["test_user_1@testuser.com", None]
+
+
+def test_user_bad_request_when_retry_also_fails_explains_the_email(client, monkeypatch):
+    _new(client, "k-g14")
+    seen: list = []
+    _patch_http(monkeypatch, mp, _bad_request_handler(False, seen))
+    monkeypatch.setattr(mp, "MP_TEST_PAYER_EMAIL", "test_user_1@testuser.com")
+    r = client.post("/license/k-g14/mercadopago/subscription-link", json={})
+    assert r.status_code == 502
+    d = r.json()["detail"]
+    assert "test_user_1@testuser.com (de MP_TEST_PAYER_EMAIL)" in d and "TESTUSER" in d
+    assert len(d) < 480

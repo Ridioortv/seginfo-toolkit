@@ -200,6 +200,23 @@ async def create_subscription_approval_link(license_key: str, payer_email: str |
         if MP_NOTIFICATION_URL:
             payload["notification_url"] = MP_NOTIFICATION_URL
         resp = await client.post(f"{_API}/preapproval", headers=_headers(), json=payload)
+        if resp.status_code == 400 and "User bad request" in resp.text and "payer_email" in payload:
+            # Mercado Pago no reconoce ese email como una cuenta suya (por ejemplo
+            # el email de login del cliente, que no es de Mercado Pago). Se
+            # reintenta sin email: el pagador inicia sesion con su cuenta en el checkout.
+            bad_email = payload.pop("payer_email")
+            origin = "MP_TEST_PAYER_EMAIL" if MP_TEST_PAYER_EMAIL else "el email del modal"
+            logger.warning("Mercado Pago rechazo el payer_email %s (de %s); se reintenta sin email", bad_email, origin)
+            retry = await client.post(f"{_API}/preapproval", headers=_headers(), json=payload)
+            if retry.status_code >= 400:
+                raise MercadoPagoError(
+                    f"Mercado Pago no reconoce {bad_email} (de {origin}) como una cuenta suya y sin email tampoco "
+                    f"creo la suscripcion ({retry.status_code}). Con credenciales de prueba el email tiene que ser "
+                    "exactamente el del COMPRADOR de prueba: entra a mercadopago.com.ar con ese usuario y copia el "
+                    "email de su perfil (suele ser test_user_<numero del Usuario TESTUSER...>@testuser.com). "
+                    "Cargalo en MP_TEST_PAYER_EMAIL (Render)."
+                )
+            resp = retry
         _raise_for_mp_status(resp, "crear la suscripcion")
         if resp.status_code == 400 and "real or test" in resp.text:
             origin = "MP_TEST_PAYER_EMAIL" if MP_TEST_PAYER_EMAIL else "el email del modal"
