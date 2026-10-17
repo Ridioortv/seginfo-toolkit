@@ -65,6 +65,16 @@ MP_PRICE_USD = _env_float("MP_PRICE_USD", 250.0)
 # se usa siempre ese pagador (asi nadie tiene que tipearlo en el modal).
 # En produccion tiene que estar VACIA.
 MP_TEST_PAYER_EMAIL = _env("MP_TEST_PAYER_EMAIL")
+
+
+def _normalize_payer_email(email: str) -> str:
+    """El Usuario de una cuenta de prueba se ve como TESTUSER123 pero su email es
+    test_user_123@testuser.com (sin la palabra TESTUSER). Si alguien pego
+    test_user_TESTUSER123@testuser.com se corrige solo."""
+    return re.sub(r"^test_user_testuser(\d+)@testuser\.com$", r"test_user_\1@testuser.com", email.strip(), flags=re.I)
+
+
+MP_TEST_PAYER_EMAIL = _normalize_payer_email(MP_TEST_PAYER_EMAIL)
 # Mercado Pago documenta que el webhook firmado con la clave secreta del panel
 # puede no aplicar a las notificaciones de Suscripciones (las que salen del
 # notification_url mandado al crearlas). Por eso, por defecto, una notificacion
@@ -213,7 +223,7 @@ async def create_subscription_approval_link(license_key: str, payer_email: str |
                     f"Mercado Pago no reconoce {bad_email} (de {origin}) como una cuenta suya y sin email tampoco "
                     f"creo la suscripcion ({retry.status_code}). Con credenciales de prueba el email tiene que ser "
                     "exactamente el del COMPRADOR de prueba: entra a mercadopago.com.ar con ese usuario y copia el "
-                    "email de su perfil (suele ser test_user_<numero del Usuario TESTUSER...>@testuser.com). "
+                    "email de su perfil (suele ser test_user_<solo los numeros>@testuser.com, sin la palabra TESTUSER). "
                     "Cargalo en MP_TEST_PAYER_EMAIL (Render)."
                 )
             resp = retry

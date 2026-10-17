@@ -113,3 +113,14 @@ def test_mp_test_payer_email_overrides_payer(reload_modules, monkeypatch):
 def test_mp_without_override_keeps_customer_email(reload_modules):
     reload_modules(MP_TEST_PAYER_EMAIL="")
     assert mp.MP_TEST_PAYER_EMAIL == ""
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("test_user_TESTUSER7378026368202065936@testuser.com", "test_user_7378026368202065936@testuser.com"),
+    (" Test_User_testuser123@TestUser.com ", "test_user_123@testuser.com"),
+    ("test_user_123@testuser.com", "test_user_123@testuser.com"),
+    ("real@gmail.com", "real@gmail.com"),
+])
+def test_test_payer_email_is_normalized(reload_modules, raw, expected):
+    reload_modules(MP_TEST_PAYER_EMAIL=raw)
+    assert mp.MP_TEST_PAYER_EMAIL == expected.lower() or mp.MP_TEST_PAYER_EMAIL == expected

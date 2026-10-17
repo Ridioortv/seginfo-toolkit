@@ -22,10 +22,13 @@ function Fail($m) { Write-Host $m -ForegroundColor Red; exit 1 }
 
 function PayPalError($e) {
     $body = ""
-    try {
-        $s = $e.Exception.Response.GetResponseStream()
-        $body = (New-Object IO.StreamReader($s)).ReadToEnd()
-    } catch { }
+    if ($e.ErrorDetails -and $e.ErrorDetails.Message) { $body = $e.ErrorDetails.Message }
+    else {
+        try {
+            $s = $e.Exception.Response.GetResponseStream()
+            $body = (New-Object IO.StreamReader($s)).ReadToEnd()
+        } catch { }
+    }
     return "$($e.Exception.Message) $body"
 }
 
@@ -73,6 +76,7 @@ try {
     $planOut = Invoke-RestMethod -Method Post -Uri "$base/v1/billing/plans" -Headers $H -ContentType "application/json" `
         -Body ($plan | ConvertTo-Json -Depth 8)
 } catch { Fail "No pude crear el plan: $(PayPalError $_)" }
+Write-Host "Plan creado: PAYPAL_PLAN_ID=$($planOut.id)" -ForegroundColor Green
 
 # ---------- webhook ----------
 $webhookId = $null
@@ -86,11 +90,15 @@ try {
     $webhookId = $w.id
 } catch {
     $err = PayPalError $_
-    if ($err -match "WEBHOOK_URL_ALREADY_EXISTS") {
+    # Si ya habia un webhook con esa URL (o cualquier otro rechazo), se busca y reutiliza el existente.
+    try {
         $all = Invoke-RestMethod -Method Get -Uri "$base/v1/notifications/webhooks" -Headers $H
         $webhookId = ($all.webhooks | Where-Object { $_.url -eq $WebhookUrl } | Select-Object -First 1).id
+    } catch { }
+    if ($webhookId) {
         Write-Host "Ese webhook ya existia en LIVE: uso el existente." -ForegroundColor Yellow
     } else {
+        Write-Host "PAYPAL_PLAN_ID=$($planOut.id)  (el plan SI se creo; solo fallo el webhook)" -ForegroundColor Yellow
         Fail "No pude crear el webhook: $err"
     }
 }

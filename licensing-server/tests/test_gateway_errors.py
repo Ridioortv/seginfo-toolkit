@@ -232,5 +232,5 @@ def test_user_bad_request_when_retry_also_fails_explains_the_email(client, monke
     r = client.post("/license/k-g14/mercadopago/subscription-link", json={})
     assert r.status_code == 502
     d = r.json()["detail"]
-    assert "test_user_1@testuser.com (de MP_TEST_PAYER_EMAIL)" in d and "TESTUSER" in d
+    assert "test_user_1@testuser.com (de MP_TEST_PAYER_EMAIL)" in d and "sin la palabra TESTUSER" in d
     assert len(d) < 480
