@@ -182,35 +182,47 @@ _BLOCKING_SUBSCRIPTION_STATES = {"ACTIVE", "APPROVED"}
 _BLOCKING_MP_STATES = {"authorized", "paused"}
 
 
-async def _refuse_if_subscription_already_active(row) -> None:
+async def _refuse_if_subscription_already_active(row, requested: str = "") -> None:
     """Evita el doble cobro: si esta licencia ya tiene una suscripcion ACTIVA
     en PayPal O en Mercado Pago, un segundo link crearia otra y el cliente
     pagaria dos veces por mes (la primera quedaria cobrando pero ya sin
     vincular a la licencia). Para cambiar de tarjeta/cuenta o de pasarela hay
-    que cancelar la actual antes. Una pasarela sin configurar en este servidor
-    no se puede consultar y se saltea."""
+    que cancelar la actual antes.
+
+    `requested` es la pasarela para la que se pide el link ("paypal" o
+    "mercadopago"). Una pasarela sin configurar, o la OTRA pasarela si falla su
+    consulta (credenciales vencidas, caida), no se puede verificar y se saltea
+    con un aviso en el log: un PayPal roto no debe impedir pagar con Mercado Pago
+    (y al reves). Si falla la consulta de la MISMA pasarela, se corta con 502:
+    el link tampoco se podria crear."""
     paypal_id = row["paypal_subscription_id"]
     if paypal_id and paypal.is_configured():
         try:
             status_now = await paypal.get_subscription_status(paypal_id)
-        except paypal.PayPalError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        if status_now in _BLOCKING_SUBSCRIPTION_STATES:
-            raise HTTPException(
-                status_code=409,
-                detail="Esta licencia ya tiene una suscripcion de PayPal activa. Si queres cambiar la forma de pago, cancela la suscripcion actual primero.",
-            )
+        except (paypal.PayPalError, httpx.HTTPError) as exc:
+            if requested == "paypal":
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+            logger.warning("no se pudo verificar la suscripcion de PayPal (se omite el chequeo): %s", exc)
+        else:
+            if status_now in _BLOCKING_SUBSCRIPTION_STATES:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Esta licencia ya tiene una suscripcion de PayPal activa. Si queres cambiar la forma de pago, cancela la suscripcion actual primero.",
+                )
     mp_id = row["mp_preapproval_id"]
     if mp_id and mercadopago.is_configured():
         try:
             mp_status = await mercadopago.get_subscription_status(mp_id)
-        except mercadopago.MercadoPagoError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        if mp_status in _BLOCKING_MP_STATES:
-            raise HTTPException(
-                status_code=409,
-                detail="Esta licencia ya tiene una suscripcion de Mercado Pago activa. Si queres cambiar la forma de pago, cancela la suscripcion actual primero.",
-            )
+        except (mercadopago.MercadoPagoError, httpx.HTTPError) as exc:
+            if requested == "mercadopago":
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+            logger.warning("no se pudo verificar la suscripcion de Mercado Pago (se omite el chequeo): %s", exc)
+        else:
+            if mp_status in _BLOCKING_MP_STATES:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Esta licencia ya tiene una suscripcion de Mercado Pago activa. Si queres cambiar la forma de pago, cancela la suscripcion actual primero.",
+                )
 
 
 @app.post("/admin/clients/{license_key}/paypal-subscription-link", response_model=PaypalLinkOut)
@@ -224,7 +236,7 @@ async def paypal_subscription_link(license_key: str, payload: PaypalLinkRequest,
         raise HTTPException(status_code=404, detail="license_key desconocida -- creala primero con POST /admin/clients")
     if not paypal.is_configured():
         raise HTTPException(status_code=503, detail="PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET no configurados en este servidor")
-    await _refuse_if_subscription_already_active(row)
+    await _refuse_if_subscription_already_active(row, "paypal")
     try:
         subscription_id, approval_url = await paypal.create_subscription_approval_link(license_key, payload.plan_id)
     except paypal.PayPalError as exc:
@@ -361,7 +373,7 @@ async def paypal_public_subscription_link(license_key: str, payload: PaypalPubli
         raise HTTPException(status_code=404, detail="license_key desconocida")
     if not paypal.is_configured():
         raise HTTPException(status_code=503, detail="PayPal no esta configurado en este servidor")
-    await _refuse_if_subscription_already_active(row)
+    await _refuse_if_subscription_already_active(row, "paypal")
     try:
         subscription_id, approval_url = await paypal.create_subscription_approval_link(
             license_key, None, payload.payer_email
@@ -408,7 +420,7 @@ async def mercadopago_public_subscription_link(license_key: str, payload: Mercad
         raise HTTPException(status_code=404, detail="license_key desconocida")
     if not mercadopago.is_configured():
         raise HTTPException(status_code=503, detail="Mercado Pago no esta configurado en este servidor")
-    await _refuse_if_subscription_already_active(row)
+    await _refuse_if_subscription_already_active(row, "mercadopago")
     try:
         preapproval_id, init_point, amount = await mercadopago.create_subscription_approval_link(
             license_key, payload.payer_email

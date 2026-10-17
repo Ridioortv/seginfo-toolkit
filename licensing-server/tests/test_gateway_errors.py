@@ -81,3 +81,56 @@ def test_mercadopago_network_failure_is_502_not_500(client, monkeypatch):
     _patch_http(monkeypatch, mp, boom)
     r = client.post("/license/k-g4/mercadopago/subscription-link", json={})
     assert r.status_code == 502
+
+
+def test_broken_paypal_does_not_block_a_mercadopago_link(client, monkeypatch):
+    """Antes: con las credenciales de PayPal mal, el chequeo de doble cobro
+    fallaba y el link de Mercado Pago tambien salia con el error de PayPal."""
+    from app import db
+
+    _new(client, "k-g5")
+    db.set_paypal_subscription_id("k-g5", "I-GW5")
+
+    async def broken(_id):
+        raise paypal.PayPalError("PayPal rechazo las credenciales (HTTP 401).")
+
+    async def fake_create(license_key, payer_email=None):
+        return "PRE-OK", "https://mp.test/go", 375000
+
+    monkeypatch.setattr(paypal, "get_subscription_status", broken)
+    monkeypatch.setattr(mp, "create_subscription_approval_link", fake_create)
+    r = client.post("/license/k-g5/mercadopago/subscription-link", json={})
+    assert r.status_code == 200
+    assert r.json()["approval_url"] == "https://mp.test/go"
+
+
+def test_broken_mercadopago_does_not_block_a_paypal_link(client, monkeypatch):
+    from app import db
+
+    _new(client, "k-g6")
+    db.set_mp_preapproval_id("k-g6", "PRE-GW6")
+
+    async def broken(_id):
+        raise mp.MercadoPagoError("token invalido")
+
+    async def fake_create(license_key, plan_id=None, payer_email=None):
+        return "I-OK", "https://paypal.test/ok"
+
+    monkeypatch.setattr(mp, "get_subscription_status", broken)
+    monkeypatch.setattr(paypal, "create_subscription_approval_link", fake_create)
+    r = client.post("/license/k-g6/paypal/subscription-link", json={})
+    assert r.status_code == 200
+
+
+def test_broken_paypal_still_reports_its_own_error_for_a_paypal_link(client, monkeypatch):
+    from app import db
+
+    _new(client, "k-g7")
+    db.set_paypal_subscription_id("k-g7", "I-GW7")
+
+    async def broken(_id):
+        raise paypal.PayPalError("PayPal rechazo las credenciales (HTTP 401).")
+
+    monkeypatch.setattr(paypal, "get_subscription_status", broken)
+    r = client.post("/license/k-g7/paypal/subscription-link", json={})
+    assert r.status_code == 502 and "credenciales" in r.json()["detail"]
