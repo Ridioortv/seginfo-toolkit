@@ -84,3 +84,32 @@ def test_numbers_with_a_decimal_comma_are_understood(reload_modules):
     assert mp._valid_rate(" 1300 ") == 1300.0
     assert mp._valid_rate("1.300") is None  # separador de miles: 1,3 -> fuera de rango, se rechaza
     assert mp._valid_rate("") is None
+
+
+def test_mp_test_payer_email_overrides_payer(reload_modules, monkeypatch):
+    """Con MP_TEST_PAYER_EMAIL el pagador siempre es el comprador de prueba,
+    aunque el cliente haya escrito (o no) otro email en el modal."""
+    import asyncio
+    import httpx
+
+    reload_modules(MP_ACCESS_TOKEN="tok", MP_TEST_PAYER_EMAIL=" test_user_123@testuser.com ", MP_FALLBACK_RATE="1000")
+    assert mp.MP_TEST_PAYER_EMAIL == "test_user_123@testuser.com"
+    sent = []
+
+    def handler(req):
+        if req.url.path.endswith("/preapproval"):
+            import json
+            sent.append(json.loads(req.content))
+            return httpx.Response(201, json={"id": "PRE-OVR", "init_point": "https://mp.test/x"})
+        return httpx.Response(500)
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(mp.httpx, "AsyncClient", lambda *a, **k: real(*a, transport=httpx.MockTransport(handler), **{x: y for x, y in k.items() if x != "transport"}))
+    for given in (None, "real@gmail.com"):
+        asyncio.run(mp.create_subscription_approval_link("KEY-OVR", given))
+    assert [p["payer_email"] for p in sent] == ["test_user_123@testuser.com"] * 2
+
+
+def test_mp_without_override_keeps_customer_email(reload_modules):
+    reload_modules(MP_TEST_PAYER_EMAIL="")
+    assert mp.MP_TEST_PAYER_EMAIL == ""

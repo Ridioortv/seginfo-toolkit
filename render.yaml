@@ -82,6 +82,10 @@ services:
         sync: false
       - key: MP_FALLBACK_RATE
         sync: false
+      # SOLO pruebas: email del comprador de prueba (test_user_<ID>@testuser.com).
+      # En produccion dejar vacia.
+      - key: MP_TEST_PAYER_EMAIL
+        sync: false
       - key: MP_PRICE_USD
         value: "250"
       - key: MP_FX_URL

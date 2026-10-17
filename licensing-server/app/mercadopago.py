@@ -31,11 +31,14 @@ Sin MP_ACCESS_TOKEN, is_configured() es False y los endpoints de Mercado
 Pago devuelven 503 en vez de llamar a una API sin credenciales."""
 import hashlib
 import hmac
+import logging
 import os
 import re
 import time
 
 import httpx
+
+logger = logging.getLogger("mercadopago")
 
 def _env(name: str, default: str = "") -> str:
     """Variable de entorno sin espacios ni saltos de linea a los costados (se
@@ -57,6 +60,11 @@ MP_WEBHOOK_SECRET = _env("MP_WEBHOOK_SECRET")
 MP_NOTIFICATION_URL = _env("MP_NOTIFICATION_URL")
 MP_BACK_URL = _env("MP_BACK_URL") or "https://www.google.com/?sentinelops_subscribed=1"
 MP_PRICE_USD = _env_float("MP_PRICE_USD", 250.0)
+# SOLO PARA PRUEBAS: con credenciales de prueba, Mercado Pago exige que el
+# pagador sea un usuario COMPRADOR de prueba. Si esta variable tiene su email,
+# se usa siempre ese pagador (asi nadie tiene que tipearlo en el modal).
+# En produccion tiene que estar VACIA.
+MP_TEST_PAYER_EMAIL = _env("MP_TEST_PAYER_EMAIL")
 # Mercado Pago documenta que el webhook firmado con la clave secreta del panel
 # puede no aplicar a las notificaciones de Suscripciones (las que salen del
 # notification_url mandado al crearlas). Por eso, por defecto, una notificacion
@@ -166,6 +174,9 @@ async def create_subscription_approval_link(license_key: str, payer_email: str |
             "back_url": MP_BACK_URL,
             "status": "pending",
         }
+        if MP_TEST_PAYER_EMAIL:
+            logger.warning("MP_TEST_PAYER_EMAIL activo: el pagador de Mercado Pago se fuerza a ese email (solo pruebas)")
+            payer_email = MP_TEST_PAYER_EMAIL
         if payer_email:
             payload["payer_email"] = payer_email
         if MP_NOTIFICATION_URL:
@@ -175,9 +186,10 @@ async def create_subscription_approval_link(license_key: str, payer_email: str |
         if resp.status_code == 400 and "real or test" in resp.text:
             raise MercadoPagoError(
                 "Mercado Pago: la cuenta que cobra y el email del pagador tienen que ser los dos reales o los "
-                "dos de prueba. Si estas probando con credenciales de PRUEBA, escribi en 'email de tu cuenta de "
-                "Mercado Pago' el email del COMPRADOR de prueba (panel de Mercado Pago > Cuentas de prueba). "
-                "En produccion, usa credenciales de produccion y tu email real."
+                "dos de prueba. Si estas probando con credenciales de PRUEBA, el pagador tiene que ser un "
+                "COMPRADOR de prueba (email test_user_<User ID del comprador>@testuser.com; el User ID esta en "
+                "Mercado Pago > Tus integraciones > Cuentas de prueba). Se carga una sola vez en Render como "
+                "MP_TEST_PAYER_EMAIL. En produccion, usa credenciales de produccion y deja esa variable vacia."
             )
         if resp.status_code >= 400:
             raise MercadoPagoError(f"Mercado Pago rechazo la creacion de la suscripcion: {resp.status_code} {resp.text[:500]}")
