@@ -177,17 +177,56 @@ def extend_client(license_key: str, payload: ExtendRequest, _: None = Depends(re
     return ClientOut(**dict(db.get_client(license_key)))
 
 
-# Estados en los que una suscripcion ya esta (o esta por estar) cobrando.
-_BLOCKING_SUBSCRIPTION_STATES = {"ACTIVE", "APPROVED"}
-_BLOCKING_MP_STATES = {"authorized", "paused"}
+# Estados (de cada pasarela) en los que una suscripcion ya esta, o esta por estar, cobrando.
+_LIVE_STATES = {"paypal": {"ACTIVE", "APPROVED"}, "mercadopago": {"authorized", "paused"}}
+# Estados de un link que se creo pero el cliente todavia no aprobo.
+_PENDING_STATES = {"paypal": {"APPROVAL_PENDING"}, "mercadopago": {"pending"}}
+_GATEWAY_NAMES = {"paypal": "PayPal", "mercadopago": "Mercado Pago"}
+
+
+def _gateway_errors() -> tuple:
+    """Errores al hablar con una pasarela. Se arma al usarlo (no al importar)
+    para que siempre refiera a las clases vigentes de cada modulo."""
+    return (paypal.PayPalError, mercadopago.MercadoPagoError, httpx.HTTPError)
+
+
+def _gateway_configured(gateway: str) -> bool:
+    return paypal.is_configured() if gateway == "paypal" else mercadopago.is_configured()
+
+
+async def _gateway_status(gateway: str, external_id: str) -> str | None:
+    if gateway == "paypal":
+        return await paypal.get_subscription_status(external_id)
+    return await mercadopago.get_subscription_status(external_id)
+
+
+async def _gateway_cancel(gateway: str, external_id: str) -> None:
+    if gateway == "paypal":
+        await paypal.cancel_subscription(external_id)
+    else:
+        await mercadopago.cancel_subscription(external_id)
+
+
+def _client_for_subscription(gateway: str, external_id: str):
+    """Cliente al que pertenece una suscripcion. Se busca primero en la tabla de
+    TODAS las suscripciones (un cobro puede llegar de un link que no es el ultimo
+    que se genero) y, por compatibilidad, en la columna de `clients`."""
+    if gateway == "paypal":
+        row = db.get_client_by_paypal_subscription_id(external_id)
+    else:
+        row = db.get_client_by_mp_preapproval_id(external_id)
+    if row is None:
+        sub = db.get_subscription(gateway, external_id)
+        if sub is not None:
+            row = db.get_client(sub["license_key"])
+    return row
 
 
 async def _refuse_if_subscription_already_active(row, requested: str = "") -> None:
     """Evita el doble cobro: si esta licencia ya tiene una suscripcion ACTIVA
-    en PayPal O en Mercado Pago, un segundo link crearia otra y el cliente
-    pagaria dos veces por mes (la primera quedaria cobrando pero ya sin
-    vincular a la licencia). Para cambiar de tarjeta/cuenta o de pasarela hay
-    que cancelar la actual antes.
+    en PayPal O en Mercado Pago (cualquiera de las que se hayan creado, no solo
+    la ultima), un link nuevo crearia otra y el cliente pagaria dos veces por mes.
+    Para cambiar de tarjeta/cuenta o de pasarela hay que cancelar la actual antes.
 
     `requested` es la pasarela para la que se pide el link ("paypal" o
     "mercadopago"). Una pasarela sin configurar, o la OTRA pasarela si falla su
@@ -195,34 +234,100 @@ async def _refuse_if_subscription_already_active(row, requested: str = "") -> No
     con un aviso en el log: un PayPal roto no debe impedir pagar con Mercado Pago
     (y al reves). Si falla la consulta de la MISMA pasarela, se corta con 502:
     el link tampoco se podria crear."""
-    paypal_id = row["paypal_subscription_id"]
-    if paypal_id and paypal.is_configured():
+    for sub in db.list_subscriptions(row["license_key"], statuses=("pending", "active")):
+        gateway, external_id = sub["gateway"], sub["external_id"]
+        if not _gateway_configured(gateway):
+            continue
         try:
-            status_now = await paypal.get_subscription_status(paypal_id)
-        except (paypal.PayPalError, httpx.HTTPError) as exc:
-            if requested == "paypal":
+            state = await _gateway_status(gateway, external_id)
+        except _gateway_errors() as exc:
+            if requested == gateway:
                 raise HTTPException(status_code=502, detail=str(exc)) from exc
-            logger.warning("no se pudo verificar la suscripcion de PayPal (se omite el chequeo): %s", exc)
-        else:
-            if status_now in _BLOCKING_SUBSCRIPTION_STATES:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Esta licencia ya tiene una suscripcion de PayPal activa. Si queres cambiar la forma de pago, cancela la suscripcion actual primero.",
-                )
-    mp_id = row["mp_preapproval_id"]
-    if mp_id and mercadopago.is_configured():
+            logger.warning("no se pudo verificar la suscripcion de %s (se omite el chequeo): %s", _GATEWAY_NAMES[gateway], exc)
+            continue
+        if state in _LIVE_STATES[gateway]:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Esta licencia ya tiene una suscripcion de {_GATEWAY_NAMES[gateway]} activa. Si queres cambiar la forma de pago, cancela la suscripcion actual primero.",
+            )
+        if state not in _PENDING_STATES[gateway]:
+            # Cancelada / vencida / desconocida para la pasarela: ya no cobra.
+            db.set_subscription_status(gateway, external_id, "cancelled")
+
+
+async def _cancel_previous_pending(license_key: str, keep_gateway: str, keep_id: str) -> None:
+    """Al generar un link nuevo, cancela los links ANTERIORES de esa licencia que
+    el cliente todavia no aprobo: si no, siguen siendo pagables y se puede pagar
+    dos veces (dos pestanas, un link viejo en el mail). Es "mejor esfuerzo": si una
+    pasarela falla no se frena el link nuevo, solo queda en el log y en el
+    historial; y si algun link viejo igual se paga, la regla de "una sola
+    suscripcion activa" (ver _claim_active_slot) cancela la repetida."""
+    for sub in db.list_subscriptions(license_key, statuses=("pending",)):
+        gateway, external_id = sub["gateway"], sub["external_id"]
+        if (gateway, external_id) == (keep_gateway, keep_id) or not _gateway_configured(gateway):
+            continue
         try:
-            mp_status = await mercadopago.get_subscription_status(mp_id)
-        except (mercadopago.MercadoPagoError, httpx.HTTPError) as exc:
-            if requested == "mercadopago":
-                raise HTTPException(status_code=502, detail=str(exc)) from exc
-            logger.warning("no se pudo verificar la suscripcion de Mercado Pago (se omite el chequeo): %s", exc)
-        else:
-            if mp_status in _BLOCKING_MP_STATES:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Esta licencia ya tiene una suscripcion de Mercado Pago activa. Si queres cambiar la forma de pago, cancela la suscripcion actual primero.",
+            state = await _gateway_status(gateway, external_id)
+            if state in _PENDING_STATES[gateway]:
+                await _gateway_cancel(gateway, external_id)
+                db.append_note(
+                    license_key,
+                    f"{_GATEWAY_NAMES[gateway]}: link de pago anterior ({external_id}) cancelado porque se genero uno nuevo",
                 )
+                db.set_subscription_status(gateway, external_id, "cancelled")
+            elif state not in _LIVE_STATES[gateway]:
+                db.set_subscription_status(gateway, external_id, "cancelled")
+        except _gateway_errors() as exc:
+            logger.warning("no se pudo cancelar el link anterior %s de %s: %s", external_id, _GATEWAY_NAMES[gateway], exc)
+            db.append_note(
+                license_key,
+                f"{_GATEWAY_NAMES[gateway]}: no se pudo cancelar el link de pago anterior ({external_id}); si se paga, la repetida se cancela sola",
+            )
+
+
+async def _claim_active_slot(license_key: str, gateway: str, external_id: str) -> bool:
+    """Una licencia tiene UNA suscripcion activa. Devuelve True si esta es la
+    activa (y entonces sus cobros extienden la licencia). Devuelve False si ya
+    habia OTRA activa: esta es una repetida (dos links pagados), asi que se la
+    cancela en la pasarela, se la marca `duplicate` y se deja una nota para
+    devolver ese pago -- sus cobros NO extienden nada.
+
+    Antes de declarar repetida se verifica en la pasarela que la otra siga viva
+    (el cliente pudo cancelarla por su cuenta); si esa consulta falla, el error
+    sube y el aviso (webhook) se reintenta mas tarde en vez de adivinar."""
+    db.add_subscription(license_key, gateway, external_id)
+    for _ in range(3):
+        if db.claim_active_subscription(license_key, gateway, external_id):
+            return True
+        mine = db.get_subscription(gateway, external_id)
+        if mine is not None and mine["status"] == "duplicate":
+            return False
+        stale = False
+        for other in db.list_subscriptions(license_key, statuses=("active",)):
+            if (other["gateway"], other["external_id"]) == (gateway, external_id):
+                continue
+            if not _gateway_configured(other["gateway"]):
+                continue
+            state = await _gateway_status(other["gateway"], other["external_id"])
+            if state not in _LIVE_STATES[other["gateway"]]:
+                db.set_subscription_status(other["gateway"], other["external_id"], "cancelled")
+                stale = True
+        if not stale:
+            break
+    db.set_subscription_status(gateway, external_id, "duplicate")
+    name = _GATEWAY_NAMES[gateway]
+    cancelled_note = "se cancelo automaticamente"
+    try:
+        await _gateway_cancel(gateway, external_id)
+    except _gateway_errors() as exc:
+        logger.warning("no se pudo cancelar la suscripcion repetida %s de %s: %s", external_id, name, exc)
+        cancelled_note = "NO se pudo cancelar sola: cancelala a mano en la pasarela"
+    db.append_note(
+        license_key,
+        f"{name}: la suscripcion {external_id} se aprobo estando ya activa otra -- {cancelled_note}; "
+        "sus cobros NO extienden la licencia. Si ya cobro algo, devolver ese pago al cliente",
+    )
+    return False
 
 
 @app.post("/admin/clients/{license_key}/paypal-subscription-link", response_model=PaypalLinkOut)
@@ -242,6 +347,7 @@ async def paypal_subscription_link(license_key: str, payload: PaypalLinkRequest,
     except paypal.PayPalError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     db.set_paypal_subscription_id(license_key, subscription_id)
+    await _cancel_previous_pending(license_key, "paypal", subscription_id)
     return PaypalLinkOut(subscription_id=subscription_id, approval_url=approval_url)
 
 
@@ -287,7 +393,11 @@ async def paypal_webhook(request: Request):
     # PayPal seria descartado como "repetido" y el pago nunca se acreditaria.
     applied = False
     try:
-        applied = _apply_paypal_event(event, event_type)
+        applied = await _apply_paypal_event(event, event_type)
+    except (paypal.PayPalError, mercadopago.MercadoPagoError) as exc:
+        # 502 (no 2xx) para que PayPal reintente mas tarde.
+        logger.warning("no se pudo consultar a la pasarela de pago: %s", exc)
+        raise HTTPException(status_code=502, detail="no se pudo consultar a la pasarela de pago -- reintentar") from exc
     finally:
         if claim_key and not applied:
             try:
@@ -301,7 +411,7 @@ async def paypal_webhook(request: Request):
         raise HTTPException(status_code=409, detail="evento de pago sin cliente resuelto -- reintentar")
 
 
-def _apply_paypal_event(event: dict, event_type: str) -> bool:
+async def _apply_paypal_event(event: dict, event_type: str) -> bool:
     """Aplica un evento de PayPal ya verificado. Devuelve True si el evento
     quedo aplicado (o no requiere accion); False si no se pudo resolver el
     cliente o la licencia."""
@@ -310,25 +420,44 @@ def _apply_paypal_event(event: dict, event_type: str) -> bool:
         logger.warning("webhook de PayPal (%s) sin custom_id ni subscription id -- no se puede resolver el cliente", event_type)
         return False
 
-    row = db.get_client(value) if method == "license_key" else db.get_client_by_paypal_subscription_id(value)
+    row = db.get_client(value) if method == "license_key" else _client_for_subscription("paypal", value)
     if row is None:
         logger.warning("webhook de PayPal (%s) no corresponde a ningun cliente conocido (%s=%s)", event_type, method, value)
         return False
 
     license_key = row["license_key"]
     resource = event.get("resource", {}) or {}
-    if method == "license_key" and resource.get("id"):
+    # Id de la suscripcion de este evento: BILLING.SUBSCRIPTION.* lo trae en
+    # resource.id; los cobros (PAYMENT.SALE.*) en billing_agreement_id.
+    is_subscription_event = event_type.startswith("BILLING.SUBSCRIPTION")
+    if is_subscription_event:
+        subscription_id = str(resource.get("id") or "")
+    else:
+        subscription_id = str(resource.get("billing_agreement_id") or row["paypal_subscription_id"] or "")
+    if method == "license_key" and is_subscription_event and subscription_id:
         # Primer pago (BILLING.SUBSCRIPTION.ACTIVATED): todavia no
         # teniamos el subscription_id guardado si el link se genero
         # fuera de /admin/clients/.../paypal-subscription-link -- se
         # backfillea aca para que los PROXIMOS cobros recurrentes
         # (PAYMENT.SALE.COMPLETED, que solo traen billing_agreement_id)
         # puedan resolver el cliente.
-        db.set_paypal_subscription_id(license_key, resource["id"])
+        db.set_paypal_subscription_id(license_key, subscription_id)
+
+    # Una licencia tiene UNA suscripcion activa: si esta es una repetida (se
+    # pagaron dos links), ya quedo cancelada y anotada, y no extiende nada.
+    holds_slot = await _claim_active_slot(license_key, "paypal", subscription_id) if subscription_id else True
 
     if event_type in paypal.LINK_EVENTS:
         # Solo vincula (arriba). El cobro llega en PAYMENT.SALE.COMPLETED.
-        db.append_note(license_key, "PayPal: suscripcion aprobada por el cliente")
+        if holds_slot:
+            db.append_note(license_key, "PayPal: suscripcion aprobada por el cliente")
+        return True
+
+    if not holds_slot:
+        db.append_note(
+            license_key,
+            f"PayPal {event_type}: cobro de la suscripcion repetida {subscription_id} -- NO se extendio la licencia; devolver ese pago al cliente",
+        )
         return True
 
     try:
@@ -381,8 +510,31 @@ async def paypal_public_subscription_link(license_key: str, payload: PaypalPubli
     except paypal.PayPalError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     db.set_paypal_subscription_id(license_key, subscription_id)
+    await _cancel_previous_pending(license_key, "paypal", subscription_id)
     logger.info("link de pago de PayPal generado (autoservicio)", extra={"license_key": license_key})
     return PaypalLinkOut(subscription_id=subscription_id, approval_url=approval_url)
+
+
+_CANCEL_NOTES = {
+    "paypal": "PayPal: suscripcion cancelada por el cliente -- no se renueva mas, el periodo pagado sigue corriendo hasta que venza",
+    "mercadopago": "Mercado Pago: suscripcion cancelada por el cliente -- no se renueva mas, el periodo pagado sigue corriendo hasta que venza",
+}
+
+
+async def _cancel_license_subscriptions(license_key: str, gateway: str | None = None) -> None:
+    """Cancela TODAS las suscripciones vivas (pendientes o activas) de la
+    licencia, no solo la ultima: si quedara alguna, seguiria cobrando todos los
+    meses sin que nadie la viera. `gateway` limita a una sola pasarela."""
+    for sub in db.list_subscriptions(license_key, statuses=("pending", "active"), gateway=gateway):
+        sub_gateway, external_id = sub["gateway"], sub["external_id"]
+        if not _gateway_configured(sub_gateway):
+            continue
+        try:
+            await _gateway_cancel(sub_gateway, external_id)
+        except (paypal.PayPalError, mercadopago.MercadoPagoError) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        db.set_subscription_status(sub_gateway, external_id, "cancelled")
+        db.append_note(license_key, _CANCEL_NOTES[sub_gateway])
 
 
 @app.post("/license/{license_key}/paypal/cancel-subscription", response_model=PaypalCancelOut)
@@ -392,19 +544,11 @@ async def paypal_cancel_subscription(license_key: str):
     row = db.get_client(license_key)
     if row is None:
         raise HTTPException(status_code=404, detail="license_key desconocida")
-    subscription_id = row["paypal_subscription_id"]
-    if not subscription_id:
+    if not db.list_subscriptions(license_key, gateway="paypal"):
         raise HTTPException(status_code=404, detail="esta licencia no tiene ninguna suscripcion de PayPal vinculada")
     if not paypal.is_configured():
         raise HTTPException(status_code=503, detail="PayPal no esta configurado en este servidor")
-    try:
-        await paypal.cancel_subscription(subscription_id)
-    except paypal.PayPalError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    db.append_note(
-        license_key,
-        "PayPal: suscripcion cancelada por el cliente -- no se renueva mas, el periodo pagado sigue corriendo hasta que venza",
-    )
+    await _cancel_license_subscriptions(license_key, "paypal")
     row = db.get_client(license_key)
     return PaypalCancelOut(cancelled=True, valid_until=row["subscription_expires_at"])
 
@@ -428,6 +572,7 @@ async def mercadopago_public_subscription_link(license_key: str, payload: Mercad
     except mercadopago.MercadoPagoError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     db.set_mp_preapproval_id(license_key, preapproval_id)
+    await _cancel_previous_pending(license_key, "mercadopago", preapproval_id)
     logger.info("link de pago de Mercado Pago generado (autoservicio)", extra={"license_key": license_key})
     return MercadoPagoLinkOut(subscription_id=preapproval_id, approval_url=init_point, amount_ars=amount)
 
@@ -440,26 +585,14 @@ async def cancel_any_subscription(license_key: str):
     row = db.get_client(license_key)
     if row is None:
         raise HTTPException(status_code=404, detail="license_key desconocida")
-    paypal_id = row["paypal_subscription_id"]
-    mp_id = row["mp_preapproval_id"]
-    if not paypal_id and not mp_id:
+    if not db.list_subscriptions(license_key):
         raise HTTPException(status_code=404, detail="esta licencia no tiene ninguna suscripcion vinculada")
-    if paypal_id and not paypal.is_configured() and not (mp_id and mercadopago.is_configured()):
-        raise HTTPException(status_code=503, detail="PayPal no esta configurado en este servidor")
-    if mp_id and not mercadopago.is_configured() and not (paypal_id and paypal.is_configured()):
-        raise HTTPException(status_code=503, detail="Mercado Pago no esta configurado en este servidor")
-    if paypal_id and paypal.is_configured():
-        try:
-            await paypal.cancel_subscription(paypal_id)
-        except paypal.PayPalError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        db.append_note(license_key, "PayPal: suscripcion cancelada por el cliente -- no se renueva mas, el periodo pagado sigue corriendo hasta que venza")
-    if mp_id and mercadopago.is_configured():
-        try:
-            await mercadopago.cancel_subscription(mp_id)
-        except mercadopago.MercadoPagoError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        db.append_note(license_key, "Mercado Pago: suscripcion cancelada por el cliente -- no se renueva mas, el periodo pagado sigue corriendo hasta que venza")
+    # Se cancelan TODAS las vivas, de cualquier pasarela. Solo si hay alguna viva
+    # y NINGUNA se puede cancelar (pasarela sin configurar) se corta con 503.
+    live = db.list_subscriptions(license_key, statuses=("pending", "active"))
+    if live and not any(_gateway_configured(sub["gateway"]) for sub in live):
+        raise HTTPException(status_code=503, detail=f"{_GATEWAY_NAMES[live[0]['gateway']]} no esta configurado en este servidor")
+    await _cancel_license_subscriptions(license_key)
     row = db.get_client(license_key)
     return PaypalCancelOut(cancelled=True, valid_until=row["subscription_expires_at"])
 
@@ -502,7 +635,7 @@ async def mercadopago_webhook(request: Request):
                 raise HTTPException(status_code=409, detail="cobro sin cliente resuelto -- reintentar")
         elif event_type in ("subscription_preapproval", "preapproval"):
             await _apply_mp_preapproval(data_id)
-    except mercadopago.MercadoPagoError as exc:
+    except (mercadopago.MercadoPagoError, paypal.PayPalError) as exc:
         # 502 para que Mercado Pago reintente mas tarde.
         logger.warning("no se pudo consultar a Mercado Pago: %s", exc)
         raise HTTPException(status_code=502, detail="no se pudo consultar a Mercado Pago -- reintentar") from exc
@@ -521,7 +654,7 @@ async def _apply_mp_authorized_payment(authorized_payment_id: str) -> bool:
         return True  # scheduled/recycling/cancelled: no se acredito (todavia)
 
     preapproval_id = str(ap.get("preapproval_id") or "")
-    row = db.get_client_by_mp_preapproval_id(preapproval_id) if preapproval_id else None
+    row = _client_for_subscription("mercadopago", preapproval_id) if preapproval_id else None
     if row is None and preapproval_id:
         # Suscripcion creada fuera de nuestro endpoint (o id aun sin guardar):
         # external_reference es literalmente la license_key.
@@ -542,6 +675,15 @@ async def _apply_mp_authorized_payment(authorized_payment_id: str) -> bool:
         return True
     applied = False
     try:
+        # Una licencia tiene UNA suscripcion activa: el cobro de una repetida
+        # (dos links pagados) no extiende nada -- ya quedo cancelada y anotada.
+        if preapproval_id and not await _claim_active_slot(license_key, "mercadopago", preapproval_id):
+            applied = True
+            db.append_note(
+                license_key,
+                f"Mercado Pago cobro {authorized_payment_id} de la suscripcion repetida {preapproval_id} -- NO se extendio la licencia; devolver ese pago al cliente",
+            )
+            return True
         _extend_expiry(license_key, DEFAULT_PERIOD_DAYS)
         applied = True
     except LookupError:
@@ -573,10 +715,17 @@ async def _apply_mp_preapproval(preapproval_id: str) -> None:
         logger.warning("suscripcion de Mercado Pago %s sin cliente conocido", preapproval_id)
         return
     status_now = str(pre.get("status", "")).lower()
-    if status_now == "authorized" and not row["mp_preapproval_id"]:
-        db.set_mp_preapproval_id(license_key, preapproval_id)
+    holds_slot = True
+    if status_now == "authorized":
+        # Si ya habia otra suscripcion activa para esta licencia, esta es una
+        # repetida: se cancela y se anota (ver _claim_active_slot).
+        holds_slot = await _claim_active_slot(license_key, "mercadopago", preapproval_id)
+        if holds_slot and row["mp_preapproval_id"] != preapproval_id:
+            db.set_mp_preapproval_id(license_key, preapproval_id)
+    elif status_now == "cancelled":
+        db.set_subscription_status("mercadopago", preapproval_id, "cancelled")
     claim_key = f"mercadopago:preapproval:{preapproval_id}:{status_now}"
-    if status_now in ("authorized", "cancelled", "paused") and db.claim_event(claim_key):
+    if status_now in ("authorized", "cancelled", "paused") and db.claim_event(claim_key) and holds_slot:
         labels = {
             "authorized": "suscripcion aprobada por el cliente",
             "cancelled": "suscripcion cancelada",

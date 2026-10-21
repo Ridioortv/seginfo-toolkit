@@ -123,6 +123,40 @@ def init_db() -> None:
             "CREATE TABLE IF NOT EXISTS processed_events ("
             "event_id TEXT PRIMARY KEY, processed_at TEXT NOT NULL)"
         )
+        # TODAS las suscripciones que se crearon para una licencia (no solo la
+        # ultima, que es lo unico que guardan las columnas de `clients`). Sin
+        # esto, un link viejo seguia siendo pagable y una segunda suscripcion
+        # quedaba cobrando todos los meses sin que nadie la viera ni pudiera
+        # cancelarla. status: pending (link creado, sin pagar), active (la que
+        # cobra y extiende la licencia), cancelled, duplicate (se aprobo estando
+        # ya activa otra: se cancela sola y sus cobros no extienden nada).
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS subscriptions ("
+            "gateway TEXT NOT NULL, external_id TEXT NOT NULL, license_key TEXT NOT NULL, "
+            "status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, "
+            "PRIMARY KEY (gateway, external_id))"
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_license ON subscriptions (license_key)")
+        # Bases anteriores a esta tabla: se registran las suscripciones que ya
+        # figuraban en `clients` (como pending; el estado real se consulta a la
+        # pasarela cuando hace falta).
+        now = _now_iso()
+        cur.execute(
+            _adapt(
+                "INSERT INTO subscriptions (gateway, external_id, license_key, status, created_at, updated_at) "
+                "SELECT 'paypal', paypal_subscription_id, license_key, 'pending', ?, ? FROM clients "
+                "WHERE paypal_subscription_id IS NOT NULL ON CONFLICT (gateway, external_id) DO NOTHING"
+            ),
+            (now, now),
+        )
+        cur.execute(
+            _adapt(
+                "INSERT INTO subscriptions (gateway, external_id, license_key, status, created_at, updated_at) "
+                "SELECT 'mercadopago', mp_preapproval_id, license_key, 'pending', ?, ? FROM clients "
+                "WHERE mp_preapproval_id IS NOT NULL ON CONFLICT (gateway, external_id) DO NOTHING"
+            ),
+            (now, now),
+        )
 
 
 def claim_event(event_id: str) -> bool:
@@ -195,20 +229,100 @@ def set_expiry(license_key: str, expires_at_iso: str) -> bool:
         return cur.rowcount > 0
 
 
+def _insert_subscription(cur, license_key: str, gateway: str, external_id: str, status: str) -> None:
+    now = _now_iso()
+    cur.execute(
+        _adapt(
+            "INSERT INTO subscriptions (gateway, external_id, license_key, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (gateway, external_id) DO NOTHING"
+        ),
+        (gateway, external_id, license_key, status, now, now),
+    )
+
+
 def set_paypal_subscription_id(license_key: str, subscription_id: str) -> bool:
+    """Guarda la ULTIMA suscripcion de PayPal en `clients` (compatibilidad) y la
+    registra en `subscriptions` junto con todas las anteriores."""
     with get_cursor() as cur:
         cur.execute(
             _adapt("UPDATE clients SET paypal_subscription_id = ? WHERE license_key = ?"),
             (subscription_id, license_key),
         )
-        return cur.rowcount > 0
+        found = cur.rowcount > 0
+        if found:
+            _insert_subscription(cur, license_key, "paypal", subscription_id, "pending")
+        return found
 
 
 def set_mp_preapproval_id(license_key: str, preapproval_id: str) -> bool:
+    """Idem set_paypal_subscription_id, para Mercado Pago."""
     with get_cursor() as cur:
         cur.execute(
             _adapt("UPDATE clients SET mp_preapproval_id = ? WHERE license_key = ?"),
             (preapproval_id, license_key),
+        )
+        found = cur.rowcount > 0
+        if found:
+            _insert_subscription(cur, license_key, "mercadopago", preapproval_id, "pending")
+        return found
+
+
+def add_subscription(license_key: str, gateway: str, external_id: str, status: str = "pending") -> None:
+    with get_cursor() as cur:
+        _insert_subscription(cur, license_key, gateway, external_id, status)
+
+
+def get_subscription(gateway: str, external_id: str):
+    with get_cursor() as cur:
+        cur.execute(
+            _adapt("SELECT * FROM subscriptions WHERE gateway = ? AND external_id = ?"), (gateway, external_id)
+        )
+        return cur.fetchone()
+
+
+def list_subscriptions(license_key: str, statuses: tuple[str, ...] | None = None, gateway: str | None = None) -> list:
+    """Suscripciones de una licencia, la mas vieja primero. `statuses` / `gateway`
+    filtran (None = todas)."""
+    sql = "SELECT * FROM subscriptions WHERE license_key = ?"
+    params: list = [license_key]
+    if statuses:
+        sql += " AND status IN (" + ", ".join("?" for _ in statuses) + ")"
+        params.extend(statuses)
+    if gateway:
+        sql += " AND gateway = ?"
+        params.append(gateway)
+    sql += " ORDER BY created_at, external_id"
+    with get_cursor() as cur:
+        cur.execute(_adapt(sql), tuple(params))
+        return cur.fetchall()
+
+
+def set_subscription_status(gateway: str, external_id: str, status: str) -> bool:
+    """Cambia el estado local. Una suscripcion marcada `duplicate` no vuelve a
+    otro estado (el aviso de cancelacion que manda la pasarela despues de que la
+    cancelamos nosotros no debe taparlo)."""
+    sql = "UPDATE subscriptions SET status = ?, updated_at = ? WHERE gateway = ? AND external_id = ?"
+    if status != "duplicate":
+        sql += " AND status <> 'duplicate'"
+    with get_cursor() as cur:
+        cur.execute(_adapt(sql), (status, _now_iso(), gateway, external_id))
+        return cur.rowcount > 0
+
+
+def claim_active_subscription(license_key: str, gateway: str, external_id: str) -> bool:
+    """Reclama, de forma atomica, el lugar de "la suscripcion activa" de la
+    licencia: True si esta suscripcion queda activa (o ya lo estaba); False si
+    otra distinta ya esta activa o si esta fue marcada duplicate. Es lo que
+    evita que dos suscripciones aprobadas a la vez extiendan la licencia las dos."""
+    with get_cursor() as cur:
+        cur.execute(
+            _adapt(
+                "UPDATE subscriptions SET status = 'active', updated_at = ? "
+                "WHERE gateway = ? AND external_id = ? AND license_key = ? AND status <> 'duplicate' "
+                "AND NOT EXISTS (SELECT 1 FROM subscriptions o WHERE o.license_key = ? AND o.status = 'active' "
+                "AND NOT (o.gateway = ? AND o.external_id = ?))"
+            ),
+            (_now_iso(), gateway, external_id, license_key, license_key, gateway, external_id),
         )
         return cur.rowcount > 0
 

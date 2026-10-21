@@ -44,6 +44,15 @@ class SubscriptionPayLinkRequest(BaseModel):
     payer_email: EmailStr | None = Field(default=None, max_length=254)
 
 
+class BlockedPaymentLinkRequest(BaseModel):
+    """Pedido de link de pago desde el login bloqueado (402). pay_token es el que
+    el propio 402 entrego: identifica quien acaba de autenticarse y de que
+    organizacion es -- la license_key nunca viaja desde el navegador."""
+
+    pay_token: str = Field(min_length=10, max_length=4000)
+    provider: Literal["paypal", "mercadopago"]
+
+
 class PaymentProvidersOut(BaseModel):
     """Pasarelas de pago que ofrece esta instalacion (ver PAYMENT_PROVIDERS)."""
 

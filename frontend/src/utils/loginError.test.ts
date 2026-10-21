@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseLoginError } from "./loginError";
+import { parseLoginError, parsePaymentOffer } from "./loginError";
 
 function axiosError(status: number, detail: unknown) {
   return { response: { status, data: { detail } } };
@@ -104,5 +104,33 @@ describe("parseLoginError", () => {
     const r = parseLoginError({ response: { status: 429, data: { detail: "Demasiados intentos. Espera unos minutos antes de volver a intentar." } } }, "Credenciales invalidas");
     expect(r.message).toContain("Demasiados intentos");
     expect(r.paymentUrl).toBeNull();
+  });
+});
+
+describe("parsePaymentOffer", () => {
+  it("reads the gateways and the pay_token from a 402", () => {
+    const err = axiosError(402, { message: "Vencida", payment_providers: ["mercadopago", "paypal"], pay_token: "tok.en.123" });
+    expect(parsePaymentOffer(err)).toEqual({ providers: ["paypal", "mercadopago"], payToken: "tok.en.123" });
+  });
+
+  it("offers nothing without a pay_token (nothing could be generated)", () => {
+    const err = axiosError(402, { message: "Vencida", payment_providers: ["paypal"], pay_token: null });
+    expect(parsePaymentOffer(err)).toEqual({ providers: [], payToken: null });
+  });
+
+  it("offers nothing when the server lists no gateway", () => {
+    const err = axiosError(402, { message: "Vencida", payment_providers: [], pay_token: "tok.en.123" });
+    expect(parsePaymentOffer(err)).toEqual({ providers: [], payToken: null });
+  });
+
+  it("ignores unknown gateways", () => {
+    const err = axiosError(402, { payment_providers: ["bitcoin", "paypal"], pay_token: "tok.en.123" });
+    expect(parsePaymentOffer(err).providers).toEqual(["paypal"]);
+  });
+
+  it("offers nothing for errors that are not a 402 with an object detail", () => {
+    expect(parsePaymentOffer(axiosError(401, "x"))).toEqual({ providers: [], payToken: null });
+    expect(parsePaymentOffer(axiosError(402, "Organizacion suspendida"))).toEqual({ providers: [], payToken: null });
+    expect(parsePaymentOffer({ message: "Network Error" })).toEqual({ providers: [], payToken: null });
   });
 });

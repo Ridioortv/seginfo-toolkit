@@ -120,6 +120,18 @@ export async function login(email: string, password: string, totpCode?: string):
   return data;
 }
 
+// Link de pago desde el login bloqueado por falta de pago (402): se genera
+// recien al elegir la pasarela, con el pay_token que entrego el 402 (ver
+// POST /auth/payment-link en auth-service). La license_key la resuelve el
+// servidor, nunca el navegador.
+export async function requestBlockedPaymentLink(payToken: string, provider: "paypal" | "mercadopago"): Promise<string> {
+  const { data } = await authApi.post<{ payment_url: string }>("/auth/payment-link", {
+    pay_token: payToken,
+    provider,
+  });
+  return data.payment_url;
+}
+
 // Auto-registro publico (ver POST /auth/register en auth-service): siempre
 // crea al usuario como "analyst" en la organizacion "default" -- el primer
 // usuario que exista en toda la base queda como admin automaticamente. No

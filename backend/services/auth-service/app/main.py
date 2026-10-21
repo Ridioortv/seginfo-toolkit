@@ -48,6 +48,7 @@ from app.schemas import (
     PaymentProvidersOut,
     SubscriptionPayLinkRequest,
     SubscriptionHistoryOut,
+    BlockedPaymentLinkRequest,
 )
 from app.dependencies import (
     get_current_claims, require_role, require_platform_admin, require_org_admin_or_platform_admin,
@@ -64,6 +65,8 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 login_attempts_total = Counter("auth_login_attempts_total", "Login attempts", ["outcome"])
 LICENSE_CHECK_INTERVAL_HOURS = float(os.getenv("LICENSE_CHECK_INTERVAL_HOURS", "6"))
+# Vigencia del pay_token que entrega el 402 para pedir el link de pago.
+PAY_TOKEN_MINUTES = 15
 
 
 def _client_ip(request: Request) -> str:
@@ -90,11 +93,10 @@ async def _reject_if_org_inactive(db: AsyncSession, org, actor_email: str) -> No
     A quien llega hasta aca ya se le verificaron sus credenciales (esta
     funcion se llama DESPUES de authenticate()/Google/SSO, nunca
     antes) -- por eso alcanza esa confianza para, ademas de bloquearlo,
-    ofrecerle de una un link de pago (PayPal y/o Mercado Pago) generado al vuelo
-    contra el servidor central de licencias, con actor_email como
-    payer_email. El campo "detail" del 402 pasa a ser un objeto (no un
-    string plano) para que el frontend pueda mostrar un boton "Pagar
-    membresia" en vez de solo un cartel de error -- ver Login.tsx."""
+    ofrecerle pagar: el "detail" del 402 es un objeto (no un string plano) con
+    las pasarelas disponibles y un pay_token, para que el frontend muestre los
+    botones "Pagar con ..." -- ver Login.tsx. El link se genera recien al hacer
+    clic (POST /auth/payment-link), no aca."""
     if services.is_org_active(org):
         return
     # Antes de bloquear, volver a consultar al servidor central: si el cliente
@@ -114,23 +116,30 @@ async def _reject_if_org_inactive(db: AsyncSession, org, actor_email: str) -> No
     await services.record_audit_event(db, actor_email, "auth.login.blocked_subscription", org.id)
     await db.commit()
 
-    # Un link por pasarela disponible (PayPal y/o Mercado Pago): el cliente
-    # elige. payment_url (el de PayPal si hay, si no el primero) se mantiene
-    # por compatibilidad con frontends anteriores.
-    payment_urls: dict[str, str] = {}
-    if license_check.is_configured():
-        payment_urls = await license_check.get_payment_links(actor_email)
-    payment_url = payment_urls.get("paypal") or next(iter(payment_urls.values()), None)
+    # NO se crea ninguna suscripcion aca. Antes cada login bloqueado generaba un
+    # link nuevo en PayPal y otro en Mercado Pago, todos pagables: pagar dos (dos
+    # pestanas, un link viejo) dejaba varias suscripciones cobrando todos los
+    # meses. Ahora el 402 solo informa que pasarelas hay; el link se genera
+    # cuando la persona hace clic en "Pagar con ..." (POST /auth/payment-link),
+    # con el pay_token de abajo, que prueba que acaba de autenticarse.
+    providers = license_check.enabled_providers() if license_check.is_configured() else []
+    pay_token = None
+    if providers:
+        pay_token = create_token(
+            actor_email,
+            timedelta(minutes=PAY_TOKEN_MINUTES),
+            {"type": "payment_link", "org_id": org.id},
+        )
 
     message = "La suscripcion de esta organizacion no esta al dia."
-    if payment_url:
+    if providers:
         message += " Paga la membresia para recuperar el acceso."
     else:
         message += " Contacta al administrador de la plataforma para renovarla."
 
     raise HTTPException(
         status_code=status.HTTP_402_PAYMENT_REQUIRED,
-        detail={"message": message, "payment_url": payment_url, "payment_urls": payment_urls},
+        detail={"message": message, "payment_providers": providers, "pay_token": pay_token},
     )
 
 
@@ -785,6 +794,50 @@ async def cancel_subscription_payment(
     )
     await db.commit()
     return SubscriptionCancelOut(cancelled=True, valid_until=org.subscription_expires_at)
+
+
+@app.post("/auth/payment-link", response_model=SubscriptionPayLinkOut)
+async def blocked_login_payment_link(
+    payload: BlockedPaymentLinkRequest, request: Request, db: AsyncSession = Depends(get_db)
+):
+    """Link de pago para quien quedo bloqueado por falta de pago (402): se genera
+    recien cuando elige la pasarela. Sin sesion (esta bloqueado), pero NO es
+    publico: exige el pay_token que entrego el 402, que dura pocos minutos, solo
+    sirve para esto (type distinto de access/refresh) y lleva el email y la
+    organizacion de quien acaba de autenticarse. La license_key la resuelve el
+    servidor (license_check), nunca el navegador."""
+    await _enforce_rate_limit(f"payment_link:ip:{_client_ip(request)}", limit=20)
+    try:
+        claims = decode_token(payload.pay_token)
+    except JWTError:
+        raise HTTPException(status_code=401, detail="El pedido de pago vencio -- volve a ingresar para generar un link nuevo.")
+    if claims.get("type") != "payment_link":
+        raise HTTPException(status_code=401, detail="Tipo de token incorrecto")
+    await _enforce_rate_limit(f"payment_link:org:{claims.get('org_id', '')}", limit=10)
+    if not license_check.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Esta instalacion no tiene un servidor central de licencias configurado -- "
+            "para pagar o renovar, contacta al operador.",
+        )
+    if payload.provider not in license_check.enabled_providers():
+        raise HTTPException(
+            status_code=400,
+            detail=f"{license_check.provider_label(payload.provider)} no esta habilitado en esta instalacion.",
+        )
+    email = str(claims.get("sub", ""))
+    try:
+        payment_url = await license_check.get_payment_link(email, payload.provider)
+    except license_check.LicenseCheckError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not payment_url:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{license_check.provider_label(payload.provider)} no esta configurado del lado del servidor central de licencias.",
+        )
+    await services.record_audit_event(db, email, "auth.login.payment_link", claims.get("org_id") or "")
+    await db.commit()
+    return SubscriptionPayLinkOut(payment_url=payment_url)
 
 
 @app.post("/auth/organizations/{org_id}/subscription/pay-link", response_model=SubscriptionPayLinkOut)

@@ -1,6 +1,9 @@
 // Traducciones en -- la clave es el texto fuente (espanol) tal como aparece en la UI.
 // Las claves con {0}, {1}... son plantillas (texto dinamico). Generado y revisado; se puede editar a mano.
 const dict: Record<string, string> = {
+ "Si no se abrio la pagina de pago,": "If the payment page did not open,",
+ "abrila desde aca": "open it from here",
+ "No se pudo generar el link de pago. Intenta de nuevo en un momento.": "Could not generate the payment link. Try again in a moment.",
  "Idioma": "Language",
  "Resumen": "Overview",
  "Inventario y exposicion": "Inventory and exposure",

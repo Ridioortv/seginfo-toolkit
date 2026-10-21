@@ -1,6 +1,9 @@
 // Traducciones zh -- la clave es el texto fuente (espanol) tal como aparece en la UI.
 // Las claves con {0}, {1}... son plantillas (texto dinamico). Generado y revisado; se puede editar a mano.
 const dict: Record<string, string> = {
+ "Si no se abrio la pagina de pago,": "如果支付页面没有打开，",
+ "abrila desde aca": "请从这里打开",
+ "No se pudo generar el link de pago. Intenta de nuevo en un momento.": "无法生成支付链接。请稍后重试。",
  "Idioma": "语言",
  "Resumen": "概览",
  "Dashboard": "仪表盘",

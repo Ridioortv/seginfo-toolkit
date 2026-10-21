@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { login, loginWithGoogle, mfaStatus, register } from "../services/api";
+import { login, loginWithGoogle, mfaStatus, register, requestBlockedPaymentLink } from "../services/api";
 import { useAuthStore } from "../store/auth";
-import { parseLoginError } from "../utils/loginError";
-import { PAYMENT_PROVIDERS, type PaymentProvider } from "../utils/payment";
+import { NO_PAYMENT_OFFER, parseLoginError, parsePaymentOffer } from "../utils/loginError";
+import { PAYMENT_PROVIDERS, isHttpUrl, type PaymentProvider } from "../utils/payment";
 import { generateClientState, storeClientState } from "../utils/ssoState";
 import Icon, { BrandMark } from "../components/Icon";
 import { LanguageSwitcher, useLangStore, type Lang } from "../i18n";
@@ -42,6 +42,11 @@ export default function Login() {
   const [totpCode, setTotpCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [paymentUrls, setPaymentUrls] = useState<Partial<Record<PaymentProvider, string>>>({});
+  // Oferta de pago del 402: pasarelas + pay_token. El link se pide al hacer clic.
+  const [payOffer, setPayOffer] = useState(NO_PAYMENT_OFFER);
+  const [payingWith, setPayingWith] = useState<PaymentProvider | null>(null);
+  const [payError, setPayError] = useState<string | null>(null);
+  const [openedPayUrl, setOpenedPayUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [orgSlug, setOrgSlug] = useState("");
   const setTokens = useAuthStore((s) => s.setTokens);
@@ -65,6 +70,35 @@ export default function Login() {
     const { message, paymentUrls: urls } = parseLoginError(err, fallback);
     setError(message);
     setPaymentUrls(urls);
+    setPayOffer(parsePaymentOffer(err));
+    setPayError(null);
+    setOpenedPayUrl(null);
+  }
+
+  function clearPayment() {
+    setPaymentUrls({});
+    setPayOffer(NO_PAYMENT_OFFER);
+    setPayError(null);
+    setOpenedPayUrl(null);
+  }
+
+  // Genera el link RECIEN ahora, solo de la pasarela elegida (no al fallar el
+  // login): asi no quedan links viejos pagables que puedan cobrar dos veces.
+  async function handlePay(provider: PaymentProvider) {
+    if (!payOffer.payToken || payingWith) return;
+    setPayingWith(provider);
+    setPayError(null);
+    try {
+      const url = await requestBlockedPaymentLink(payOffer.payToken, provider);
+      if (!isHttpUrl(url)) throw new Error("link invalido");
+      setOpenedPayUrl(url);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      setPayError(typeof detail === "string" && detail ? detail : "No se pudo generar el link de pago. Intenta de nuevo en un momento.");
+    } finally {
+      setPayingWith(null);
+    }
   }
 
   function handleSsoLogin(e: React.FormEvent) {
@@ -88,7 +122,7 @@ export default function Login() {
     async function handleGoogleCredential(response: { credential: string }) {
       setLoading(true);
       setError(null);
-      setPaymentUrls({});
+      clearPayment();
       try {
         const tokens = await loginWithGoogle(response.credential);
         setTokens(tokens.access_token, tokens.refresh_token);
@@ -128,7 +162,7 @@ export default function Login() {
     e.preventDefault();
     setLoading(true);
     setError(null);
-    setPaymentUrls({});
+    clearPayment();
     try {
       const tokens = await login(email, password, totpCode || undefined);
       setTokens(tokens.access_token, tokens.refresh_token);
@@ -157,7 +191,7 @@ export default function Login() {
     e.preventDefault();
     setLoading(true);
     setError(null);
-    setPaymentUrls({});
+    clearPayment();
     // BUG (corregido aca): antes esto envolvia register() Y el login()
     // posterior en el mismo try/catch, asi que si la cuenta se creaba bien
     // pero el login automatico fallaba (ej. 402 porque la organizacion
@@ -198,7 +232,7 @@ export default function Login() {
   function toggleMode() {
     setMode((m) => (m === "login" ? "register" : "login"));
     setError(null);
-    setPaymentUrls({});
+    clearPayment();
   }
 
   return (
@@ -273,6 +307,41 @@ export default function Login() {
         </button>
 
         {error && <p className="error-text">{error}</p>}
+
+        {payOffer.payToken && payOffer.providers.length > 0 && (
+          <>
+            {PAYMENT_PROVIDERS.filter((p) => payOffer.providers.includes(p.id)).map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className="btn-primary"
+                disabled={payingWith !== null}
+                onClick={() => handlePay(p.id)}
+                style={{ marginTop: 8 }}
+              >
+                {payingWith === p.id
+                  ? "Generando link..."
+                  : payOffer.providers.length > 1
+                    ? `Pagar con ${p.label}`
+                    : "Pagar membresia"}
+              </button>
+            ))}
+            {payError && <p className="error-text">{payError}</p>}
+            {openedPayUrl && (
+              <p className="empty-hint" style={{ marginTop: 8 }}>
+                Si no se abrio la pagina de pago,{" "}
+                <a href={openedPayUrl} target="_blank" rel="noopener noreferrer">
+                  abrila desde aca
+                </a>
+                .
+              </p>
+            )}
+            <p className="empty-hint" style={{ marginTop: 8 }}>
+              Se abre la pagina de pago en una pestana nueva. Despues de pagar, esperá un minuto y volvé a
+              intentar ingresar -- el acceso se reactiva solo, no hace falta avisarle a nadie.
+            </p>
+          </>
+        )}
 
         {Object.keys(paymentUrls).length > 0 && (
           <>

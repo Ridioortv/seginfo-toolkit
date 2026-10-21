@@ -209,9 +209,13 @@ async def get_payment_link(payer_email: str, provider: str = DEFAULT_PROVIDER) -
 
 
 async def get_payment_links(payer_email: str) -> dict[str, str]:
-    """Un link por cada pasarela disponible ({"paypal": url, "mercadopago": url}),
-    para el login bloqueado por falta de pago. Una pasarela que falla o no
-    esta configurada simplemente no aparece: el cliente paga con la otra."""
+    """Un link por cada pasarela disponible ({"paypal": url, "mercadopago": url}).
+    Una pasarela que falla o no esta configurada simplemente no aparece.
+
+    OJO: cada llamada CREA una suscripcion nueva en cada pasarela. El login
+    bloqueado ya NO la usa (generaba links que quedaban pagables y podian cobrar
+    dos veces): ahi el link se pide a demanda con get_payment_link, para la
+    pasarela que elige la persona."""
     async def _one(provider: str) -> tuple[str, str | None]:
         try:
             return provider, await get_payment_link(payer_email, provider)
