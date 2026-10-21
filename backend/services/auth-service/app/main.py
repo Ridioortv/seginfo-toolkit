@@ -70,6 +70,16 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+async def _license_recheck_allowed(org_id: str) -> bool:
+    """Como mucho un re-chequeo de licencia por organizacion cada 20 segundos
+    desde el login bloqueado (el rate limit falla abierto si Redis no esta)."""
+    try:
+        await _enforce_rate_limit(f"license_recheck:{org_id}", limit=1, window_seconds=20)
+    except HTTPException:
+        return False
+    return True
+
+
 async def _reject_if_org_inactive(db: AsyncSession, org, actor_email: str) -> None:
     """402 (Payment Required) si la organizacion de este usuario no tiene
     la suscripcion al dia -- ver services.is_org_active() para el
@@ -87,6 +97,19 @@ async def _reject_if_org_inactive(db: AsyncSession, org, actor_email: str) -> No
     membresia" en vez de solo un cartel de error -- ver Login.tsx."""
     if services.is_org_active(org):
         return
+    # Antes de bloquear, volver a consultar al servidor central: si el cliente
+    # acaba de pagar (desde este mismo 402 o desde la pasarela), el webhook ya
+    # extendio la licencia alla pero esta instalacion todavia no se entero
+    # (el chequeo periodico corre cada LICENSE_CHECK_INTERVAL_HOURS). Sin esto
+    # quedaba bloqueado varias horas despues de pagar, sin forma de refrescar
+    # (el boton "Actualizar estado" exige estar logueado). Limitado por
+    # organizacion para que un login repetido no golpee al servidor central.
+    if license_check.is_configured() and await _license_recheck_allowed(org.id):
+        await services.refresh_license_from_central_server(db, org.id)
+        await db.commit()
+        await db.refresh(org)
+        if services.is_org_active(org):
+            return
     login_attempts_total.labels(outcome="failure").inc()
     await services.record_audit_event(db, actor_email, "auth.login.blocked_subscription", org.id)
     await db.commit()
