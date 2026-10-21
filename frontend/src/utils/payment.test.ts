@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isHttpUrl, pickPaymentUrls, providerLabel } from "./payment";
+import { isHttpUrl, pickPaymentUrls, pickProviders, providerLabel } from "./payment";
 
 describe("payment utils", () => {
   it("acepta solo links http(s)", () => {
@@ -27,5 +27,15 @@ describe("payment utils", () => {
   it("providerLabel devuelve el nombre visible", () => {
     expect(providerLabel("paypal")).toBe("PayPal");
     expect(providerLabel("mercadopago")).toBe("Mercado Pago");
+  });
+
+  it("pickProviders respeta lo que ofrece el servidor y nunca deja sin pasarelas", () => {
+    expect(pickProviders(["mercadopago"])).toEqual(["mercadopago"]);
+    expect(pickProviders(["mercadopago", "paypal"])).toEqual(["paypal", "mercadopago"]);
+    expect(pickProviders(["otra", "mercadopago"])).toEqual(["mercadopago"]);
+    expect(pickProviders([])).toEqual(["paypal", "mercadopago"]);
+    expect(pickProviders(["otra"])).toEqual(["paypal", "mercadopago"]);
+    expect(pickProviders(undefined)).toEqual(["paypal", "mercadopago"]);
+    expect(pickProviders("mercadopago")).toEqual(["paypal", "mercadopago"]);
   });
 });

@@ -285,3 +285,21 @@ def test_freemail_invites_can_be_enabled_for_single_company_installs(env, monkey
     r = client.post(f"/auth/organizations/{org}/users", headers=h,
                     json={"email": "empleado@gmail.com", "full_name": "E", "role": "viewer"})
     assert r.status_code == 201
+
+
+def test_payment_providers_endpoint_and_disabled_pay_link(env, monkeypatch):
+    """/auth/payment-providers dice que pasarelas ofrece la instalacion y pay-link
+    rechaza (400) una pasarela deshabilitada sin llamar al servidor central."""
+    client, _Session, org, _other, admin_id, token = env
+    h = token(admin_id, "admin", org)
+    monkeypatch.delenv("PAYMENT_PROVIDERS", raising=False)
+    assert client.get("/auth/payment-providers", headers=h).json() == {"providers": ["paypal", "mercadopago"]}
+    monkeypatch.setenv("PAYMENT_PROVIDERS", "mercadopago")
+    assert client.get("/auth/payment-providers", headers=h).json() == {"providers": ["mercadopago"]}
+    assert client.get("/auth/payment-providers").status_code == 401
+    from backend.shared import license_check
+    monkeypatch.setattr(license_check, "LICENSE_SERVER_URL", "https://lic.test")
+    monkeypatch.setattr(license_check, "LICENSE_KEY", "K")
+    hp = token(admin_id, "admin", org, platform_admin=True)  # la suscripcion es de toda la instalacion
+    r = client.post(f"/auth/organizations/{org}/subscription/pay-link", json={"provider": "paypal"}, headers=hp)
+    assert r.status_code == 400 and "PayPal" in r.json()["detail"]

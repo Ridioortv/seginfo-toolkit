@@ -6,6 +6,7 @@ import type { CloudAccountOut, CloudResourceOut, CloudFindingOut } from "../type
 import PageHeader from "../components/PageHeader";
 import { SeverityBadge, StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
+import { currentLocale, t } from "../i18n";
 
 // Igual que en Notifications.tsx/Reports.tsx: conectar una cuenta de AWS
 // requiere credenciales reales, asi que solo admin/soc_manager pueden
@@ -260,8 +261,7 @@ export default function Cloud() {
           </>
         ) : (
           <p className="empty-hint" style={{ marginTop: 12 }}>
-            Tu usuario ({claims?.role ?? "sin rol"}) no puede conectar cuentas de AWS -- lo puede hacer un admin o
-            soc_manager.
+            {`Tu usuario (${claims?.role ?? "sin rol"}) no puede conectar cuentas de AWS -- lo puede hacer un admin o soc_manager.`}
           </p>
         )}
       </div>
@@ -301,7 +301,7 @@ export default function Cloud() {
                       </div>
                     )}
                   </td>
-                  <td>{a.last_sync_at ? new Date(a.last_sync_at).toLocaleString() : "Nunca"}</td>
+                  <td>{a.last_sync_at ? new Date(a.last_sync_at).toLocaleString(currentLocale()) : "Nunca"}</td>
                   <td>
                     <button
                       className="btn-link"
@@ -313,7 +313,7 @@ export default function Cloud() {
                     <button
                       className="btn-link"
                       onClick={() => {
-                        if (window.confirm(`Desconectar la cuenta "${a.name}"? Se van a dejar de sincronizar sus recursos.`)) {
+                        if (window.confirm(t('Desconectar la cuenta "{0}"? Se van a dejar de sincronizar sus recursos.', a.name))) {
                           deleteAccount.mutate(a.id);
                         }
                       }}
@@ -409,7 +409,7 @@ export default function Cloud() {
                     <MetadataList metadata={r.resource_metadata} />
                   </td>
                   <td>{r.is_active ? "si" : "no"}</td>
-                  <td>{new Date(r.last_seen_at).toLocaleString()}</td>
+                  <td>{new Date(r.last_seen_at).toLocaleString(currentLocale())}</td>
                 </tr>
               ))}
               {resources.data.length === 0 && (
@@ -460,10 +460,10 @@ export default function Cloud() {
                   <td>{accountsById.get(f.cloud_account_id)?.name ?? f.cloud_account_id}</td>
                   <td className="mono">{f.resource_external_id}</td>
                   <td>{f.detail}</td>
-                  <td>{new Date(f.created_at).toLocaleString()}</td>
+                  <td>{new Date(f.created_at).toLocaleString(currentLocale())}</td>
                   <td>
                     {f.is_acknowledged ? (
-                      <span className="empty-hint">Reconocido por {f.acknowledged_by}</span>
+                      <span className="empty-hint">{`Reconocido por ${f.acknowledged_by}`}</span>
                     ) : (
                       <button
                         className="btn-link"
@@ -481,7 +481,7 @@ export default function Cloud() {
               {findings.data.length === 0 && (
                 <tr>
                   <td colSpan={7} className="empty-hint">
-                    Sin hallazgos{findingsFilter === "pending" ? " sin reconocer" : ""} por el momento.
+                    {findingsFilter === "pending" ? "Sin hallazgos sin reconocer por el momento." : "Sin hallazgos por el momento."}
                   </td>
                 </tr>
               )}

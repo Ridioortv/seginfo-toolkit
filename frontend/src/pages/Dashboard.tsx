@@ -15,6 +15,7 @@ import { StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
 import Icon, { type IconName } from "../components/Icon";
 import { useAuthStore } from "../store/auth";
+import { currentLocale } from "../i18n";
 
 type DashboardScan = {
   id: string;
@@ -196,20 +197,21 @@ export default function Dashboard() {
     <div>
       <section className="dash-hero">
         <div>
-          <h1>Hola{username ? `, ${username.split("@")[0]}` : ""}</h1>
+          <h1>{username ? `Hola, ${username.split("@")[0]}` : "Hola"}</h1>
           <p>Vista general del estado de seguridad defensiva de tu organizacion.</p>
         </div>
         <span className="dash-hero-chip">
           <span className="status-dot" aria-hidden="true" />
-          {scansLoading || scansError ? "Escaneos: sin datos" : scansRunning > 0 ? `${scansRunning} escaneo${scansRunning === 1 ? "" : "s"} en curso` : "Sin escaneos en curso"}
+          {scansLoading || scansError ? "Escaneos: sin datos" : scansRunning > 0 ? (scansRunning === 1 ? "1 escaneo en curso" : `${scansRunning} escaneos en curso`) : "Sin escaneos en curso"}
         </span>
       </section>
       {failedServices.length > 0 && (
         <div className="panel">
           <p className="error-text">
-            No se pudo conectar con {failedServices.length === 1 ? "este servicio" : "estos servicios"}: {failedServices.map((s) => s.label).join(", ")}.
-            Las metricas que dependen de {failedServices.length === 1 ? "el" : "ellos"} muestran "-" en vez de 0 para
-            no confundir "sin datos" con "no responde".
+            {`${failedServices.length === 1 ? "No se pudo conectar con este servicio" : "No se pudo conectar con estos servicios"}: ${failedServices.map((s) => s.label).join(", ")}.`}{" "}
+            {failedServices.length === 1
+              ? 'Las metricas que dependen de el muestran "-" en vez de 0 para no confundir "sin datos" con "no responde".'
+              : 'Las metricas que dependen de ellos muestran "-" en vez de 0 para no confundir "sin datos" con "no responde".'}
           </p>
           {failedServices.map((s) => (
             <p key={s.label} className="error-text" style={{ marginTop: 4 }}>
@@ -346,7 +348,7 @@ export default function Dashboard() {
                   <td>{s.name}</td>
                   <td>{s.scanner_type}{s.remote ? " (remoto)" : ""}</td>
                   <td><StatusBadge value={s.status} /></td>
-                  <td>{new Date(s.created_at).toLocaleString()}</td>
+                  <td>{new Date(s.created_at).toLocaleString(currentLocale())}</td>
                 </tr>
               ))}
             </tbody>
@@ -374,7 +376,7 @@ export default function Dashboard() {
                   <td>{r.playbook_name}</td>
                   <td><StatusBadge value={r.status} /></td>
                   <td>{r.triggered_by || "-"}</td>
-                  <td>{new Date(r.created_at).toLocaleString()}</td>
+                  <td>{new Date(r.created_at).toLocaleString(currentLocale())}</td>
                 </tr>
               ))}
             </tbody>
@@ -402,7 +404,7 @@ export default function Dashboard() {
                   <td>{n.subject}</td>
                   <td>{n.channel_type}</td>
                   <td><StatusBadge value={n.status} /></td>
-                  <td>{new Date(n.created_at).toLocaleString()}</td>
+                  <td>{new Date(n.created_at).toLocaleString(currentLocale())}</td>
                 </tr>
               ))}
             </tbody>

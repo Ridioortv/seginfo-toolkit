@@ -4,6 +4,8 @@ import { PAYMENT_PROVIDERS, type PaymentProvider } from "../utils/payment";
 
 interface Props {
   open: boolean;
+  // Pasarelas a ofrecer (por defecto, todas).
+  providers?: PaymentProvider[];
   // Pasarela cuyo link se esta generando ahora (deshabilita los botones).
   pendingProvider: PaymentProvider | null;
   error: string | null;
@@ -15,7 +17,14 @@ interface Props {
 // modal accesible: cierra con Escape o clic afuera, el foco entra al primer
 // boton y vuelve al boton que la abrio, y el fondo no scrollea mientras esta
 // abierta.
-export default function PaymentMethodModal({ open, pendingProvider, error, onSelect, onClose }: Props) {
+export default function PaymentMethodModal({
+  open,
+  providers,
+  pendingProvider,
+  error,
+  onSelect,
+  onClose,
+}: Props) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const emailDetailsRef = useRef<HTMLDetailsElement>(null);
   const [mpEmail, setMpEmail] = useState("");
@@ -36,7 +45,9 @@ export default function PaymentMethodModal({ open, pendingProvider, error, onSel
       if (e.key !== "Tab" || !dialogRef.current) return;
       // Mantiene el foco adentro del dialogo.
       const focusable = Array.from(
-        dialogRef.current.querySelectorAll<HTMLElement>("button:not(:disabled), input, summary, a[href]"),
+        dialogRef.current.querySelectorAll<HTMLElement>(
+          "button:not(:disabled), input, summary, a[href]",
+        ),
       );
       if (focusable.length === 0) return;
       const first = focusable[0];
@@ -74,10 +85,21 @@ export default function PaymentMethodModal({ open, pendingProvider, error, onSel
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div ref={dialogRef} className="modal" role="dialog" aria-modal="true" aria-labelledby="pay-modal-title">
+      <div
+        ref={dialogRef}
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pay-modal-title"
+      >
         <div className="modal-head">
           <h2 id="pay-modal-title">Elegi como pagar</h2>
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="Cerrar">
+          <button
+            type="button"
+            className="icon-btn"
+            onClick={onClose}
+            aria-label="Cerrar"
+          >
             <span aria-hidden="true">&times;</span>
           </button>
         </div>
@@ -86,38 +108,53 @@ export default function PaymentMethodModal({ open, pendingProvider, error, onSel
         </p>
 
         <div className="pay-options">
-          {PAYMENT_PROVIDERS.map((p) => (
+          {PAYMENT_PROVIDERS.filter(
+            (p) => !providers || providers.includes(p.id),
+          ).map((p) => (
             <button
               key={p.id}
               type="button"
               className="pay-option"
               disabled={busy}
-              onClick={() => onSelect(p.id, p.id === "mercadopago" ? mpEmail.trim() || undefined : undefined)}
+              onClick={() =>
+                onSelect(
+                  p.id,
+                  p.id === "mercadopago"
+                    ? mpEmail.trim() || undefined
+                    : undefined,
+                )
+              }
             >
               <span className="pay-option-icon">
                 <Icon name={p.id === "paypal" ? "surface" : "card"} />
               </span>
               <span className="pay-option-text">
-                <strong>{pendingProvider === p.id ? "Generando link..." : p.label}</strong>
+                <strong>
+                  {pendingProvider === p.id ? "Generando link..." : p.label}
+                </strong>
                 <small>{p.hint}</small>
               </span>
             </button>
           ))}
         </div>
 
-        <details className="pay-extra" ref={emailDetailsRef}>
-          <summary>¿Tu cuenta de Mercado Pago usa otro email?</summary>
-          <label htmlFor="mp-email">Email de tu cuenta de Mercado Pago (opcional)</label>
-          <input
-            id="mp-email"
-            type="email"
-            autoComplete="email"
-            maxLength={254}
-            value={mpEmail}
-            onChange={(e) => setMpEmail(e.target.value)}
-            placeholder="tu-cuenta@mercadopago.com"
-          />
-        </details>
+        {(!providers || providers.includes("mercadopago")) && (
+          <details className="pay-extra" ref={emailDetailsRef}>
+            <summary>¿Tu cuenta de Mercado Pago usa otro email?</summary>
+            <label htmlFor="mp-email">
+              Email de tu cuenta de Mercado Pago (opcional)
+            </label>
+            <input
+              id="mp-email"
+              type="email"
+              autoComplete="email"
+              maxLength={254}
+              value={mpEmail}
+              onChange={(e) => setMpEmail(e.target.value)}
+              placeholder="tu-cuenta@mercadopago.com"
+            />
+          </details>
+        )}
 
         {error && (
           <p className="error-text" role="alert">

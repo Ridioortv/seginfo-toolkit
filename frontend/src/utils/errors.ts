@@ -1,5 +1,6 @@
 import axios from "axios";
 import { useAuthStore } from "../store/auth";
+import { t } from "../i18n/store";
 
 /**
  * Convierte cualquier error de una llamada a un microservicio en un
@@ -19,7 +20,7 @@ import { useAuthStore } from "../store/auth";
 function permissionHint(): string {
   const role = useAuthStore.getState().claims?.role;
   if (!role || role === "admin") return "";
-  return ` -- Iniciaste sesion con el rol "${role}", y esta accion requiere admin o soc_manager. Cerra sesion y entra con una cuenta admin.`;
+  return " " + t('-- Iniciaste sesion con el rol "{0}", y esta accion requiere admin o soc_manager. Cerra sesion y entra con una cuenta admin.', role);
 }
 
 /**

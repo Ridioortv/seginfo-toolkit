@@ -12,7 +12,8 @@ import type {
 import PageHeader from "../components/PageHeader";
 import PaymentMethodModal from "../components/PaymentMethodModal";
 import { formatDate } from "../utils/format";
-import { isHttpUrl, providerLabel, type PaymentProvider } from "../utils/payment";
+import { ALL_PROVIDER_IDS, isHttpUrl, pickProviders, providerLabel, type PaymentProvider } from "../utils/payment";
+import { currentLocale } from "../i18n";
 
 // Pagos, licencia y baja del servicio -- todo lo que un admin de
 // organizacion (o un platform_admin) necesita para administrar su propia
@@ -60,6 +61,18 @@ export default function Billing() {
   const [payUrl, setPayUrl] = useState<string | null>(null);
   const [payProvider, setPayProvider] = useState<PaymentProvider | null>(null);
   const [payModalOpen, setPayModalOpen] = useState(false);
+
+  // Pasarelas que ofrece esta instalacion (PAYMENT_PROVIDERS en el .env). Mientras
+  // carga, o si falla, se asumen todas: nunca deja al usuario sin forma de pagar.
+  const providersQuery = useQuery({
+    queryKey: ["payment-providers"],
+    queryFn: async () => (await authApi.get<{ providers: unknown }>("/auth/payment-providers")).data,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+  const providers: PaymentProvider[] = providersQuery.data
+    ? pickProviders(providersQuery.data.providers)
+    : [...ALL_PROVIDER_IDS];
 
   // Vuelve a consultar el servidor central de licencias ya (sin esperar al chequeo
   // periodico): se llama al abrir la pantalla y con el boton "Actualizar", asi
@@ -172,8 +185,7 @@ export default function Billing() {
         <PageHeader title="Pagos y licencia" subtitle="Suscripcion, pagos y baja del servicio." />
         <div className="panel">
           <p className="empty-hint">
-            Tu usuario ({claims?.role ?? "sin rol"}) no tiene acceso a esta seccion -- la administra un admin de tu
-            organizacion o un administrador de plataforma.
+            {`Tu usuario (${claims?.role ?? "sin rol"}) no tiene acceso a esta seccion -- la administra un admin de tu organizacion o un administrador de plataforma.`}
           </p>
         </div>
       </div>
@@ -232,7 +244,7 @@ export default function Billing() {
                 {subscription.data.license_last_checked_at && (
                   <span className="empty-hint">
                     {" "}
-                    Ultimo chequeo contra el servidor central: {new Date(subscription.data.license_last_checked_at).toLocaleString("es-AR")}.
+                    {`Ultimo chequeo contra el servidor central: ${new Date(subscription.data.license_last_checked_at).toLocaleString(currentLocale())}.`}
                   </span>
                 )}
               </p>
@@ -242,14 +254,19 @@ export default function Billing() {
           <div className="panel">
             <h2>Pagar / renovar</h2>
             <p className="empty-hint">
-              Elegi PayPal (USD 250 cada 30 dias) o Mercado Pago (en pesos, USD 250 al cambio del dia) para pagar por
-              primera vez, o para volver a suscribirte si habias cancelado el cobro automatico.
+              {providers.length === 1
+                ? providers[0] === "mercadopago"
+                  ? "Pagas con Mercado Pago (en pesos, USD 250 al cambio del dia, debito automatico cada 30 dias) para pagar por primera vez, o para volver a suscribirte si habias cancelado el cobro automatico."
+                  : "Pagas con PayPal (USD 250 cada 30 dias) para pagar por primera vez, o para volver a suscribirte si habias cancelado el cobro automatico."
+                : "Elegi PayPal (USD 250 cada 30 dias) o Mercado Pago (en pesos, USD 250 al cambio del dia) para pagar por primera vez, o para volver a suscribirte si habias cancelado el cobro automatico."}
             </p>
             <button
               className="btn-primary"
               onClick={() => {
                 setPayError(null);
-                setPayModalOpen(true);
+                // Con una sola pasarela no hay nada que elegir: se pide el link directo.
+                if (providers.length === 1) choosePaymentMethod(providers[0]);
+                else setPayModalOpen(true);
               }}
               disabled={payLink.isPending}
             >
@@ -258,7 +275,7 @@ export default function Billing() {
             {payError && !payModalOpen && <p className="error-text">{payError}</p>}
             {payUrl && !payError && payProvider && (
               <p className="empty-hint">
-                Se abrio {providerLabel(payProvider)} en una pestana nueva. Si no se abrio,{" "}
+                {`Se abrio ${providerLabel(payProvider)} en una pestana nueva. Si no se abrio,`}{" "}
                 <a href={payUrl} target="_blank" rel="noopener noreferrer">
                   hace click aca
                 </a>
@@ -269,6 +286,7 @@ export default function Billing() {
 
           <PaymentMethodModal
             open={payModalOpen}
+            providers={providers}
             pendingProvider={payLink.isPending ? (payLink.variables?.provider ?? null) : null}
             error={payError}
             onSelect={choosePaymentMethod}

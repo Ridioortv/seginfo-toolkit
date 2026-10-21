@@ -5,6 +5,7 @@ import type { MonitoredDomainOut, DiscoveredAssetOut, SurfaceAlertOut } from "..
 import PageHeader from "../components/PageHeader";
 import { SeverityBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
+import { currentLocale } from "../i18n";
 
 const ALERT_TYPE_LABELS: Record<string, string> = {
   new_subdomain: "Subdominio nuevo",
@@ -224,7 +225,7 @@ export default function Surface() {
                               : CHECK_STATUS_LABELS[d.last_check_status] ?? d.last_check_status}
                         </strong>
                         {d.last_checked_at && (
-                          <span className="empty-hint"> {new Date(d.last_checked_at).toLocaleString()}</span>
+                          <span className="empty-hint"> {new Date(d.last_checked_at).toLocaleString(currentLocale())}</span>
                         )}
                         {d.last_check_detail && (
                           <p className="empty-hint" style={{ margin: "2px 0 0" }}>{d.last_check_detail}</p>
@@ -246,7 +247,7 @@ export default function Surface() {
                     </button>{" "}
                     {confirmDeleteId === d.id ? (
                       <>
-                        <span className="empty-hint">Dejar de monitorear {d.domain} y borrar sus subdominios y alertas? </span>
+                        <span className="empty-hint">{`Dejar de monitorear ${d.domain} y borrar sus subdominios y alertas?`}</span>
                         <button
                           className="btn-link"
                           onClick={() => deleteDomain.mutate(d.id)}
@@ -293,7 +294,7 @@ export default function Surface() {
       </div>
 
       <div className="panel">
-        <h2>Subdominios descubiertos {selectedDomainId ? "" : "(elegi un dominio de la tabla de arriba)"}</h2>
+        <h2>{selectedDomainId ? "Subdominios descubiertos" : "Subdominios descubiertos (elegi un dominio de la tabla de arriba)"}</h2>
         {selectedDomainId && assets.isLoading && <p className="empty-hint">Cargando...</p>}
         {selectedDomainId && assets.isError && (
           <p className="error-text">
@@ -315,8 +316,8 @@ export default function Surface() {
               {assets.data.map((a) => (
                 <tr key={a.id}>
                   <td className="mono">{a.hostname}</td>
-                  <td>{new Date(a.first_seen_at).toLocaleString()}</td>
-                  <td>{new Date(a.last_seen_at).toLocaleString()}</td>
+                  <td>{new Date(a.first_seen_at).toLocaleString(currentLocale())}</td>
+                  <td>{new Date(a.last_seen_at).toLocaleString(currentLocale())}</td>
                   <td>{a.is_active ? "si" : "no"}</td>
                 </tr>
               ))}
@@ -366,10 +367,10 @@ export default function Surface() {
                   <td className="mono">{a.hostname}</td>
                   <td><SeverityBadge value={a.severity} /></td>
                   <td>{a.detail}</td>
-                  <td>{new Date(a.created_at).toLocaleString()}</td>
+                  <td>{new Date(a.created_at).toLocaleString(currentLocale())}</td>
                   <td>
                     {a.is_acknowledged ? (
-                      <span className="empty-hint">Reconocida por {a.acknowledged_by}</span>
+                      <span className="empty-hint">{`Reconocida por ${a.acknowledged_by}`}</span>
                     ) : (
                       <button
                         className="btn-link"
@@ -385,7 +386,7 @@ export default function Surface() {
               {alerts.data.length === 0 && (
                 <tr>
                   <td colSpan={6} className="empty-hint">
-                    Sin alertas{alertsFilter === "pending" ? " sin reconocer" : ""} por el momento.
+                    {alertsFilter === "pending" ? "Sin alertas sin reconocer por el momento." : "Sin alertas por el momento."}
                   </td>
                 </tr>
               )}

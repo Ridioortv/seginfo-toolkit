@@ -7,6 +7,7 @@ import type { RepoTargetOut, SecretFindingOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { SeverityBadge, StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
+import { currentLocale, t } from "../i18n";
 
 // Igual que en Cloud.tsx: conectar un repositorio (potencialmente con un
 // token de acceso a un repo privado) requiere el mismo nivel de
@@ -247,8 +248,7 @@ export default function CodeRepos() {
           </>
         ) : (
           <p className="empty-hint" style={{ marginTop: 12 }}>
-            Tu usuario ({claims?.role ?? "sin rol"}) no puede conectar repositorios -- lo puede hacer un admin o
-            soc_manager.
+            {`Tu usuario (${claims?.role ?? "sin rol"}) no puede conectar repositorios -- lo puede hacer un admin o soc_manager.`}
           </p>
         )}
       </div>
@@ -293,7 +293,7 @@ export default function CodeRepos() {
                       </div>
                     )}
                   </td>
-                  <td>{r.last_scan_at ? new Date(r.last_scan_at).toLocaleString() : "Nunca"}</td>
+                  <td>{r.last_scan_at ? new Date(r.last_scan_at).toLocaleString(currentLocale()) : "Nunca"}</td>
                   <td>{r.last_scan_secrets_found}</td>
                   <td>
                     {r.last_scan_vulnerabilities_found}{" "}
@@ -317,7 +317,7 @@ export default function CodeRepos() {
                       onClick={() => {
                         if (
                           window.confirm(
-                            `Eliminar el repositorio "${r.name}"? Se va a dejar de escanear y clonar.`,
+                            t('Eliminar el repositorio "{0}"? Se va a dejar de escanear y clonar.', r.name),
                           )
                         ) {
                           deleteRepo.mutate(r.id);
@@ -414,10 +414,10 @@ export default function CodeRepos() {
                   <td>
                     <code>{s.match_redacted}</code>
                   </td>
-                  <td>{new Date(s.created_at).toLocaleString()}</td>
+                  <td>{new Date(s.created_at).toLocaleString(currentLocale())}</td>
                   <td>
                     {s.is_acknowledged ? (
-                      <span className="empty-hint">Reconocido por {s.acknowledged_by}</span>
+                      <span className="empty-hint">{`Reconocido por ${s.acknowledged_by}`}</span>
                     ) : (
                       <button
                         className="btn-link"
@@ -435,7 +435,7 @@ export default function CodeRepos() {
               {secrets.data.length === 0 && (
                 <tr>
                   <td colSpan={9} className="empty-hint">
-                    Sin secretos{secretsFilter === "pending" ? " sin reconocer" : ""} por el momento.
+                    {secretsFilter === "pending" ? "Sin secretos sin reconocer por el momento." : "Sin secretos por el momento."}
                   </td>
                 </tr>
               )}

@@ -5,6 +5,7 @@ import type { ImageInventoryItem } from "../types";
 import PageHeader from "../components/PageHeader";
 import { SeverityBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
+import { currentLocale } from "../i18n";
 
 const MODE_LABELS: Record<string, string> = {
   image: "Imagen",
@@ -117,7 +118,7 @@ export default function ImageInventory() {
         {images.data && images.data.length > 0 && (
           <>
             <p className="empty-hint" style={{ marginTop: 8 }}>
-              Mostrando {filtered.length} de {images.data.length} imagen(es){search ? " (con filtro aplicado)" : ""}.
+              {`Mostrando ${filtered.length} de ${images.data.length} imagen(es)${search ? " (con filtro aplicado)" : ""}.`}
             </p>
             <table className="data-table">
               <thead>
@@ -153,7 +154,7 @@ export default function ImageInventory() {
                             </span>
                           )}
                         </td>
-                        <td>{item.scanned_at ? new Date(item.scanned_at).toLocaleString() : "-"}</td>
+                        <td>{item.scanned_at ? new Date(item.scanned_at).toLocaleString(currentLocale()) : "-"}</td>
                         <td>
                           <button
                             className="btn-link"
@@ -179,7 +180,7 @@ export default function ImageInventory() {
                                 />
                               </div>
                               <p className="empty-hint">
-                                Mostrando {expandedPackages.length} de {item.package_count} paquete(s).
+                                {`Mostrando ${expandedPackages.length} de ${item.package_count} paquete(s).`}
                               </p>
                               <table className="data-table">
                                 <thead>

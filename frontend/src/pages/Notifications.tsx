@@ -6,6 +6,7 @@ import type { ChannelOut, NotifyLogOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
+import { currentLocale } from "../i18n";
 
 type ChannelType = "email" | "slack_webhook" | "generic_webhook";
 
@@ -182,7 +183,7 @@ export default function Notifications() {
           </div>
         ) : (
           <p className="empty-hint" style={{ marginTop: 12 }}>
-            Tu usuario ({claims?.role ?? "sin rol"}) no puede agregar canales -- lo puede hacer un admin o soc_manager.
+            {`Tu usuario (${claims?.role ?? "sin rol"}) no puede agregar canales -- lo puede hacer un admin o soc_manager.`}
           </p>
         )}
         {newType === "email" && (
@@ -243,7 +244,7 @@ export default function Notifications() {
                   <td>{l.channel_type}</td>
                   <td><StatusBadge value={l.status} /></td>
                   <td>{l.error || "-"}</td>
-                  <td>{new Date(l.created_at).toLocaleString()}</td>
+                  <td>{new Date(l.created_at).toLocaleString(currentLocale())}</td>
                 </tr>
               ))}
               {logs.data.length === 0 && (

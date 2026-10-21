@@ -169,3 +169,41 @@ def test_server_rejection_shows_the_readable_detail_not_raw_json(monkeypatch):
         asyncio.run(lc.get_payment_link("a@b.com"))
     assert str(exc.value).endswith(": PayPal rechazo las credenciales (HTTP 401).")
     assert "{" not in str(exc.value)
+
+
+# ---- PAYMENT_PROVIDERS: ofrecer solo algunas pasarelas ----
+
+@pytest.mark.parametrize("raw,expected", [
+    ("", ["paypal", "mercadopago"]),
+    ("mercadopago", ["mercadopago"]),
+    (" MercadoPago ", ["mercadopago"]),
+    ("paypal", ["paypal"]),
+    ("mercadopago,paypal", ["paypal", "mercadopago"]),
+    ("paypal;mercadopago", ["paypal", "mercadopago"]),
+    ("mercadopgo", ["paypal", "mercadopago"]),  # error de tipeo: no bloquea los pagos
+])
+def test_enabled_providers_parsing(monkeypatch, raw, expected):
+    monkeypatch.setenv("PAYMENT_PROVIDERS", raw)
+    assert lc.enabled_providers() == expected
+
+
+def test_disabled_provider_never_reaches_the_central_server(monkeypatch):
+    monkeypatch.setenv("PAYMENT_PROVIDERS", "mercadopago")
+    called = []
+    _patch_http(monkeypatch, lambda r: called.append(str(r.url)) or httpx.Response(200, json={"approval_url": "https://x.test/a"}))
+    with pytest.raises(lc.LicenseCheckError, match="no esta habilitado"):
+        asyncio.run(lc.get_payment_link("a@b.com", "paypal"))
+    assert called == []
+
+
+def test_get_payment_links_only_asks_enabled_gateways(monkeypatch):
+    monkeypatch.setenv("PAYMENT_PROVIDERS", "mercadopago")
+    seen = []
+
+    def handler(request: httpx.Request):
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"approval_url": "https://mp.test/ok"})
+
+    _patch_http(monkeypatch, handler)
+    assert asyncio.run(lc.get_payment_links("a@b.com")) == {"mercadopago": "https://mp.test/ok"}
+    assert seen == ["/license/KEY1/mercadopago/subscription-link"]

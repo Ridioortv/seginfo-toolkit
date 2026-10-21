@@ -6,6 +6,9 @@ import { parseLoginError } from "../utils/loginError";
 import { PAYMENT_PROVIDERS, type PaymentProvider } from "../utils/payment";
 import { generateClientState, storeClientState } from "../utils/ssoState";
 import Icon, { BrandMark } from "../components/Icon";
+import { LanguageSwitcher, useLangStore, type Lang } from "../i18n";
+
+const GOOGLE_LOCALES: Record<Lang, string> = { es: "es", en: "en", zh: "zh_CN", ru: "ru" };
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 
@@ -44,6 +47,7 @@ export default function Login() {
   const setTokens = useAuthStore((s) => s.setTokens);
   const navigate = useNavigate();
   const googleButtonRef = useRef<HTMLDivElement>(null);
+  const lang = useLangStore((s) => s.lang);
 
   // El login (email/password, Google o SSO) devuelve 402 cuando la
   // organizacion no tiene la suscripcion al dia (ver
@@ -110,6 +114,7 @@ export default function Login() {
           size: "large",
           width: 280,
           text: "continue_with",
+          locale: GOOGLE_LOCALES[lang],
         });
       } else if (attempts < 20) {
         attempts += 1;
@@ -117,7 +122,7 @@ export default function Login() {
       }
     };
     tryInit();
-  }, [navigate, setTokens]);
+  }, [navigate, setTokens, lang]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -198,6 +203,7 @@ export default function Login() {
 
   return (
     <div className="app-shell">
+      <LanguageSwitcher floating />
       <section className="login-hero" aria-hidden="true">
         <div className="sidebar-brand">
           <BrandMark />
@@ -240,7 +246,7 @@ export default function Login() {
         </div>
 
         <div className="field">
-          <label htmlFor="password">Contrasena{mode === "register" ? " (minimo 12 caracteres)" : ""}</label>
+          <label htmlFor="password">{mode === "register" ? "Contrasena (minimo 12 caracteres)" : "Contrasena"}</label>
           <input
             id="password"
             type="password"

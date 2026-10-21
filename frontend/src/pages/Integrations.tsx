@@ -5,6 +5,7 @@ import type { ActionLogOut, ConnectorOut, TicketLogOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
+import { currentLocale } from "../i18n";
 
 type ConnectorKind = "firewall" | "edr" | "ticketing";
 
@@ -269,7 +270,7 @@ export default function Integrations() {
                       t.error || "-"
                     )}
                   </td>
-                  <td>{new Date(t.created_at).toLocaleString()}</td>
+                  <td>{new Date(t.created_at).toLocaleString(currentLocale())}</td>
                 </tr>
               ))}
               {tickets.data.length === 0 && (
@@ -294,7 +295,7 @@ export default function Integrations() {
                   <td className="mono">{a.target}</td>
                   <td><StatusBadge value={a.status} /></td>
                   <td>{a.error || "-"}</td>
-                  <td>{new Date(a.created_at).toLocaleString()}</td>
+                  <td>{new Date(a.created_at).toLocaleString(currentLocale())}</td>
                 </tr>
               ))}
               {actions.data.length === 0 && (

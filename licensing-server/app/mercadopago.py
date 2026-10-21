@@ -253,14 +253,23 @@ async def create_subscription_approval_link(license_key: str, payer_email: str |
     return str(preapproval_id), str(init_point), amount
 
 
+def _is_foreign_preapproval(resp: httpx.Response) -> bool:
+    """Mercado Pago responde 400 "the preapprovalId is not valid for callerId"
+    cuando la suscripcion pertenece a OTRA cuenta/ambiente: tipicamente una
+    creada en modo de prueba que quedo vinculada a la licencia y ahora se
+    consulta con el token de produccion. Para esta cuenta esa suscripcion no
+    existe (no puede cobrar ni bloquear nada), igual que un 404."""
+    return resp.status_code == 400 and "callerid" in resp.text.lower()
+
+
 async def get_preapproval(preapproval_id: str) -> dict | None:
     """Suscripcion en Mercado Pago (status: pending, authorized, paused,
-    cancelled). None si no la conoce (404)."""
+    cancelled). None si no la conoce (404) o si es de otra cuenta/ambiente."""
     if not is_configured():
         raise MercadoPagoError("MP_ACCESS_TOKEN no configurado")
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(f"{_API}/preapproval/{preapproval_id}", headers=_headers())
-    if resp.status_code == 404:
+    if resp.status_code == 404 or _is_foreign_preapproval(resp):
         return None
     if resp.status_code >= 400:
         raise MercadoPagoError(f"no se pudo consultar la suscripcion: {resp.status_code} {resp.text[:300]}")
@@ -295,9 +304,10 @@ async def cancel_subscription(preapproval_id: str) -> None:
         resp = await client.put(
             f"{_API}/preapproval/{preapproval_id}", headers=_headers(), json={"status": "cancelled"}
         )
-    # 404 = Mercado Pago ya no la conoce; para el cliente el resultado es el
-    # mismo (no se le cobra mas), no es un error.
-    if resp.status_code >= 400 and resp.status_code != 404:
+    # 404 = Mercado Pago ya no la conoce; "not valid for callerId" = es de otra
+    # cuenta/ambiente (ej. quedo de las pruebas). Para el cliente el resultado
+    # es el mismo (esta cuenta no le cobra), no es un error.
+    if resp.status_code >= 400 and resp.status_code != 404 and not _is_foreign_preapproval(resp):
         raise MercadoPagoError(f"Mercado Pago rechazo la cancelacion: {resp.status_code} {resp.text[:500]}")
 
 

@@ -181,7 +181,7 @@ export default function Vulnerabilities() {
               deje de molestar sin borrarlo, marcalo como "Falso positivo" o "Aceptar riesgo" en Ver detalle.
             </p>
             <p className="empty-hint" style={{ marginTop: 8 }}>
-              Mostrando {filtered.length} de {vulns.data.length} vulnerabilidad(es){hasActiveFilters ? " (con filtros aplicados)" : ""}.
+              {`Mostrando ${filtered.length} de ${vulns.data.length} vulnerabilidad(es)${hasActiveFilters ? " (con filtros aplicados)" : ""}.`}
             </p>
             <table className="data-table">
               <thead>
@@ -300,7 +300,7 @@ export default function Vulnerabilities() {
                           )}
                           {v.triage_note && (
                             <p className="empty-hint" style={{ marginTop: 8 }}>
-                              Nota de triage: {v.triage_note} {v.triaged_by && `(por ${v.triaged_by})`}
+                              {(v.triaged_by ? `Nota de triage: ${v.triage_note} (por ${v.triaged_by})` : `Nota de triage: ${v.triage_note}`)}
                             </p>
                           )}
                         </td>

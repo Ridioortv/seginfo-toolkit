@@ -4,6 +4,7 @@ import { purpleApi } from "../services/api";
 import type { CoverageResult, ExerciseOut, TechniqueOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { connectionErrorDetail } from "../utils/errors";
+import { currentLocale } from "../i18n";
 
 function groupByTactic(techniques: TechniqueOut[]): Record<string, TechniqueOut[]> {
   const groups: Record<string, TechniqueOut[]> = {};
@@ -100,7 +101,7 @@ export default function PurpleTeam() {
         <div className="stat-card">
           <span className="stat-label">Cobertura global</span>
           <span className="stat-value">{coverage.data ? `${coverage.data.coverage_pct}%` : "-"}</span>
-          <span className="stat-hint">{coverage.data?.covered_count ?? 0} / {coverage.data?.total_techniques ?? techniques.data?.length ?? 0} tecnicas</span>
+          <span className="stat-hint">{`${coverage.data?.covered_count ?? 0} / ${coverage.data?.total_techniques ?? techniques.data?.length ?? 0} tecnicas`}</span>
         </div>
         <div className="stat-card">
           <span className="stat-label">Ejercicios declarados</span>
@@ -214,7 +215,7 @@ export default function PurpleTeam() {
                       <td>{e.name}</td>
                       <td className="mono">{e.declared_technique_ids.join(", ")}</td>
                       <td>{last?.coverage_pct !== undefined ? `${last.coverage_pct}%` : "sin calcular"}</td>
-                      <td>{new Date(e.created_at).toLocaleString()}</td>
+                      <td>{new Date(e.created_at).toLocaleString(currentLocale())}</td>
                       <td>
                         <button
                           className="btn-link"

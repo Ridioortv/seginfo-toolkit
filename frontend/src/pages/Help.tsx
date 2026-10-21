@@ -68,7 +68,7 @@ export default function Help() {
       <div className="panel">
         <div className="help-progress-row">
           <span className="stat-hint">
-            Progreso de la guia: {readCount}/{visibleTopics.length} secciones leidas
+            {`Progreso de la guia: ${readCount}/${visibleTopics.length} secciones leidas`}
           </span>
           <div className="progress-bar-track">
             <div className="progress-bar-fill" style={{ width: `${percent}%` }} />

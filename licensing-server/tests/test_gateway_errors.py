@@ -234,3 +234,44 @@ def test_user_bad_request_when_retry_also_fails_explains_the_email(client, monke
     d = r.json()["detail"]
     assert "test_user_1@testuser.com (de MP_TEST_PAYER_EMAIL)" in d and "sin la palabra TESTUSER" in d
     assert len(d) < 480
+
+
+FOREIGN = {"message": "the preapprovalId is not valid for callerId", "status": 400}
+
+
+def test_mp_link_ignores_a_preapproval_left_over_from_test_mode(client, monkeypatch):
+    """Una suscripcion creada con credenciales de prueba queda guardada en la
+    licencia; con el token de produccion MP la rechaza con 400 "not valid for
+    callerId". No debe bloquear la generacion del link nuevo."""
+    _new(client, "k-g-foreign")
+    main.db.set_mp_preapproval_id("k-g-foreign", "old-test-preapproval")
+    calls = []
+
+    def handler(request):
+        calls.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path.endswith("/preapproval/old-test-preapproval"):
+            return httpx.Response(400, json=FOREIGN)
+        if request.method == "POST" and request.url.path.endswith("/preapproval"):
+            return httpx.Response(201, json={"id": "new-live-id", "init_point": "https://mp/checkout?id=new-live-id"})
+        return httpx.Response(500, json={})
+
+    _patch_http(monkeypatch, mp, handler)
+    r = client.post("/license/k-g-foreign/mercadopago/subscription-link", json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["subscription_id"] == "new-live-id"
+    assert main.db.get_client("k-g-foreign")["mp_preapproval_id"] == "new-live-id"
+
+
+def test_mp_get_preapproval_other_400_is_still_an_error(client, monkeypatch):
+    _patch_http(monkeypatch, mp, lambda r: httpx.Response(400, json={"message": "otra cosa", "status": 400}))
+    import asyncio
+
+    with pytest.raises(mp.MercadoPagoError):
+        asyncio.run(mp.get_preapproval("x"))
+
+
+def test_mp_cancel_of_a_foreign_preapproval_is_not_an_error(client, monkeypatch):
+    _patch_http(monkeypatch, mp, lambda r: httpx.Response(400, json=FOREIGN))
+    import asyncio
+
+    asyncio.run(mp.cancel_subscription("old-test-preapproval"))

@@ -6,6 +6,7 @@ import PageHeader from "../components/PageHeader";
 import { StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
 import { useAuthStore } from "../store/auth";
+import { currentLocale } from "../i18n";
 
 const SEVERITIES = ["info", "low", "medium", "high", "critical"];
 
@@ -365,7 +366,7 @@ export default function Soar() {
                   <td>{r.playbook_name}</td>
                   <td><StatusBadge value={r.status} /></td>
                   <td>{r.triggered_by}</td>
-                  <td>{new Date(r.created_at).toLocaleString()}</td>
+                  <td>{new Date(r.created_at).toLocaleString(currentLocale())}</td>
                 </tr>
               ))}
               {runs.data.length === 0 && (

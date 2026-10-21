@@ -5,6 +5,7 @@ import { useAuthStore } from "../store/auth";
 import type { GeneratedReportOut, ReportScheduleOut, ChannelOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { connectionErrorDetail, blobExportErrorDetail } from "../utils/errors";
+import { currentLocale } from "../i18n";
 
 // Mismo criterio que require_role("admin", "soc_manager") en
 // POST/PATCH/DELETE /report-schedules (report-service/app/main.py) --
@@ -172,7 +173,7 @@ export default function Reports() {
                   <td>{r.report_type}</td>
                   <td>{r.generated_by || "-"}</td>
                   <td>{r.errors.length > 0 ? r.errors.join("; ") : "-"}</td>
-                  <td>{new Date(r.created_at).toLocaleString()}</td>
+                  <td>{new Date(r.created_at).toLocaleString(currentLocale())}</td>
                   <td>
                     <button
                       className="btn-link"
@@ -281,8 +282,7 @@ export default function Reports() {
           </>
         ) : (
           <p className="empty-hint">
-            Tu usuario ({claims?.role ?? "sin rol"}) no puede crear ni administrar reglas de reporte programado -- lo
-            puede hacer un admin o soc_manager.
+            {`Tu usuario (${claims?.role ?? "sin rol"}) no puede crear ni administrar reglas de reporte programado -- lo puede hacer un admin o soc_manager.`}
           </p>
         )}
 
@@ -305,7 +305,7 @@ export default function Reports() {
                   <td>{(channels.data ?? []).find((c) => c.id === s.notification_channel_id)?.name ?? s.notification_channel_id}</td>
                   <td>{scheduleWhen(s)}</td>
                   <td>
-                    {s.last_run_at ? new Date(s.last_run_at).toLocaleString() : "nunca"}
+                    {s.last_run_at ? new Date(s.last_run_at).toLocaleString(currentLocale()) : "nunca"}
                     {s.last_status && <span className="error-detail">{s.last_status}</span>}
                   </td>
                   <td>

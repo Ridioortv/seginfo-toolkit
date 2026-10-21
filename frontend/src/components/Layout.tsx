@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuthStore } from "../store/auth";
 import Icon, { BrandMark, type IconName } from "./Icon";
 import { currentTheme, toggleTheme, type Theme } from "../utils/theme";
+import { LanguageSwitcher } from "../i18n";
 
 type NavItem = { to: string; label: string; icon: IconName };
 type NavGroup = { label: string; items: NavItem[] };
@@ -159,6 +160,7 @@ export default function Layout() {
           </button>
           <span className="topbar-title">{pageTitle(location.pathname, groups)}</span>
           <span className="topbar-spacer" />
+          <LanguageSwitcher />
           <button
             type="button"
             className="icon-btn"

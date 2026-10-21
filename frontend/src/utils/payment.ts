@@ -19,6 +19,16 @@ export const PAYMENT_PROVIDERS: PaymentProviderInfo[] = [
   },
 ];
 
+export const ALL_PROVIDER_IDS: PaymentProvider[] = PAYMENT_PROVIDERS.map((p) => p.id);
+
+// Pasarelas conocidas que el servidor dice ofrecer (en el orden de PAYMENT_PROVIDERS).
+// Si no manda ninguna valida se asumen todas, para no dejar sin forma de pagar.
+export function pickProviders(raw: unknown): PaymentProvider[] {
+  if (!Array.isArray(raw)) return [...ALL_PROVIDER_IDS];
+  const chosen = ALL_PROVIDER_IDS.filter((id) => raw.includes(id));
+  return chosen.length ? chosen : [...ALL_PROVIDER_IDS];
+}
+
 export function providerLabel(id: PaymentProvider): string {
   return PAYMENT_PROVIDERS.find((p) => p.id === id)?.label ?? id;
 }

@@ -51,6 +51,17 @@ def provider_label(provider: str) -> str:
     return PROVIDER_LABELS.get(provider, provider)
 
 
+def enabled_providers() -> list[str]:
+    """Pasarelas que esta instalacion OFRECE, segun PAYMENT_PROVIDERS en el .env
+    (lista separada por comas; por defecto las dos). Sirve para ofrecer una sola
+    mientras la otra no esta lista. Los nombres desconocidos se ignoran; si
+    queda vacia (error de tipeo), se vuelve al default en vez de bloquear los pagos."""
+    raw = os.getenv("PAYMENT_PROVIDERS", "")
+    wanted = [x.strip().lower() for x in raw.replace(";", ",").split(",") if x.strip()]
+    chosen = [p for p in PROVIDER_LABELS if p in wanted]
+    return chosen or list(PROVIDER_LABELS)
+
+
 class LicenseCheckError(Exception):
     """Fallo de red, HTTP, o de firma -- el caller decide que hacer (ver
     is_configured()/check_license() en services.py de auth-service, que
@@ -170,6 +181,8 @@ async def get_payment_link(payer_email: str, provider: str = DEFAULT_PROVIDER) -
     entonces el mensaje de "contacta al operador"."""
     if provider not in PROVIDER_LABELS:
         raise LicenseCheckError(f"pasarela de pago desconocida: {provider}")
+    if provider not in enabled_providers():
+        raise LicenseCheckError(f"{provider_label(provider)} no esta habilitado en esta instalacion")
     if not is_configured():
         raise LicenseCheckError("LICENSE_SERVER_URL/LICENSE_KEY no configurados")
 
@@ -206,7 +219,7 @@ async def get_payment_links(payer_email: str) -> dict[str, str]:
             logger.warning("no se pudo generar el link de %s: %s", provider_label(provider), exc)
             return provider, None
 
-    results = await asyncio.gather(*(_one(p) for p in PROVIDER_LABELS))
+    results = await asyncio.gather(*(_one(p) for p in enabled_providers()))
     return {provider: url for provider, url in results if url}
 
 

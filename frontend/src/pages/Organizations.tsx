@@ -158,8 +158,7 @@ export default function Organizations() {
         <PageHeader title="Organizaciones" subtitle="Gestion de tenants y SSO empresarial." />
         <div className="panel">
           <p className="empty-hint">
-            Tu usuario ({claims?.role ?? "sin rol"}) no tiene acceso a esta seccion -- la administra un admin de tu
-            organizacion o un administrador de plataforma.
+            {`Tu usuario (${claims?.role ?? "sin rol"}) no tiene acceso a esta seccion -- la administra un admin de tu organizacion o un administrador de plataforma.`}
           </p>
         </div>
       </div>
@@ -241,8 +240,7 @@ export default function Organizations() {
           {createError && <p className="error-text">{createError}</p>}
           {createResult && (
             <p className="empty-hint">
-              Organizacion "{createResult.organization.name}" creada (slug: {createResult.organization.slug}) con
-              admin {createResult.admin_user.email}.
+              {`Organizacion "${createResult.organization.name}" creada (slug: ${createResult.organization.slug}) con admin ${createResult.admin_user.email}.`}
             </p>
           )}
         </div>
@@ -274,7 +272,7 @@ export default function Organizations() {
             </div>
             <div className="field">
               <label htmlFor="sso-client-secret">
-                Client secret {ssoConfig.data ? "(deja en blanco para no cambiarlo)" : ""}
+                {ssoConfig.data ? "Client secret (deja en blanco para no cambiarlo)" : "Client secret"}
               </label>
               <input
                 id="sso-client-secret"

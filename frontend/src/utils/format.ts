@@ -1,3 +1,5 @@
+import { currentLocale } from "../i18n/store";
+
 /**
  * Formatea una fecha ISO (o null/undefined, comun cuando todavia no se
  * conoce -- ej. una organizacion sin `subscription_expires_at`) a
@@ -6,5 +8,5 @@
  */
 export function formatDate(iso: string | undefined | null): string {
   if (!iso) return "--";
-  return new Date(iso).toLocaleDateString("es-AR");
+  return new Date(iso).toLocaleDateString(currentLocale());
 }

@@ -44,6 +44,12 @@ class SubscriptionPayLinkRequest(BaseModel):
     payer_email: EmailStr | None = Field(default=None, max_length=254)
 
 
+class PaymentProvidersOut(BaseModel):
+    """Pasarelas de pago que ofrece esta instalacion (ver PAYMENT_PROVIDERS)."""
+
+    providers: list[Literal["paypal", "mercadopago"]]
+
+
 class SubscriptionPayLinkOut(BaseModel):
     """Link de pago (PayPal o Mercado Pago) para pagar por primera vez o
     volver a suscribirse tras cancelar -- ver POST .../subscription/pay-link."""

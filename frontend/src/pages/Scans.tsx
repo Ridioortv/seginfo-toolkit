@@ -14,6 +14,7 @@ import PageHeader from "../components/PageHeader";
 import { SeverityBadge, StatusBadge } from "../components/Badge";
 import { RunningIndicator } from "../components/RunningIndicator";
 import { connectionErrorDetail } from "../utils/errors";
+import { currentLocale } from "../i18n";
 
 const DAY_LABELS = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"];
 
@@ -196,8 +197,8 @@ function ScanResultsPanel({
             </div>
             {(pkgLine || v.port != null) && (
               <p className="empty-hint" style={{ marginTop: 4, marginBottom: 4 }}>
-                {pkgLine && <>Paquete: {pkgLine}. </>}
-                {v.port != null && <>Puerto: {v.port}{v.service && ` (${v.service})`}.</>}
+                {pkgLine && `Paquete: ${pkgLine}. `}
+                {v.port != null && (v.service ? `Puerto: ${v.port} (${v.service}).` : `Puerto: ${v.port}.`)}
               </p>
             )}
             {v.description && <p style={{ marginTop: 4, marginBottom: 4 }}>{v.description}</p>}
@@ -542,7 +543,7 @@ export default function Scans() {
         {formError && <p className="error-text">{formError}</p>}
         {lastResult && !formError && (
           <p className={lastResult.failed > 0 ? "error-text" : "empty-hint"}>
-            {lastResult.ok} escaneo(s) creado(s){lastResult.failed > 0 ? `, ${lastResult.failed} fallaron` : ""}.
+            {lastResult.failed > 0 ? `${lastResult.ok} escaneo(s) creado(s), ${lastResult.failed} fallaron.` : `${lastResult.ok} escaneo(s) creado(s).`}
           </p>
         )}
       </div>
@@ -568,7 +569,7 @@ export default function Scans() {
           </button>
         </div>
         {uploadFile && (
-          <p className="empty-hint">Archivo: {uploadFile.name} ({Math.round(uploadFile.size / 1024)} KB)</p>
+          <p className="empty-hint">{`Archivo: ${uploadFile.name} (${Math.round(uploadFile.size / 1024)} KB)`}</p>
         )}
         {uploadScan.isError && (
           <p className="error-text">
@@ -607,8 +608,7 @@ export default function Scans() {
         </div>
         {yaraFiles.length > 0 && (
           <p className="empty-hint">
-            {yaraFiles.length} archivo(s): {yaraFiles.map((f) => f.name).join(", ")} (
-            {Math.round(yaraFiles.reduce((sum, f) => sum + f.size, 0) / 1024)} KB en total)
+            {`${yaraFiles.length} archivo(s): ${yaraFiles.map((f) => f.name).join(", ")} (${Math.round(yaraFiles.reduce((sum, f) => sum + f.size, 0) / 1024)} KB en total)`}
           </p>
         )}
         {uploadYara.isError && (
@@ -796,7 +796,7 @@ export default function Scans() {
                   </td>
                   <td>{scheduleWhen(s)}</td>
                   <td>
-                    {s.last_run_at ? new Date(s.last_run_at).toLocaleString() : "nunca"}
+                    {s.last_run_at ? new Date(s.last_run_at).toLocaleString(currentLocale()) : "nunca"}
                     {s.last_status && <span className="error-detail">{s.last_status}</span>}
                   </td>
                   <td>
@@ -862,7 +862,7 @@ export default function Scans() {
         {justCreatedKey && (
           <div className="panel" style={{ marginTop: 8, border: "1px solid var(--warning)" }}>
             <p>
-              Agente <strong>{justCreatedKey.agentName}</strong> registrado. Copia esta api key ahora -- no se va a
+              {`Agente ${justCreatedKey.agentName} registrado.`} Copia esta api key ahora -- no se va a
               volver a mostrar (pegala en la variable <code className="mono">AGENT_API_KEY</code> al configurar
               remote-agent/agent.py en la maquina donde va a correr el agente):
             </p>
@@ -896,7 +896,7 @@ export default function Scans() {
                       "-"
                     )}
                   </td>
-                  <td>{a.last_seen_at ? new Date(a.last_seen_at).toLocaleString() : "nunca (todavia no hizo polling)"}</td>
+                  <td>{a.last_seen_at ? new Date(a.last_seen_at).toLocaleString(currentLocale()) : "nunca (todavia no hizo polling)"}</td>
                   <td>
                     {a.is_protected ? (
                       <span
@@ -928,7 +928,7 @@ export default function Scans() {
           if (!isStale) return null;
           return (
             <p style={{ color: "var(--warning)", marginTop: 8 }}>
-              "{lanAgent.name}" {lastSeenMs == null ? "todavia no hizo polling" : "hace rato que no aparece"} --
+              {lastSeenMs == null ? `"${lanAgent.name}" todavia no hizo polling --` : `"${lanAgent.name}" hace rato que no aparece --`}
               para escanear tu red real (192.168.x.x, etc.) necesitas tenerlo corriendo en una PC con
               visibilidad a esa red. Doble-clic en <code className="mono">remote-agent/Instalar-Agente-LAN.bat</code>{" "}
               en esa PC (una sola vez, no hace falta ser administrador) y queda andando solo de ahi en adelante,
@@ -1043,8 +1043,7 @@ export default function Scans() {
           if (wanAgent && isLikelyPrivateIpTarget(agentJobTarget)) {
             return (
               <p className="empty-hint" style={{ color: "var(--warning)" }}>
-                Atencion: "{selectedJobAgent?.name}" solo escanea objetivos publicos de internet, y
-                "{agentJobTarget.trim()}" es una IP privada. El escaneo va a fallar al toque -- usa el Agente LAN
+                {`Atencion: "${selectedJobAgent?.name}" solo escanea objetivos publicos de internet, y "${agentJobTarget.trim()}" es una IP privada.`} El escaneo va a fallar al toque -- usa el Agente LAN
                 (remote-agent/agente-lan.ps1, corriendo en una PC con visibilidad real a esa red) para este target.
               </p>
             );
@@ -1052,16 +1051,14 @@ export default function Scans() {
           if (wanAgent && ["zeek", "falco", "yara"].includes(agentJobScannerType)) {
             return (
               <p className="empty-hint" style={{ color: "var(--warning)" }}>
-                Atencion: "{selectedJobAgent?.name}" no corre {agentJobScannerType} (analiza el propio equipo o
-                archivos locales, no objetivos de internet). Usa el Agente Docker para ese scanner.
+                {`Atencion: "${selectedJobAgent?.name}" no corre ${agentJobScannerType} (analiza el propio equipo o archivos locales, no objetivos de internet).`} Usa el Agente Docker para ese scanner.
               </p>
             );
           }
           const warn = dockerAgent && isLikelyPrivateIpTarget(agentJobTarget);
           return warn ? (
             <p className="empty-hint" style={{ color: "var(--warning)" }}>
-              Atencion: "{selectedJobAgent?.name}" corre DENTRO de Docker Desktop y {agentJobScannerType} no puede
-              atravesar su NAT hacia una IP de LAN como "{agentJobTarget.trim()}". El escaneo va a fallar al toque
+              {`Atencion: "${selectedJobAgent?.name}" corre DENTRO de Docker Desktop y ${agentJobScannerType} no puede atravesar su NAT hacia una IP de LAN como "${agentJobTarget.trim()}".`} El escaneo va a fallar al toque
               -- usa el Agente LAN (remote-agent/agente-lan.ps1, corriendo en una PC con visibilidad real a esa
               red) para este target.
             </p>
@@ -1116,7 +1113,7 @@ export default function Scans() {
                       )}
                     </td>
                     <td>{j.findings.length}</td>
-                    <td>{new Date(j.created_at).toLocaleString()}</td>
+                    <td>{new Date(j.created_at).toLocaleString(currentLocale())}</td>
                     <td>
                       <button
                         className="btn-link"
@@ -1211,7 +1208,7 @@ export default function Scans() {
                       )}
                     </td>
                     <td>{s.findings.length}</td>
-                    <td>{new Date(s.created_at).toLocaleString()}</td>
+                    <td>{new Date(s.created_at).toLocaleString(currentLocale())}</td>
                     <td>
                       <button className="btn-link" onClick={() => setExpandedScanId(expandedScanId === s.id ? null : s.id)}>
                         {expandedScanId === s.id ? "Ocultar resultados" : "Ver resultados"}

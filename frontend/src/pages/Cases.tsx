@@ -7,6 +7,7 @@ import PageHeader from "../components/PageHeader";
 import { SeverityBadge, StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
 import { isSlaBreached } from "../utils/sla";
+import { currentLocale } from "../i18n";
 
 const CAN_SYNC = ["admin", "soc_manager"];
 
@@ -150,7 +151,7 @@ export default function Cases() {
                       <td><StatusBadge value={c.status} /></td>
                       <td>{c.assignee || "sin asignar"}</td>
                       <td className={breached ? "text-danger" : undefined}>
-                        {c.sla_due_at ? new Date(c.sla_due_at).toLocaleString() : "-"}
+                        {c.sla_due_at ? new Date(c.sla_due_at).toLocaleString(currentLocale()) : "-"}
                         {breached && " (vencido)"}
                       </td>
                       <td>{c.source}</td>
@@ -198,7 +199,7 @@ export default function Cases() {
                             <ul>
                               {c.timeline.map((t) => (
                                 <li key={t.id}>
-                                  {new Date(t.created_at).toLocaleString()} -- {t.action}
+                                  {new Date(t.created_at).toLocaleString(currentLocale())} -- {t.action}
                                   {t.notes && `: ${t.notes}`} {t.actor && `(${t.actor})`}
                                 </li>
                               ))}

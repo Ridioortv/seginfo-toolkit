@@ -5,6 +5,7 @@ import type { AlertOut, SigmaRuleOut, ThreatIntelHit, IpReputationOut } from "..
 import PageHeader from "../components/PageHeader";
 import { SeverityBadge, StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
+import { currentLocale } from "../i18n";
 
 const SEVERITIES = ["critical", "high", "medium", "low", "info"];
 
@@ -27,22 +28,22 @@ function ThreatIntelResult({ result }: { result: IpReputationOut }) {
   if (result.is_malicious === null) {
     return (
       <p className="empty-hint">
-        No se pudo chequear {result.ip} contra ninguna fuente (revisa ABUSEIPDB_API_KEY / MISP_URL en el servidor).
+        {`No se pudo chequear ${result.ip} contra ninguna fuente (revisa ABUSEIPDB_API_KEY / MISP_URL en el servidor).`}
       </p>
     );
   }
   if (!result.is_malicious) {
     return (
       <p className="empty-hint">
-        {result.ip}: sin reportes de reputacion negativa ({result.source}
-        {result.cached ? ", cache" : ""}).
+        {(result.cached
+          ? `${result.ip}: sin reportes de reputacion negativa (${result.source}, cache).`
+          : `${result.ip}: sin reportes de reputacion negativa (${result.source}).`)}
       </p>
     );
   }
   return (
     <p className="error-text">
-      IP maliciosa conocida: {result.ip} ({result.source}, score {result.score ?? "?"})
-      {result.categories.length > 0 && <> -- {result.categories.join(", ")}</>}
+      {`IP maliciosa conocida: ${result.ip} (${result.source}, score ${result.score ?? "?"})${result.categories.length > 0 ? ` -- ${result.categories.join(", ")}` : ""}`}
     </p>
   );
 }
@@ -54,7 +55,7 @@ function ThreatIntelBadge({ threatIntel }: { threatIntel?: Record<string, Threat
   }
   return (
     <span className="badge badge-critical">
-      IP maliciosa conocida: {entries.map(([ip, hit]) => `${ip} (${hit.source}, score ${hit.score ?? "?"})`).join("; ")}
+      {`IP maliciosa conocida: ${entries.map(([ip, hit]) => `${ip} (${hit.source}, score ${hit.score ?? "?"})`).join("; ")}`}
     </span>
   );
 }
@@ -281,7 +282,7 @@ export default function Siem() {
                   <td><StatusBadge value={a.status} /></td>
                   <td>{a.soar_triggered ? "si" : "no"}</td>
                   <td><ThreatIntelBadge threatIntel={a.threat_intel} /></td>
-                  <td>{new Date(a.created_at).toLocaleString()}</td>
+                  <td>{new Date(a.created_at).toLocaleString(currentLocale())}</td>
                   <td>
                     {a.status === "new" && (
                       <button className="btn-link" onClick={() => updateAlert.mutate({ id: a.id, status: "acknowledged" })}>
@@ -322,7 +323,7 @@ export default function Siem() {
             {seedDefaults.isPending ? "Cargando..." : "Cargar reglas recomendadas"}
           </button>
           {seedDefaults.data && (
-            <span className="empty-hint">{seedDefaults.data.length} regla(s) nueva(s) agregada(s).</span>
+            <span className="empty-hint">{`${seedDefaults.data.length} regla(s) nueva(s) agregada(s).`}</span>
           )}
         </div>
         {seedDefaultsError != null && (

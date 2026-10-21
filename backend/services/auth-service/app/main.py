@@ -45,6 +45,7 @@ from app.schemas import (
     SubscriptionExtendRequest,
     SubscriptionCancelOut,
     SubscriptionPayLinkOut,
+    PaymentProvidersOut,
     SubscriptionPayLinkRequest,
     SubscriptionHistoryOut,
 )
@@ -791,6 +792,11 @@ async def get_subscription_pay_link(
     if user is None:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     provider = payload.provider
+    if provider not in license_check.enabled_providers():
+        raise HTTPException(
+            status_code=400,
+            detail=f"{license_check.provider_label(provider)} no esta habilitado en esta instalacion.",
+        )
     try:
         payment_url = await license_check.get_payment_link(payload.payer_email or user.email, provider)
     except license_check.LicenseCheckError as exc:
@@ -803,6 +809,13 @@ async def get_subscription_pay_link(
     await services.record_audit_event(db, claims.get("sub", ""), "organization.subscription.pay_link", org_id)
     await db.commit()
     return SubscriptionPayLinkOut(payment_url=payment_url)
+
+
+@app.get("/auth/payment-providers", response_model=PaymentProvidersOut)
+async def get_payment_providers(claims: dict = Depends(get_current_claims)):
+    """Pasarelas que ofrece esta instalacion (PAYMENT_PROVIDERS del .env), para que
+    "Pagos y licencia" muestre solo esas. No expone ningun dato de la licencia."""
+    return PaymentProvidersOut(providers=license_check.enabled_providers())
 
 
 @app.get("/auth/organizations/{org_id}/subscription/history", response_model=SubscriptionHistoryOut)

@@ -23,10 +23,14 @@ import Security from "./pages/Security";
 import Billing from "./pages/Billing";
 import Users from "./pages/Users";
 import SsoCallback from "./pages/SsoCallback";
+import { useLangStore } from "./i18n";
 
 export default function App() {
+  // Al cambiar de idioma se vuelve a montar el arbol: asi fechas, mensajes y
+  // todo lo calculado en JS se regeneran de cero en el idioma nuevo.
+  const lang = useLangStore((s) => s.lang);
   return (
-    <BrowserRouter>
+    <BrowserRouter key={lang}>
       <Routes>
         <Route path="/login" element={<Login />} />
         {/* Fuera de ProtectedRoute a proposito: llega directo desde el

@@ -50,8 +50,9 @@ export function RunningIndicator({ since, label }: { since: string | null; label
         <div className="progress-bar" />
       </div>
       <span className="progress-label">
-        {(label ?? "corriendo") + " hace " + formatElapsed(elapsedMs)}
-        {isSlow ? " -- tarda mas de lo usual" : ""}
+        {isSlow
+          ? `${label ?? "corriendo"} hace ${formatElapsed(elapsedMs)} -- tarda mas de lo usual`
+          : `${label ?? "corriendo"} hace ${formatElapsed(elapsedMs)}`}
       </span>
     </div>
   );
