@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.shared.database import get_db, SessionLocal, engine, Base
+from backend.shared.database import get_db, SessionLocal, engine, Base, wait_for_database
 from backend.shared.logging import configure_logging
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
@@ -27,6 +27,7 @@ playbooks_triggered_total = Counter("soar_playbooks_triggered_total", "Playbooks
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await wait_for_database()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # A diferencia del resto de las tablas de este proyecto, playbooks

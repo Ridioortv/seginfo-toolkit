@@ -10,7 +10,7 @@ from prometheus_client import Counter, make_asgi_app
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sqlalchemy import text
-from backend.shared.database import get_db, engine, Base
+from backend.shared.database import get_db, engine, Base, wait_for_database
 from backend.shared.logging import configure_logging
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
@@ -25,6 +25,7 @@ notifications_sent_total = Counter("notification_sent_total", "Notificaciones pr
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await wait_for_database()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(text(
