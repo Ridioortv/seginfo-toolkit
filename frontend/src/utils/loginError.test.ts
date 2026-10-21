@@ -100,4 +100,9 @@ describe("parseLoginError", () => {
     expect(r.paymentUrls).toEqual({ mercadopago: "https://mp.test/go" });
     expect(r.paymentUrl).toBe("https://mp.test/go");
   });
+  it("explains a 429 (too many attempts) instead of saying the credentials are wrong", () => {
+    const r = parseLoginError({ response: { status: 429, data: { detail: "Demasiados intentos. Espera unos minutos antes de volver a intentar." } } }, "Credenciales invalidas");
+    expect(r.message).toContain("Demasiados intentos");
+    expect(r.paymentUrl).toBeNull();
+  });
 });

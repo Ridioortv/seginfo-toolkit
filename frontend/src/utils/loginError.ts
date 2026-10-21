@@ -46,5 +46,18 @@ export function parseLoginError(err: unknown, fallback: string): LoginErrorResul
     }
   }
 
+  // 429: demasiados intentos. Sin esto se mostraba "Credenciales invalidas",
+  // y la persona seguia probando claves que en realidad estaban bien.
+  if (axiosErr?.response?.status === 429) {
+    return {
+      message:
+        typeof detail === "string" && detail
+          ? detail
+          : "Demasiados intentos. Espera unos minutos antes de volver a intentar.",
+      paymentUrl: null,
+      paymentUrls: {},
+    };
+  }
+
   return { message: fallback, paymentUrl: null, paymentUrls: {} };
 }
