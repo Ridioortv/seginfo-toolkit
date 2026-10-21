@@ -15,7 +15,7 @@ x-api-hardening: &api-hardening
 # BIND_ADDR controla en que interfaz se publican los puertos de las APIs y el
 # frontend. Default 127.0.0.1 = solo esta PC. Para exponerlo en la LAN poneme
 # BIND_ADDR=0.0.0.0 en .env (y pone un firewall / reverse proxy con TLS delante).
-# Postgres, Redis y OpenSearch NUNCA se publican fuera de 127.0.0.1.
+# Redis y OpenSearch NUNCA se publican fuera de 127.0.0.1; Postgres no se publica en absoluto (ver su servicio).
 
 services:
   postgres:
@@ -29,8 +29,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:5432:5432"
+    # SIN `ports`: los servicios llegan a Postgres por la red interna de Docker
+    # (host "postgres", puerto 5432), asi que no hace falta publicarlo en la PC.
+    # Publicarlo en 127.0.0.1:5432 hacia que `docker compose up` fallara con
+    # "failed to bind host port 127.0.0.1:5432: address already in use" en
+    # cualquier PC que ya tuviera un PostgreSQL instalado. Si algun dia hace
+    # falta entrar con un cliente SQL desde la PC: `docker compose exec postgres
+    # psql -U $POSTGRES_USER $POSTGRES_DB` (no necesita puerto publicado).
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
