@@ -15,7 +15,7 @@ x-api-hardening: &api-hardening
 # BIND_ADDR controla en que interfaz se publican los puertos de las APIs y el
 # frontend. Default 127.0.0.1 = solo esta PC. Para exponerlo en la LAN poneme
 # BIND_ADDR=0.0.0.0 en .env (y pone un firewall / reverse proxy con TLS delante).
-# Redis y OpenSearch NUNCA se publican fuera de 127.0.0.1; Postgres no se publica en absoluto (ver su servicio).
+# Postgres, Redis y OpenSearch no se publican en la PC: los servicios los usan por la red interna de Docker.
 
 services:
   postgres:
@@ -51,8 +51,9 @@ services:
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?Falta REDIS_PASSWORD en .env (ver .env.example)}
     command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
-    ports:
-      - "127.0.0.1:6379:6379"
+    # Sin `ports`: los servicios llegan a Redis por la red interna de Docker. Publicarlo en
+    # 127.0.0.1:6379 chocaba ("port is already allocated") en PCs que ya usaban ese puerto
+    # (un Redis propio, o un TERO anterior con otro nombre de proyecto).
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
       interval: 5s
@@ -70,8 +71,7 @@ services:
       # (mayuscula, minuscula, numero y simbolo) o se niega a arrancar.
       - "OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_ADMIN_PASSWORD:?Falta OPENSEARCH_ADMIN_PASSWORD en .env (ver .env.example)}"
       - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
-    ports:
-      - "127.0.0.1:9200:9200"
+    # Sin `ports`: los servicios llegan a OpenSearch por la red interna de Docker (puerto 9200).
     healthcheck:
       test: ["CMD-SHELL", "curl -sfk -u \"admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD\" https://localhost:9200/_cluster/health || exit 1"]
       interval: 10s
