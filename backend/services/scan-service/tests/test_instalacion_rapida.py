@@ -157,8 +157,16 @@ def _bloque(compose: str, nombre: str) -> str:
     return m.group(1)
 
 
-def test_compose_construye_la_base_antes_que_los_servicios_simples():
+def test_compose_de_uso_no_compila_nada():
+    """Los build: viven solo en docker-compose.dev.yml: el cliente baja imagenes, no compila."""
     compose = (RAIZ / "docker-compose.yml").read_text(encoding="utf-8")
+    sin_comentarios = re.sub(r"(?m)#.*$", "", compose)
+    assert not re.search(r"(?m)^\s+(build|additional_contexts):", sin_comentarios)
+    assert "tero-base" not in sin_comentarios
+
+
+def test_compose_dev_construye_la_base_antes_que_los_servicios_simples():
+    compose = (RAIZ / "docker-compose.dev.yml").read_text(encoding="utf-8")
     base = _bloque(compose, "tero-base")
     assert "backend/Dockerfile.base" in base
     assert re.search(r'profiles:\s*\["build"\]', base), "la base no debe levantarse con `up`"
@@ -176,6 +184,7 @@ CON_BUILD = [f"{s}-service" for s in SIMPLES + PROPIOS] + ["frontend"]
 @pytest.mark.parametrize("nombre", CON_BUILD)
 def test_cada_servicio_construido_tiene_imagen_con_version(nombre):
     b = _bloque((RAIZ / "docker-compose.yml").read_text(encoding="utf-8"), nombre)
+    assert not re.search(r"(?m)^    build:", b)
     m = re.search(r"^    image: \$\{TERO_REGISTRY:-ghcr\.io/ridioortv\}/tero-([a-z-]+):\$\{TERO_VERSION:-local\}$", b, flags=re.M)
     assert m, f"{nombre} no tiene image: ghcr.io/<org>/tero-<servicio>:${{TERO_VERSION}}"
     assert m.group(1) == nombre
@@ -202,5 +211,5 @@ def test_workflow_de_publicacion_seguro_y_sin_acciones_de_terceros():
     # nada de ${{ ... }} de entradas del usuario dentro de bloques run:
     for run in re.findall(r"run: \|\n((?:\s{10,}.*\n)+)", texto):
         assert "github.event.inputs" not in run and "github.actor" not in run
-    assert "docker compose --profile build push" in texto
+    assert '--profile build push' in texto and "docker-compose.dev.yml" in texto
     assert "tr '[:upper:]' '[:lower:]'" in texto, "GHCR exige el dueño en minusculas"

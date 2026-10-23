@@ -72,7 +72,8 @@ jobs:
         run: |
           set -euo pipefail
           cp .env.example .env          # solo para que compose interpole; no entra en ninguna imagen
-          docker compose --profile build build
+          COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.dev.yml)   # el dev aporta los build:
+          docker compose "${COMPOSE_FILES[@]}" --profile build build
 
       - name: Subir las imagenes
         env:
@@ -81,11 +82,12 @@ jobs:
         run: |
           set -euo pipefail
           # Solo los servicios que se construyen aca (postgres/redis/opensearch son imagenes publicas).
-          servicios="$(docker compose --profile build config --format json \
+          COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.dev.yml)
+          servicios="$(docker compose "${COMPOSE_FILES[@]}" --profile build config --format json \
             | python3 -c 'import json,sys; s=json.load(sys.stdin)["services"]; print(" ".join(k for k,v in s.items() if "build" in v))')"
           echo "Subiendo: $servicios"
           # shellcheck disable=SC2086
-          docker compose --profile build push $servicios
+          docker compose "${COMPOSE_FILES[@]}" --profile build push $servicios
 
       - name: Resumen
         run: |

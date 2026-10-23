@@ -5,8 +5,12 @@
 export BUILDX_NO_DEFAULT_ATTESTATIONS ?= 1
 export COMPOSE_PARALLEL_LIMIT ?= 3
 
+# Para desarrollo: COMPILA las imagenes en la PC (docker-compose.dev.yml). El uso normal es
+# `docker compose pull && docker compose up -d` con las imagenes ya publicadas (docker-compose.yml).
+COMPOSE_DEV = docker compose -f docker-compose.yml -f docker-compose.dev.yml
+
 up:
-	docker compose up --build -d
+	$(COMPOSE_DEV) up --build -d
 
 down:
 	docker compose down
