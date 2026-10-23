@@ -1,5 +1,10 @@
 .PHONY: up down logs test lint migrate seed
 
+# Sin SBOM/provenance de BuildKit (capas extra, build mas lento) y a lo sumo
+# 3 imagenes compilandose a la vez.
+export BUILDX_NO_DEFAULT_ATTESTATIONS ?= 1
+export COMPOSE_PARALLEL_LIMIT ?= 3
+
 up:
 	docker compose up --build -d
 
