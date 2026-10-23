@@ -21,7 +21,9 @@ from backend.shared.database import get_db, engine, Base, SessionLocal, wait_for
 from backend.shared.logging import configure_logging
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
-from backend.shared.rate_limit import check_rate_limit
+from backend.shared.rate_limit import (
+    check_rate_limit, clear_failures, register_failure, too_many_failures,
+)
 from backend.shared.security import decode_token, create_token
 from backend.shared import license_check
 from app.schemas import (
@@ -65,6 +67,10 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 login_attempts_total = Counter("auth_login_attempts_total", "Login attempts", ["outcome"])
 LICENSE_CHECK_INTERVAL_HOURS = float(os.getenv("LICENSE_CHECK_INTERVAL_HOURS", "6"))
+# Login: fallos tolerados por ventana (solo cuentan los fallidos).
+LOGIN_MAX_FAILURES_IP = 20
+LOGIN_MAX_FAILURES_EMAIL = 10
+LOGIN_FAILURE_WINDOW_SECONDS = 300
 # Vigencia del pay_token que entrega el 402 para pedir el link de pago.
 PAY_TOKEN_MINUTES = 15
 
@@ -287,14 +293,27 @@ async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depe
     # Dos limites en paralelo: por IP (frena a un atacante probando muchas
     # cuentas, o muchas passwords contra una) y por email (frena fuerza
     # bruta distribuida en varias IPs contra UNA cuenta puntual).
-    await _enforce_rate_limit(f"login:ip:{_client_ip(request)}", limit=20)
-    await _enforce_rate_limit(f"login:email:{payload.email.lower()}", limit=10)
+    # Solo cuentan los intentos FALLIDOS (un login correcto no consume cupo y
+    # borra los fallos de esa cuenta): antes acertar la contrasena despues de
+    # varios intentos podia dar "Demasiados intentos".
+    ip_key = f"login:ip:{_client_ip(request)}"
+    email_key = f"login:email:{payload.email.lower()}"
+    if await too_many_failures(ip_key, LOGIN_MAX_FAILURES_IP) or await too_many_failures(
+        email_key, LOGIN_MAX_FAILURES_EMAIL
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiados intentos. Espera unos minutos antes de volver a intentar.",
+        )
     user = await services.authenticate(db, payload.email, payload.password, payload.totp_code)
     if user is None:
+        await register_failure(ip_key, LOGIN_FAILURE_WINDOW_SECONDS)
+        await register_failure(email_key, LOGIN_FAILURE_WINDOW_SECONDS)
         login_attempts_total.labels(outcome="failure").inc()
         await services.record_audit_event(db, payload.email, "auth.login.failure")
         await db.commit()
         raise HTTPException(status_code=401, detail="Credenciales invalidas o MFA requerido")
+    await clear_failures(email_key)
     org = await services.get_organization_by_id(db, user.organization_id) if user.organization_id else None
     if org is not None:
         await _reject_if_org_inactive(db, org, payload.email)
