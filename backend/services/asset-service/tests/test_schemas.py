@@ -15,11 +15,18 @@ class TestAssetCreateDefaults:
         assert asset.criticality == AssetCriticality.medium
         assert asset.tags == []
 
-    def test_all_fields_are_optional(self):
-        # un activo minimo (sin ningun campo) sigue siendo valido -- el
-        # inventario se puede completar despues.
-        asset = AssetCreate()
-        assert asset.hostname == ""
+    def test_only_hostname_or_ip_is_needed(self):
+        assert AssetCreate(hostname="web-01").ip_address == ""
+        assert AssetCreate(ip_address="10.0.0.5").hostname == ""
+
+    def test_empty_asset_is_rejected(self):
+        # la pantalla ya lo frenaba; la API aceptaba el POST directo
+        for kwargs in ({}, {"hostname": ""}, {"hostname": "   ", "ip_address": " "}):
+            with pytest.raises(ValidationError):
+                AssetCreate(**kwargs)
+
+    def test_whitespace_is_trimmed(self):
+        assert AssetCreate(hostname="  web-01 ").hostname == "web-01"
 
 
 class TestAssetCreateValidation:

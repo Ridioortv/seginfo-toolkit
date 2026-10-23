@@ -1,6 +1,6 @@
 """Pydantic schemas for asset-service."""
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from app.models import AssetCriticality, AssetEnvironment
 
 
@@ -15,6 +15,17 @@ class AssetCreate(BaseModel):
     owner: str = ""
     tags: list[str] = Field(default_factory=list)
     notes: str = ""
+
+    @model_validator(mode="after")
+    def _needs_hostname_or_ip(self):
+        """Un activo sin hostname NI IP no se puede identificar (la pantalla ya lo
+        frena, pero la API aceptaba el POST directo y llenaba el inventario de filas
+        vacias). Se limpian los espacios y se exige al menos uno de los dos."""
+        self.hostname = self.hostname.strip()
+        self.ip_address = self.ip_address.strip()
+        if not self.hostname and not self.ip_address:
+            raise ValueError("Indica al menos el hostname o la direccion IP del activo")
+        return self
 
 
 class AssetUpdate(BaseModel):
