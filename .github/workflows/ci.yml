@@ -73,6 +73,22 @@ jobs:
       - run: npm run test -- --run
       - run: npm run build
 
+  launcher-go:
+    name: Lanzador de Windows (go vet + go test + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # El runner de ubuntu ya trae Go: no hace falta una accion de terceros.
+      - name: vet + tests (docker falso) + cross-compilar a Windows
+        working-directory: launcher
+        run: |
+          go vet ./...
+          go test ./...
+          GOOS=windows GOARCH=amd64 go vet ./...
+          GOOS=windows GOARCH=amd64 go build -o /dev/null ./cmd/iniciar
+
   compose-validate:
     name: docker compose config
     runs-on: ubuntu-latest

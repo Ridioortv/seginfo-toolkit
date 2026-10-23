@@ -26,12 +26,15 @@ Crear un **Personal access token (classic)** con el único permiso `read:package
 los paquetes a esa cuenta). El cliente corre una vez `echo TOKEN | docker login ghcr.io -u USUARIO --password-stdin`.
 Si la cuenta es una organización, conviene una cuenta de servicio de solo lectura por cliente para poder revocarlo.
 
-## Windows vs. Linux Mint
+## Compose de uso y compose de desarrollo
 
-* **Windows:** el `.exe` corre `docker compose up -d --build` sobre `docker-compose.yml` del repo, por eso ese archivo
-  conserva los bloques `build:` (más el `image:` de cada servicio). Sigue compilando en la PC.
-* **Linux Mint:** `tools/generar_linuxmint.py` parte el compose en `docker-compose.yml` (solo `image:`, con la versión
-  del archivo `VERSION` como valor por defecto) y `docker-compose.dev.yml` (solo `build:`, para `./tero-iniciar.sh --compilar`).
+* `docker-compose.yml` solo trae `image:` (nada de `build:`): es lo que usan los clientes, en Windows y en Linux.
+* `docker-compose.dev.yml` trae los `build:` (y la imagen base `tero-base`). Se **suma** para compilar:
+  `docker compose -f docker-compose.yml -f docker-compose.dev.yml build` (o `make up`).
+* **Windows:** `TERO Security - Iniciar.exe` pone `TERO_VERSION` desde el archivo `VERSION`, baja/carga las imágenes
+  la primera vez o al cambiar de versión y después solo hace `docker compose up -d`. Código en `launcher/cmd/iniciar`
+  (recompilar: ver `launcher/README.md`). Offline: `tools\empaquetar-offline.ps1`.
+* **Linux Mint:** `tools/generar_linuxmint.py` toma los mismos dos archivos y fija la versión de `VERSION` como tag por defecto.
 
 ## Límites conocidos
 
