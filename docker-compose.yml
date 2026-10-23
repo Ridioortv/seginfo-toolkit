@@ -79,12 +79,25 @@ services:
       retries: 30
       start_period: 60s
 
+  # Imagen base comun de los 13 servicios backend simples (backend/Dockerfile.base).
+  # No es un servicio que corra: solo existe para que Compose la construya ANTES que las
+  # demas (additional_contexts: service:tero-base). Por eso va en un profile que nunca se
+  # activa para arrancar (`up` no la levanta).
+  tero-base:
+    profiles: ["build"]
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-base:${TERO_VERSION:-local}
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.base
+
   auth-service:
     <<: *api-hardening
     restart: unless-stopped
     build:
       context: .
       dockerfile: backend/services/auth-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -103,6 +116,8 @@ services:
     build:
       context: .
       dockerfile: backend/services/asset-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -278,6 +293,8 @@ services:
     build:
       context: .
       dockerfile: backend/services/vuln-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -296,6 +313,8 @@ services:
     build:
       context: .
       dockerfile: backend/services/siem-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -327,6 +346,8 @@ services:
     build:
       context: .
       dockerfile: backend/services/soar-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -351,6 +372,8 @@ services:
     build:
       context: .
       dockerfile: backend/services/case-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -370,6 +393,8 @@ services:
     build:
       context: .
       dockerfile: backend/services/purple-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -389,6 +414,8 @@ services:
     build:
       context: .
       dockerfile: backend/services/report-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -414,6 +441,8 @@ services:
     build:
       context: .
       dockerfile: backend/services/notification-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -433,6 +462,8 @@ services:
     build:
       context: .
       dockerfile: backend/services/integration-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -452,6 +483,8 @@ services:
     build:
       context: .
       dockerfile: backend/services/threatintel-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -470,6 +503,8 @@ services:
     build:
       context: .
       dockerfile: backend/services/asm-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -488,6 +523,8 @@ services:
     build:
       context: .
       dockerfile: backend/services/cloud-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
     env_file: .env
     environment:
       POSTGRES_HOST: postgres

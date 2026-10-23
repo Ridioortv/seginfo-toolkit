@@ -1,25 +1,19 @@
-FROM python:3.11-slim
+# cloud-service: hereda de tero-base (python + dependencias comunes + backend/shared +
+# usuario no-root, ver backend/Dockerfile.base). Aca solo va lo propio del servicio.
+# Con docker compose la base se construye antes (additional_contexts); suelto:
+#   docker build -f backend/Dockerfile.base -t tero-base .
+#   docker build -f backend/services/cloud-service/Dockerfile -t cloud-service .
+ARG BASE_IMAGE=tero-base
+FROM ${BASE_IMAGE}
 
-WORKDIR /app
-
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev curl \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY backend/services/cloud-service/requirements.txt .
+# requirements.txt sigue listando TODAS las dependencias (lo usan pip-audit y CI), pero pip
+# salta las que la base ya instalo: solo baja las propias de este servicio.
+COPY --chown=sentinelops:sentinelops backend/services/cloud-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY backend/services/cloud-service/app ./app
-COPY backend/services/cloud-service/tests ./tests
-COPY backend/shared ./backend/shared
-RUN touch backend/__init__.py
+COPY --chown=sentinelops:sentinelops backend/services/cloud-service/app ./app
+COPY --chown=sentinelops:sentinelops backend/services/cloud-service/tests ./tests
 
-ENV PYTHONPATH=/app
-
-# No corre como root dentro del contenedor -- mismo motivo y mismo UID/GID
-# fijo (1001) que el resto de los servicios, ver Dockerfile de
-# asset-service/asm-service.
-RUN groupadd -r -g 1001 sentinelops && useradd -r -u 1001 -g sentinelops -M -s /usr/sbin/nologin sentinelops \
-    && chown -R sentinelops:sentinelops /app
 USER sentinelops
 
 HEALTHCHECK --start-period=90s --interval=10s --timeout=3s --retries=5 \

@@ -107,6 +107,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Build de la imagen base comun (la heredan 13 servicios)
+        run: docker build -f backend/Dockerfile.base -t tero-base .
       - name: Build ${{ matrix.service }}
         run: |
           docker build \
