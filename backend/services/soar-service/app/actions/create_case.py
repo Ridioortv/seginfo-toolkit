@@ -33,6 +33,8 @@ class CreateCaseAction(ActionExecutor):
                         json={
                             "title": title, "description": description, "priority": priority,
                             "alert_id": alert.get("id"),
+                            # origen real del caso (si no, figuraba como "manual")
+                            "source": "soar",
                         },
                         headers=service_auth_headers(organization_id),
                     )
