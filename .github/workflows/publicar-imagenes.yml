@@ -1,0 +1,96 @@
+name: Publicar imagenes (GHCR privado)
+
+# Arma las imagenes de TERO Security UNA vez y las sube a GitHub Container Registry
+# (privado) como ghcr.io/<dueño>/tero-<servicio>:<version>. Las PCs de los clientes
+# las BAJAN (`docker compose pull`) en vez de compilarlas: la primera instalacion pasa
+# de ~1 hora de build a unos minutos de descarga.
+#
+# Como publicar una version:  git tag v1.0.0 && git push origin v1.0.0
+# (o desde la pestaña Actions -> "Run workflow" indicando la version).
+#
+# No usa acciones de terceros (solo checkout, fijado por hash como el resto de los workflows):
+# loguea con el CLI de docker y el GITHUB_TOKEN del propio job.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version a publicar (ej. 1.0.0, sin la v)"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publicar-imagenes-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publicar:
+    name: Construir y subir las imagenes
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      BUILDX_NO_DEFAULT_ATTESTATIONS: "1"
+      COMPOSE_PARALLEL_LIMIT: "3"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Version y registro
+        id: v
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}   # por env, nunca interpolado en el script
+        run: |
+          set -euo pipefail
+          version="$INPUT_VERSION"
+          if [ -z "$version" ]; then version="${GITHUB_REF_NAME#v}"; fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$'; then
+            echo "Version invalida: '$version' (esperaba algo como 1.0.0)"; exit 1
+          fi
+          if [ "$version" != "$(tr -d '[:space:]' < VERSION)" ]; then
+            echo "El archivo VERSION dice '$(cat VERSION)' pero se pidio publicar '$version'. Actualiza VERSION y volve a etiquetar."; exit 1
+          fi
+          owner="$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"   # GHCR exige minusculas
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "registry=ghcr.io/$owner" >> "$GITHUB_OUTPUT"
+
+      - name: Login en GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_ACTOR: ${{ github.actor }}
+        run: echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
+
+      - name: Construir (la base primero; Compose lo ordena solo)
+        env:
+          TERO_REGISTRY: ${{ steps.v.outputs.registry }}
+          TERO_VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          cp .env.example .env          # solo para que compose interpole; no entra en ninguna imagen
+          docker compose --profile build build
+
+      - name: Subir las imagenes
+        env:
+          TERO_REGISTRY: ${{ steps.v.outputs.registry }}
+          TERO_VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Solo los servicios que se construyen aca (postgres/redis/opensearch son imagenes publicas).
+          servicios="$(docker compose --profile build config --format json \
+            | python3 -c 'import json,sys; s=json.load(sys.stdin)["services"]; print(" ".join(k for k,v in s.items() if "build" in v))')"
+          echo "Subiendo: $servicios"
+          # shellcheck disable=SC2086
+          docker compose --profile build push $servicios
+
+      - name: Resumen
+        run: |
+          {
+            echo "### Imagenes publicadas"
+            echo "Version \`${{ steps.v.outputs.version }}\` en \`${{ steps.v.outputs.registry }}/tero-*\`."
+            echo "Cada PC cliente necesita \`docker login ghcr.io\` con un token de solo lectura (read:packages)."
+          } >> "$GITHUB_STEP_SUMMARY"

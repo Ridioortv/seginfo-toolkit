@@ -79,11 +79,11 @@ services:
       retries: 30
       start_period: 60s
 
-  # Imagen base comun de los 13 servicios backend simples (backend/Dockerfile.base).
-  # No es un servicio que corra: solo existe para que Compose la construya ANTES que las
-  # demas (additional_contexts: service:tero-base). Por eso va en un profile que nunca se
-  # activa para arrancar (`up` no la levanta).
   tero-base:
+    # Imagen base comun de los 13 servicios backend simples (backend/Dockerfile.base).
+    # No es un servicio que corra: solo existe para que Compose la construya ANTES que las
+    # demas (additional_contexts: service:tero-base). Por eso va en un profile que nunca se
+    # activa para arrancar (`up` no la levanta).
     profiles: ["build"]
     image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-base:${TERO_VERSION:-local}
     build:
@@ -93,6 +93,8 @@ services:
   auth-service:
     <<: *api-hardening
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-auth-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/auth-service/Dockerfile
@@ -113,6 +115,8 @@ services:
   asset-service:
     <<: *api-hardening
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-asset-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/asset-service/Dockerfile
@@ -139,6 +143,8 @@ services:
     # (zeek fallaba con "pcap_activate: Operation not permitted"). El resto del
     # endurecimiento (usuario no-root, puertos solo en 127.0.0.1) se mantiene.
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-scan-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/scan-service/Dockerfile
@@ -198,6 +204,8 @@ services:
     # (zeek fallaba con "pcap_activate: Operation not permitted"). El resto del
     # endurecimiento (usuario no-root, puertos solo en 127.0.0.1) se mantiene.
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-scan-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/scan-service/Dockerfile
@@ -266,6 +274,8 @@ services:
   remote-agent-wan:
     <<: *hardening
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-scan-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/scan-service/Dockerfile
@@ -290,6 +300,8 @@ services:
   vuln-service:
     <<: *api-hardening
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-vuln-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/vuln-service/Dockerfile
@@ -310,6 +322,8 @@ services:
   siem-service:
     <<: *api-hardening
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-siem-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/siem-service/Dockerfile
@@ -343,6 +357,8 @@ services:
   soar-service:
     <<: *api-hardening
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-soar-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/soar-service/Dockerfile
@@ -369,6 +385,8 @@ services:
   case-service:
     <<: *api-hardening
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-case-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/case-service/Dockerfile
@@ -390,6 +408,8 @@ services:
   purple-service:
     <<: *api-hardening
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-purple-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/purple-service/Dockerfile
@@ -411,6 +431,8 @@ services:
   report-service:
     <<: *api-hardening
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-report-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/report-service/Dockerfile
@@ -438,6 +460,8 @@ services:
   notification-service:
     <<: *api-hardening
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-notification-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/notification-service/Dockerfile
@@ -459,6 +483,8 @@ services:
   integration-service:
     <<: *api-hardening
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-integration-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/integration-service/Dockerfile
@@ -480,6 +506,8 @@ services:
   threatintel-service:
     <<: *api-hardening
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-threatintel-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/threatintel-service/Dockerfile
@@ -500,6 +528,8 @@ services:
   asm-service:
     <<: *api-hardening
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-asm-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/asm-service/Dockerfile
@@ -520,6 +550,8 @@ services:
   cloud-service:
     <<: *api-hardening
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-cloud-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/cloud-service/Dockerfile
@@ -540,6 +572,8 @@ services:
   coderepo-service:
     <<: *hardening
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-coderepo-service:${TERO_VERSION:-local}
     build:
       context: .
       dockerfile: backend/services/coderepo-service/Dockerfile
@@ -564,6 +598,8 @@ services:
   frontend:
     <<: *hardening
     restart: unless-stopped
+    # Imagen prearmada (GHCR, privado): `docker compose pull`. `build:` la arma en la PC si hace falta.
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-frontend:${TERO_VERSION:-local}
     build:
       context: ./frontend
       # Las URLs/ID de Google se hornean en el bundle al construir (Vite). Los

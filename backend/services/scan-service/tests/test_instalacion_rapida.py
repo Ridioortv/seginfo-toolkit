@@ -167,3 +167,40 @@ def test_compose_construye_la_base_antes_que_los_servicios_simples():
         assert re.search(r"additional_contexts:\s*\n\s+tero-base: service:tero-base", b), s
     for s in PROPIOS:
         assert "tero-base" not in _bloque(compose, f"{s}-service")
+
+
+# --- Punto 1: imagenes prearmadas en GHCR --------------------------------------------------
+CON_BUILD = [f"{s}-service" for s in SIMPLES + PROPIOS] + ["frontend"]
+
+
+@pytest.mark.parametrize("nombre", CON_BUILD)
+def test_cada_servicio_construido_tiene_imagen_con_version(nombre):
+    b = _bloque((RAIZ / "docker-compose.yml").read_text(encoding="utf-8"), nombre)
+    m = re.search(r"^    image: \$\{TERO_REGISTRY:-ghcr\.io/ridioortv\}/tero-([a-z-]+):\$\{TERO_VERSION:-local\}$", b, flags=re.M)
+    assert m, f"{nombre} no tiene image: ghcr.io/<org>/tero-<servicio>:${{TERO_VERSION}}"
+    assert m.group(1) == nombre
+
+
+def test_los_agentes_remotos_reusan_la_imagen_de_scan_service():
+    compose = (RAIZ / "docker-compose.yml").read_text(encoding="utf-8")
+    for n in ("remote-agent", "remote-agent-wan"):
+        assert "/tero-scan-service:" in _bloque(compose, n)
+
+
+def test_version_del_repo_tiene_formato_semver():
+    assert re.fullmatch(r"\d+\.\d+\.\d+", (RAIZ / "VERSION").read_text(encoding="utf-8").strip())
+
+
+def test_workflow_de_publicacion_seguro_y_sin_acciones_de_terceros():
+    wf = RAIZ / ".github" / "workflows" / "publicar-imagenes.yml"
+    texto = wf.read_text(encoding="utf-8")
+    assert re.search(r"^  packages: write$", texto, flags=re.M)
+    assert re.search(r"tags: \[\"v\*\"\]", texto)
+    usos = re.findall(r"^\s+- uses: (\S+)", texto, flags=re.M)
+    assert usos and all(u.startswith("actions/checkout@") and re.search(r"@[0-9a-f]{40}$", u) for u in usos), usos
+    assert "github.event.inputs.version }}\n        run" not in texto
+    # nada de ${{ ... }} de entradas del usuario dentro de bloques run:
+    for run in re.findall(r"run: \|\n((?:\s{10,}.*\n)+)", texto):
+        assert "github.event.inputs" not in run and "github.actor" not in run
+    assert "docker compose --profile build push" in texto
+    assert "tr '[:upper:]' '[:lower:]'" in texto, "GHCR exige el dueño en minusculas"
