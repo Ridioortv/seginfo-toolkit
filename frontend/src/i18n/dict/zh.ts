@@ -1071,6 +1071,8 @@ const dict: Record<string, string> = {
  "{0} corriendo": "{0} 运行中",
  "cuando termine.": "完成后。",
  "agente eliminado": "代理已删除",
- "usuario": "用户"
+ "usuario": "用户",
+ "Disco casi lleno.": "磁盘快满了。",
+ "El disco de la PC está casi lleno: OpenSearch dejó de aceptar logs. Liberá espacio.": "电脑磁盘几乎已满：OpenSearch 已停止接收日志。请释放空间。"
 };
 export default dict;

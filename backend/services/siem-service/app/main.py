@@ -3,8 +3,9 @@ evaluacion de reglas Sigma y generacion de alertas. Ver app/sigma.py para
 el motor de deteccion y app/opensearch_client.py para el almacen de logs."""
 import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, Header, HTTPException, status
+from fastapi import FastAPI, Depends, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from prometheus_client import Counter, make_asgi_app
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -92,6 +93,18 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/metrics", make_asgi_app())
 
 
+@app.exception_handler(opensearch_client.OpenSearchDiskFull)
+async def disk_full_handler(request: Request, exc: opensearch_client.OpenSearchDiskFull):
+    """OpenSearch dejo de aceptar escrituras porque el disco esta casi lleno: 503 con un mensaje
+    claro (en vez de un 500 generico) y Retry-After para que los forwarders reintenten mas tarde."""
+    logger.error("OpenSearch bloqueo las escrituras: disco casi lleno", extra={"path": request.url.path})
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": opensearch_client.DISK_FULL_MESSAGE, "code": "disk_full"},
+        headers={"Retry-After": "300"},
+    )
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "siem-service"}
@@ -111,6 +124,12 @@ async def ingest_logs(
     await db.commit()
     logs_ingested_total.inc(indexed)
     return IngestLogsResponse(indexed=indexed, alerts_created=alerts_created)
+
+
+@app.get("/logs/storage-status")
+async def logs_storage_status(claims: dict = Depends(get_current_claims)):
+    """Para el panel: avisa si OpenSearch dejo de aceptar logs por falta de disco."""
+    return await opensearch_client.storage_status(os_client)
 
 
 @app.get("/logs/ingest-token")

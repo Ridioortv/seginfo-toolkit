@@ -14,6 +14,7 @@ import type {
 import { StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
 import Icon, { type IconName } from "../components/Icon";
+import LogStorageWarning from "../components/LogStorageWarning";
 import { useAuthStore } from "../store/auth";
 import { currentLocale } from "../i18n";
 
@@ -205,6 +206,7 @@ export default function Dashboard() {
           {scansLoading || scansError ? "Escaneos: sin datos" : scansRunning > 0 ? (scansRunning === 1 ? "1 escaneo en curso" : `${scansRunning} escaneos en curso`) : "Sin escaneos en curso"}
         </span>
       </section>
+      <LogStorageWarning />
       {failedServices.length > 0 && (
         <div className="panel">
           <p className="error-text">

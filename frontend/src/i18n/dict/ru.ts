@@ -1066,6 +1066,8 @@ const dict: Record<string, string> = {
  "{0} corriendo": "{0}: выполняется",
  "cuando termine.": "по завершении.",
  "agente eliminado": "агент удалён",
- "usuario": "пользователь"
+ "usuario": "пользователь",
+ "Disco casi lleno.": "Диск почти заполнен.",
+ "El disco de la PC está casi lleno: OpenSearch dejó de aceptar logs. Liberá espacio.": "Диск компьютера почти заполнен: OpenSearch перестал принимать логи. Освободите место."
 };
 export default dict;
