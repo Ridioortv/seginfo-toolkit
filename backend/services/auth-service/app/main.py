@@ -749,9 +749,12 @@ async def refresh_subscription(
     org = await services.get_organization_by_id(db, org_id)
     if org is None:
         raise HTTPException(status_code=404, detail="Organizacion no encontrada")
-    await _enforce_rate_limit(f"sub_refresh:{claims.get('sub')}", limit=30)
-    await services.refresh_license_from_central_server(db, org_id)
-    await db.commit()
+    # Pasado el tope (30 cada 5 min por usuario) NO se devuelve 429: eso dejaba el
+    # boton "Actualizar estado" sin responder. Se devuelve el estado guardado, sin
+    # volver a molestar al servidor central (el tope existe para protegerlo a el).
+    if await check_rate_limit(f"sub_refresh:{claims.get('sub')}", 30, 300):
+        await services.refresh_license_from_central_server(db, org_id)
+        await db.commit()
     await db.refresh(org)
     return org
 
