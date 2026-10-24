@@ -108,6 +108,13 @@ docs/                # arquitectura, modelo de amenazas y runbook
   sintaxis del backend, build+typecheck del frontend, validacion de
   `docker-compose.yml` y build (sin push todavia) de cada imagen Docker.
 
+## Olvide mi contrasena
+
+En la pantalla de entrada: **¿Olvidaste tu contrasena?** -> email -> link de un solo uso (30 min). Requiere
+`SMTP_HOST` en `.env`; sin mail, un administrador genera el link en **Usuarios y roles -> Restablecer
+contrasena**. Ya adentro: **Seguridad de la cuenta -> Cambiar contrasena**. Detalle y topes en
+`backend/services/auth-service/app/password_reset.py`.
+
 ## Operacion
 
 Ver [`docs/runbook.md`](./docs/runbook.md) para procedimientos operativos
