@@ -258,7 +258,21 @@ func prepareImages(projectDir, version string, mode startMode) {
 	loginGHCRIfConfigured(projectDir)
 	fmt.Println()
 	fmt.Println("Bajando las imagenes (varios GB; depende de tu conexion)...")
-	switch pullImages() {
+	result := pullImages()
+	if result != pullOK && canCompileHere() {
+		// Instalacion hecha desde el codigo fuente (hay docker-compose.dev.yml) y las imagenes
+		// no se pueden bajar (registro privado, sin login, sin internet): se compilan aca solas,
+		// sin tener que acordarse de pasar --compilar.
+		fmt.Println()
+		fmt.Println("No pude bajar las imagenes, pero esta carpeta tiene el codigo fuente:")
+		fmt.Println("las compilo en esta PC automaticamente (tarda varios minutos la primera vez).")
+		fmt.Println()
+		if err := compileInBatches(); err != nil {
+			fatal("No pude compilar las imagenes: %v", err)
+		}
+		return
+	}
+	switch result {
 	case pullOK:
 	case pullNeedsLogin:
 		explainLogin(version)

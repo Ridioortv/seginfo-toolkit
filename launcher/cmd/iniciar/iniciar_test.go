@@ -336,3 +336,17 @@ func TestCompileFallaSiUnaTandaFalla(t *testing.T) {
 		t.Fatal("tiene que fallar")
 	}
 }
+
+func TestCanCompileHereSoloConCodigoFuente(t *testing.T) {
+	dir := t.TempDir()
+	old, _ := os.Getwd()
+	defer os.Chdir(old)
+	_ = os.Chdir(dir)
+	if canCompileHere() {
+		t.Fatal("sin docker-compose.dev.yml no se puede compilar")
+	}
+	_ = os.WriteFile(filepath.Join(dir, "docker-compose.dev.yml"), []byte("services: {}\n"), 0o644)
+	if !canCompileHere() {
+		t.Fatal("con docker-compose.dev.yml si se puede compilar")
+	}
+}

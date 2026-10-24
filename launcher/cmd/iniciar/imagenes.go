@@ -298,6 +298,13 @@ func chunk(list []string, size int) [][]string {
 	return out
 }
 
+// canCompileHere: true si esta carpeta trae el codigo fuente (docker-compose.dev.yml), o sea que
+// las imagenes se pueden compilar en esta PC cuando no se pueden bajar.
+func canCompileHere() bool {
+	st, err := os.Stat("docker-compose.dev.yml")
+	return err == nil && !st.IsDir()
+}
+
 // compileInBatches: compilar las 17 imagenes a la vez agota RAM y disco de una PC chica. Va de a 3
 // y sin las "attestations" (SBOM) de BuildKit, que tardaban minutos por imagen.
 func compileInBatches() error {
