@@ -41,7 +41,7 @@ def client(monkeypatch):
         get = delete = expire = incr
 
     monkeypatch.setattr(rate_limit, "_get_redis", lambda: Down())
-    rate_limit._fail_memory.clear()
+    getattr(rate_limit, "_fail_memory", {}).clear()
     rate_limit._fallback_counts.clear()
     monkeypatch.setattr(services, "is_org_active", lambda org: True)  # SQLite pierde la zona horaria
     monkeypatch.setattr(services, "get_default_organization", services.get_default_organization)
