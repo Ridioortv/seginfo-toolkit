@@ -136,14 +136,27 @@ export async function requestBlockedPaymentLink(payToken: string, provider: "pay
 // crea al usuario como "analyst" en la organizacion "default" -- el primer
 // usuario que exista en toda la base queda como admin automaticamente. No
 // devuelve tokens (a diferencia de login/loginWithGoogle): Login.tsx llama
-// a login() con las mismas credenciales justo despues, para no duplicar la
-// logica de "que hacer con el TokenPair" en dos lugares.
-export async function register(email: string, password: string, fullName: string): Promise<void> {
-  await authApi.post("/auth/register", {
+// a login() con las mismas credenciales justo despues. SI devuelve el QR del
+// MFA (mfa_setup) y un token de 30 min (mfa_setup_token) para vincularlo con
+// confirmRegistrationMfa() sin necesidad de haber iniciado sesion -- asi el
+// QR se ve en "Crear cuenta" aunque el login falle (ej. 402 por suscripcion).
+export interface RegisterOut {
+  mfa_setup: MfaEnrollOut;
+  mfa_setup_token: string;
+}
+
+export async function register(email: string, password: string, fullName: string): Promise<RegisterOut> {
+  const { data } = await authApi.post<RegisterOut>("/auth/register", {
     email,
     password,
     full_name: fullName,
   });
+  return data;
+}
+
+// Confirma el MFA de la cuenta recien creada con el codigo de 6 digitos de la app.
+export async function confirmRegistrationMfa(setupToken: string, totpCode: string): Promise<void> {
+  await authApi.post("/auth/register/mfa/confirm", { setup_token: setupToken, totp_code: totpCode });
 }
 
 export interface MfaEnrollOut {

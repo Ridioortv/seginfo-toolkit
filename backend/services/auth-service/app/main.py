@@ -56,6 +56,8 @@ from app.schemas import (
     ChangePasswordRequest,
     MessageOut,
     PasswordResetLinkOut,
+    RegisterResponse,
+    RegisterMfaConfirmRequest,
 )
 from app.dependencies import (
     get_current_claims, require_role, require_platform_admin, require_org_admin_or_platform_admin,
@@ -255,7 +257,7 @@ async def health():
     return {"status": "ok", "service": "auth-service"}
 
 
-@app.post("/auth/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+@app.post("/auth/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
     """Auto-registro publico: siempre crea el usuario como "analyst" en la
     organizacion "default" (el auto-registro abierto no tiene forma segura
@@ -287,11 +289,60 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
     # y promote_first_user_to_admin_if_needed puede haberlo cambiado).
     user = await services.get_user_by_email(db, payload.email)
     role_name = user.role.name if user.role else services.SELF_SERVICE_ROLE
-    return UserOut(
+    # QR del MFA para vincular la cuenta en la misma pantalla de "Crear cuenta". Se entrega aca
+    # (y se confirma con REGISTER_MFA_CONFIRM, con un token de 30 min atado a esta cuenta) para
+    # no depender de iniciar sesion: si la suscripcion de la organizacion esta vencida el login
+    # da 402 y antes el QR nunca llegaba a verse.
+    secret, otpauth_url = await services.enroll_mfa(db, user)
+    await db.commit()
+    return RegisterResponse(
         id=user.id, email=user.email, full_name=user.full_name,
         role_name=role_name, is_active=user.is_active, mfa_enabled=user.mfa_enabled,
         organization_id=user.organization_id,
+        mfa_setup=MfaEnrollResponse(
+            secret=secret, otpauth_url=otpauth_url, qr_code_data_uri=services.mfa_qr_data_uri(otpauth_url),
+        ),
+        mfa_setup_token=mfa_setup_token_for(user.id, secret),
     )
+
+
+MFA_SETUP_TOKEN_MINUTES = 30
+
+
+def mfa_setup_token_for(user_id: str, secret: str) -> str:
+    """Token de "vincular MFA al registrarse": atado al usuario y a ESTE secreto (si se vuelve
+    a enrolar, el anterior deja de servir)."""
+    return create_token(
+        user_id, timedelta(minutes=MFA_SETUP_TOKEN_MINUTES),
+        {"type": "mfa_setup", "msf": password_reset.fingerprint(secret)},
+    )
+
+
+@app.post("/auth/register/mfa/confirm", response_model=MessageOut)
+async def register_mfa_confirm(
+    payload: RegisterMfaConfirmRequest, request: Request, db: AsyncSession = Depends(get_db),
+):
+    """Confirma el MFA de una cuenta recien creada con el codigo de 6 digitos de la app."""
+    await _enforce_rate_limit(f"register_mfa:ip:{_client_ip(request)}", limit=30)
+    invalid = HTTPException(status_code=400, detail="El paso para vincular el MFA vencio. Inicia sesion y activalo en Seguridad de la cuenta.")
+    try:
+        claims = decode_token(payload.setup_token)
+    except JWTError:
+        raise invalid
+    if claims.get("type") != "mfa_setup" or not claims.get("sub"):
+        raise invalid
+    await _enforce_rate_limit(f"register_mfa:user:{claims['sub']}", limit=10)
+    user = await services.get_user_by_id(db, claims["sub"])
+    if (
+        user is None or user.mfa_enabled or not user.is_active or not user.mfa_secret
+        or claims.get("msf") != password_reset.fingerprint(user.mfa_secret)
+    ):
+        raise invalid
+    if not await services.confirm_mfa(db, user, payload.totp_code.replace(" ", "")):
+        raise HTTPException(status_code=400, detail="Codigo TOTP invalido")
+    await services.record_audit_event(db, user.email, "auth.mfa.enabled_at_registration")
+    await db.commit()
+    return MessageOut(message="MFA vinculado.")
 
 
 @app.post("/auth/login", response_model=TokenPair)

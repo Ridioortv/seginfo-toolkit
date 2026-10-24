@@ -230,3 +230,15 @@ class PasswordResetLinkOut(BaseModel):
     reset_url: str
     expires_minutes: int
     email_sent: bool = False
+
+
+class RegisterResponse(UserOut):
+    """Respuesta del auto-registro: la cuenta creada + el QR del MFA para vincularla ahi mismo
+    (sin depender de poder iniciar sesion todavia, p. ej. si la suscripcion esta vencida)."""
+    mfa_setup: MfaEnrollResponse | None = None
+    mfa_setup_token: str | None = None
+
+
+class RegisterMfaConfirmRequest(BaseModel):
+    setup_token: str = Field(min_length=20, max_length=4096)
+    totp_code: str = Field(min_length=6, max_length=16)

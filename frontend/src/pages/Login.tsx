@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  login, loginWithGoogle, mfaEnroll, mfaStatus, register, requestBlockedPaymentLink, type MfaEnrollOut,
+  confirmRegistrationMfa, login, loginWithGoogle, mfaStatus, register, requestBlockedPaymentLink, type MfaEnrollOut,
 } from "../services/api";
 import MfaSetupCard from "../components/MfaSetupCard";
 import { useAuthStore } from "../store/auth";
@@ -53,7 +53,7 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [orgSlug, setOrgSlug] = useState("");
   // Despues de crear la cuenta: QR del MFA para vincularla (ver MfaSetupCard).
-  const [mfaSetup, setMfaSetup] = useState<MfaEnrollOut | null>(null);
+  const [mfaSetup, setMfaSetup] = useState<{ enrollment: MfaEnrollOut; token: string } | null>(null);
   const setTokens = useAuthStore((s) => s.setTokens);
   const navigate = useNavigate();
   const googleButtonRef = useRef<HTMLDivElement>(null);
@@ -208,7 +208,10 @@ export default function Login() {
     // logica de 402 que el login normal) para el login automatico que le
     // sigue.
     try {
-      await register(email, password, fullName);
+      const created = await register(email, password, fullName);
+      // El QR se muestra YA, en esta misma pantalla, sin depender de que el login funcione
+      // (si la suscripcion esta vencida el login da 402 y el MFA igual queda vinculado).
+      setMfaSetup({ enrollment: created.mfa_setup, token: created.mfa_setup_token });
     } catch (err) {
       const axiosErr = err as { response?: { data?: { detail?: unknown } } };
       const detail = axiosErr?.response?.data?.detail;
@@ -217,27 +220,35 @@ export default function Login() {
           ? detail
           : "No se pudo crear la cuenta. Revisa que el email no este ya registrado y que la contrasena tenga al menos 12 caracteres.",
       );
-      setLoading(false);
-      return;
-    }
-    try {
-      const tokens = await login(email, password);
-      setTokens(tokens.access_token, tokens.refresh_token);
-      // Cuenta recien creada: se muestra el QR del MFA para dejarla vinculada de entrada
-      // (si no se puede generar, se lleva a "Seguridad de la cuenta", donde se activa igual).
-      try {
-        setMfaSetup(await mfaEnroll());
-      } catch {
-        navigate("/security", { state: { firstLogin: true } });
-      }
-    } catch (err) {
-      // La cuenta ya se creo con exito en este punto -- este error es del
-      // login automatico que le sigue (ej. 402 de organizacion sin
-      // suscripcion al dia), no del registro.
-      applyLoginError(err, "La cuenta se creo, pero no se pudo iniciar sesion automaticamente. Ingresa con tu email y contrasena.");
     } finally {
       setLoading(false);
     }
+  }
+
+  // Entra con las credenciales recien creadas. Si falla (ej. 402 por suscripcion vencida) vuelve
+  // al formulario de login mostrando el motivo y el boton de pago; la cuenta y el MFA ya existen.
+  async function enterAfterRegister(totp: string | undefined, next: () => void) {
+    try {
+      const tokens = await login(email, password, totp);
+      setTokens(tokens.access_token, tokens.refresh_token);
+      next();
+    } catch (err) {
+      setMfaSetup(null);
+      setMode("login");
+      setPassword("");
+      setTotpCode("");
+      applyLoginError(err, "La cuenta se creo, pero no se pudo iniciar sesion automaticamente. Ingresa con tu email y contrasena.");
+    }
+  }
+
+  async function handleMfaConfirm(code: string) {
+    if (!mfaSetup) return;
+    await confirmRegistrationMfa(mfaSetup.token, code); // si el codigo es invalido lanza y la tarjeta lo muestra
+    await enterAfterRegister(code, () => navigate("/"));
+  }
+
+  async function handleMfaSkip() {
+    await enterAfterRegister(undefined, () => navigate("/security", { state: { firstLogin: true } }));
   }
 
   function toggleMode() {
@@ -276,9 +287,9 @@ export default function Login() {
       <div className="login-side">
       {mfaSetup ? (
         <MfaSetupCard
-          enrollment={mfaSetup}
-          onDone={() => navigate("/")}
-          onSkip={() => navigate("/security", { state: { firstLogin: true } })}
+          enrollment={mfaSetup.enrollment}
+          onConfirm={handleMfaConfirm}
+          onSkip={handleMfaSkip}
         />
       ) : (
       <form className="login-card" onSubmit={mode === "login" ? handleSubmit : handleRegisterSubmit}>

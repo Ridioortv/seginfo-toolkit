@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { mfaConfirm, type MfaEnrollOut } from "../services/api";
+import type { MfaEnrollOut } from "../services/api";
 import { groupSecret, normalizeTotp, totpProblem } from "../utils/mfaSetup";
 
 function detailOf(error: unknown): string {
@@ -9,16 +9,17 @@ function detailOf(error: unknown): string {
     : "El codigo no coincide. Revisa que la hora de tu telefono sea automatica y proba con el codigo nuevo.";
 }
 
-// Paso que aparece justo despues de crear la cuenta: se muestra el QR del MFA y, al confirmar con
-// el codigo de 6 digitos de la app, la cuenta queda vinculada y se entra a TERO Security. Desde
+// Paso que aparece en la propia pantalla de "Crear cuenta": se muestra el QR del MFA y, al confirmar
+// con el codigo de 6 digitos de la app, la cuenta queda vinculada y se entra a TERO Security. Desde
 // ese momento el login pide ese codigo. Se puede omitir (se activa despues en Seguridad de la cuenta).
 export default function MfaSetupCard({
   enrollment,
-  onDone,
+  onConfirm,
   onSkip,
 }: {
   enrollment: MfaEnrollOut;
-  onDone: () => void;
+  // Confirma el codigo (lanza si es invalido). El padre se ocupa de entrar despues.
+  onConfirm: (code: string) => Promise<void>;
   onSkip: () => void;
 }) {
   const [code, setCode] = useState("");
@@ -35,8 +36,7 @@ export default function MfaSetupCard({
     setLoading(true);
     setError(null);
     try {
-      await mfaConfirm(normalizeTotp(code));
-      onDone();
+      await onConfirm(normalizeTotp(code));
     } catch (err) {
       setError(detailOf(err));
     } finally {
