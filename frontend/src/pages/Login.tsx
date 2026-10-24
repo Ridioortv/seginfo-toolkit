@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { login, loginWithGoogle, mfaStatus, register, requestBlockedPaymentLink } from "../services/api";
+import {
+  login, loginWithGoogle, mfaEnroll, mfaStatus, register, requestBlockedPaymentLink, type MfaEnrollOut,
+} from "../services/api";
+import MfaSetupCard from "../components/MfaSetupCard";
 import { useAuthStore } from "../store/auth";
 import { NO_PAYMENT_OFFER, parseLoginError, parsePaymentOffer } from "../utils/loginError";
 import { PAYMENT_PROVIDERS, isHttpUrl, type PaymentProvider } from "../utils/payment";
@@ -49,6 +52,8 @@ export default function Login() {
   const [openedPayUrl, setOpenedPayUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [orgSlug, setOrgSlug] = useState("");
+  // Despues de crear la cuenta: QR del MFA para vincularla (ver MfaSetupCard).
+  const [mfaSetup, setMfaSetup] = useState<MfaEnrollOut | null>(null);
   const setTokens = useAuthStore((s) => s.setTokens);
   const navigate = useNavigate();
   const googleButtonRef = useRef<HTMLDivElement>(null);
@@ -218,7 +223,13 @@ export default function Login() {
     try {
       const tokens = await login(email, password);
       setTokens(tokens.access_token, tokens.refresh_token);
-      navigate("/");
+      // Cuenta recien creada: se muestra el QR del MFA para dejarla vinculada de entrada
+      // (si no se puede generar, se lleva a "Seguridad de la cuenta", donde se activa igual).
+      try {
+        setMfaSetup(await mfaEnroll());
+      } catch {
+        navigate("/security", { state: { firstLogin: true } });
+      }
     } catch (err) {
       // La cuenta ya se creo con exito en este punto -- este error es del
       // login automatico que le sigue (ej. 402 de organizacion sin
@@ -263,6 +274,13 @@ export default function Login() {
         <span className="login-copy">TERO Security</span>
       </section>
       <div className="login-side">
+      {mfaSetup ? (
+        <MfaSetupCard
+          enrollment={mfaSetup}
+          onDone={() => navigate("/")}
+          onSkip={() => navigate("/security", { state: { firstLogin: true } })}
+        />
+      ) : (
       <form className="login-card" onSubmit={mode === "login" ? handleSubmit : handleRegisterSubmit}>
         <h1>{mode === "login" ? "Bienvenido" : "Crea tu cuenta"}</h1>
         <p>{mode === "login" ? "Ingresa a la plataforma de seguridad de TERO Security" : "Crear una cuenta nueva en TERO Security"}</p>
@@ -408,6 +426,7 @@ export default function Login() {
           </>
         )}
       </form>
+      )}
       </div>
     </div>
   );

@@ -1114,5 +1114,15 @@ const dict: Record<string, string> = {
  "Demasiados intentos. Espera unos minutos antes de volver a intentar.": "尝试次数过多,请等待几分钟后再试。",
  "Tu cuenta entra con Google/SSO: no tiene contrasena propia para cambiar.": "您的账户通过 Google/SSO 登录:没有可修改的独立密码。",
  "Esa cuenta entra con Google/SSO: no tiene contrasena para restablecer.": "该账户通过 Google/SSO 登录:没有可重置的密码。",
+ "Vincula tu MFA": "绑定您的 MFA",
+ "Tu cuenta ya esta creada. Un ultimo paso para proteger el acceso: escanea el QR con tu app de autenticacion.": "您的账户已创建。最后一步来保护访问:用身份验证应用扫描二维码。",
+ "1) Abri Google Authenticator, Microsoft Authenticator, Authy, 1Password o Bitwarden y elegi \"agregar cuenta\". 2) Escanea este QR. 3) Escribi abajo el codigo de 6 digitos que muestra la app.": "1)打开 Google Authenticator、Microsoft Authenticator、Authy、1Password 或 Bitwarden,选择“添加账户”。2)扫描此二维码。3)在下方输入应用显示的 6 位验证码。",
+ "Si no podes escanear, agrega la cuenta a mano con esta clave (tipo: basado en tiempo):": "如果无法扫描,请使用此密钥手动添加账户(类型:基于时间):",
+ "Codigo de 6 digitos de tu app": "应用中的 6 位验证码",
+ "Confirmar y entrar": "确认并登录",
+ "Omitir por ahora": "暂时跳过",
+ "(lo podes activar despues en Seguridad de la cuenta; mientras no lo actives, el login no pide codigo).": "(以后可在“账户安全”中启用;在此之前,登录不会要求验证码)。",
+ "El codigo tiene 6 digitos, los que muestra tu app de autenticacion.": "验证码为 6 位数字,即身份验证应用显示的数字。",
+ "El codigo no coincide. Revisa que la hora de tu telefono sea automatica y proba con el codigo nuevo.": "验证码不匹配。请确认手机时间为自动设置,并尝试新的验证码。",
 };
 export default dict;
