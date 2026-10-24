@@ -24,10 +24,9 @@ Licencia: Apache 2.0 (The Falco Authors / CNCF); las reglas por
 defecto (falco_rules.yaml, tambien Apache 2.0) se usan tal cual, sin
 modificar -- invocado como binario externo via subprocess, igual que
 trivy/nuclei."""
-import asyncio
 import json
 from app.scanners.base import ScannerDriver, ScanResult
-from app.scanners._duration import resolve_duration_seconds
+from app.scanners._duration import resolve_duration_seconds, run_for_fixed_duration
 
 _PRIORITY_SEVERITY_MAP = {
     "emergency": "critical",
@@ -70,32 +69,15 @@ class FalcoDriver(ScannerDriver):
     async def run(self, target: str, options: dict) -> ScanResult:
         duration_seconds = resolve_duration_seconds(options or {})
         cmd = ["falco", "-M", str(duration_seconds), "-o", "engine.kind=modern_ebpf", "-o", "json_output=true"]
-        proc = None
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
-            # Margen de 30s sobre -M: Falco se para solo a los
-            # duration_seconds pedidos, este timeout de afuera es solo
-            # una red de contencion si por lo que sea no lo hiciera.
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=duration_seconds + 30)
+            # La ventana la controla run_for_fixed_duration (no solo -M): al vencer, SIGTERM
+            # y se lee lo capturado; asi el escaneo siempre termina y no se pierde nada.
+            returncode, stdout, stderr, stopped = await run_for_fixed_duration(cmd, duration_seconds)
         except FileNotFoundError:
             return ScanResult(raw_output="", error="falco no esta instalado en este contenedor")
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return ScanResult(
-                raw_output="",
-                error=f"falco no termino solo tras {duration_seconds + 30}s -- se lo mato a la fuerza",
-            )
-        except asyncio.CancelledError:
-            if proc is not None:
-                proc.kill()
-                await proc.wait()
-            raise
 
         raw = stdout.decode(errors="replace")
-        if proc.returncode != 0 and not raw.strip():
+        if returncode not in (0, None) and not stopped and not raw.strip():
             return ScanResult(
                 raw_output="",
                 error=(
@@ -104,6 +86,6 @@ class FalcoDriver(ScannerDriver):
                 ),
             )
         return ScanResult(
-            raw_output=raw[:200_000] or f"monitoreo de runtime durante {duration_seconds // 60} minuto(s), sin eventos.",
+            raw_output=raw[:200_000] or f"monitoreo de runtime durante {max(1, duration_seconds // 60)} minuto(s), sin eventos.",
             findings=parse_falco_jsonl(raw),
         )
