@@ -1,5 +1,7 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Login from "./pages/Login";
+import ForgotPassword from "./pages/ForgotPassword";
+import ResetPassword from "./pages/ResetPassword";
 import Layout from "./components/Layout";
 import ProtectedRoute from "./components/ProtectedRoute";
 import Dashboard from "./pages/Dashboard";
@@ -33,6 +35,9 @@ export default function App() {
     <BrowserRouter key={lang}>
       <Routes>
         <Route path="/login" element={<Login />} />
+        {/* Publicas: "Olvide mi contrasena" y el link del mail para elegir la nueva. */}
+        <Route path="/olvide-mi-contrasena" element={<ForgotPassword />} />
+        <Route path="/restablecer" element={<ResetPassword />} />
         {/* Fuera de ProtectedRoute a proposito: llega directo desde el
             proveedor de identidad externo (redirect de auth-service), sin
             tokens todavia -- los guarda ella misma antes de redirigir

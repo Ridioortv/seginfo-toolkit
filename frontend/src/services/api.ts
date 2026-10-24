@@ -167,3 +167,31 @@ export async function mfaEnroll(currentTotpCode?: string): Promise<MfaEnrollOut>
 export async function mfaConfirm(totpCode: string): Promise<void> {
   await authApi.post("/auth/mfa/confirm", { totp_code: totpCode });
 }
+
+// --- Contrasena: "Olvide mi contrasena", cambio estando adentro y link del admin ---
+
+// Siempre responde igual exista o no el email (el servidor no revela quien tiene cuenta).
+export async function forgotPassword(email: string): Promise<void> {
+  await authApi.post("/auth/password/forgot", { email });
+}
+
+export async function resetPassword(token: string, newPassword: string): Promise<void> {
+  await authApi.post("/auth/password/reset", { token, new_password: newPassword });
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  await authApi.post("/auth/password/change", { current_password: currentPassword, new_password: newPassword });
+}
+
+export interface PasswordResetLinkOut {
+  reset_url: string;
+  expires_minutes: number;
+  email_sent: boolean;
+}
+
+export async function createPasswordResetLink(orgId: string, userId: string): Promise<PasswordResetLinkOut> {
+  const { data } = await authApi.post<PasswordResetLinkOut>(
+    `/auth/organizations/${orgId}/users/${userId}/password-reset-link`,
+  );
+  return data;
+}

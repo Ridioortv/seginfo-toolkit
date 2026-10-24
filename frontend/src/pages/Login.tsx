@@ -292,6 +292,18 @@ export default function Login() {
         </div>
 
         {mode === "login" && (
+          <p className="empty-hint" style={{ margin: "-4px 0 12px", textAlign: "right" }}>
+            <button
+              type="button"
+              className="btn-link"
+              onClick={() => navigate("/olvide-mi-contrasena", { state: { email: email.trim() } })}
+            >
+              ¿Olvidaste tu contrasena?
+            </button>
+          </p>
+        )}
+
+        {mode === "login" && (
           <div className="field">
             <label htmlFor="totp">Codigo MFA de 6 digitos (si lo activaste)</label>
             <input id="totp" type="text" inputMode="numeric" autoComplete="one-time-code" value={totpCode} onChange={(e) => setTotpCode(e.target.value)} placeholder="123456" />
