@@ -3,9 +3,15 @@ from datetime import datetime
 from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 from app.models import ScannerType, ScanStatus
-from app.target_validation import validate_target, reject_dangerous_network_target, strip_url_userinfo
+from app.target_validation import (
+    validate_target, reject_dangerous_network_target, reject_lan_target_without_agent, strip_url_userinfo,
+)
 
 ScanFrequency = Literal["daily", "weekly"]
+
+# Escaneres que apuntan a un host/IP de red (no a un repo): sin agente solo
+# alcanzan lo que ve el contenedor, nunca la LAN real.
+_HOST_TARGET_SCANNER_TYPES = frozenset({"nuclei", "zap"})
 
 # Scanner types cuyo `target` NUNCA es un host/URL de red -- el
 # denylist de SSRF de reject_dangerous_network_target (nombres de
@@ -64,6 +70,8 @@ class ScanJobCreate(BaseModel):
         _reject_local_path_in_container(self.scanner_type, self.target)
         if self.scanner_type not in _NON_NETWORK_SCANNER_TYPES:
             reject_dangerous_network_target(self.target)
+            if self.scanner_type in _HOST_TARGET_SCANNER_TYPES:
+                reject_lan_target_without_agent(self.target)
         return self
 
 
@@ -125,6 +133,8 @@ class ScanScheduleCreate(BaseModel):
         _reject_local_path_in_container(self.scanner_type, self.target, self.agent_id)
         if self.scanner_type not in _NON_NETWORK_SCANNER_TYPES and not self.agent_id:
             reject_dangerous_network_target(self.target)
+            if self.scanner_type in _HOST_TARGET_SCANNER_TYPES:
+                reject_lan_target_without_agent(self.target)
         return self
 
 
