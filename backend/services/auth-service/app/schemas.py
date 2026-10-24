@@ -206,3 +206,19 @@ class UserAdminOut(BaseModel):
     is_active: bool
     mfa_enabled: bool
     auth_provider: str
+
+
+class MessageOut(BaseModel):
+    message: str
+
+
+class RegisterResponse(UserOut):
+    """Respuesta del auto-registro: la cuenta creada + el QR del MFA para vincularla ahi mismo
+    (sin depender de poder iniciar sesion todavia, p. ej. si la suscripcion esta vencida)."""
+    mfa_setup: MfaEnrollResponse | None = None
+    mfa_setup_token: str | None = None
+
+
+class RegisterMfaConfirmRequest(BaseModel):
+    setup_token: str = Field(min_length=20, max_length=4096)
+    totp_code: str = Field(min_length=6, max_length=16)

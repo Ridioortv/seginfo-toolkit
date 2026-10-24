@@ -55,36 +55,54 @@ def _login(c, email, code=None):
     return c.post("/auth/login", json={"email": email, "password": PASSWORD, "totp_code": code})
 
 
-def test_new_account_enters_without_mfa_and_can_link_it_right_away(client):
-    c = client
-    assert c.post("/auth/register", json={"email": "nuevo@acme.com", "password": PASSWORD, "full_name": "N"}).status_code == 201
-    first = _login(c, "nuevo@acme.com")
-    assert first.status_code == 200  # sin MFA todavia: entra
-    headers = {"Authorization": "Bearer " + first.json()["access_token"]}
+def _register(c, email):
+    r = c.post("/auth/register", json={"email": email, "password": PASSWORD, "full_name": "N"})
+    assert r.status_code == 201
+    return r.json()
 
-    # el QR del alta: primer enrolamiento, sin pedir codigo previo
-    enroll = c.post("/auth/mfa/enroll", headers=headers, json={})
-    assert enroll.status_code == 200
-    body = enroll.json()
-    assert body["qr_code_data_uri"].startswith("data:image/") and body["secret"]
-    # hasta confirmar, el login sigue sin pedir codigo (no se bloquea a nadie por abandonar el paso)
+
+def test_register_returns_qr_and_confirming_links_mfa(client):
+    c = client
+    reg = _register(c, "nuevo@acme.com")
+    # el QR llega en la propia respuesta de "Crear cuenta" (sin iniciar sesion)
+    assert reg["mfa_setup"]["qr_code_data_uri"].startswith("data:image/") and reg["mfa_setup"]["secret"]
+    assert reg["mfa_setup_token"]
+    # hasta confirmar, el login sigue sin pedir codigo
     assert _login(c, "nuevo@acme.com").status_code == 200
 
-    code = pyotp.TOTP(body["secret"]).now()
-    assert c.post("/auth/mfa/confirm", headers=headers, json={"totp_code": code}).status_code == 200
-    assert c.get("/auth/mfa/status", headers=headers).json() == {"enabled": True}
+    code = pyotp.TOTP(reg["mfa_setup"]["secret"]).now()
+    ok = c.post("/auth/register/mfa/confirm", json={"setup_token": reg["mfa_setup_token"], "totp_code": code})
+    assert ok.status_code == 200
 
     # ya vinculado: sin codigo no entra, con el codigo de la app si
     assert _login(c, "nuevo@acme.com").status_code == 401
     assert _login(c, "nuevo@acme.com", "000000").status_code == 401
-    assert _login(c, "nuevo@acme.com", pyotp.TOTP(body["secret"]).now()).status_code == 200
+    assert _login(c, "nuevo@acme.com", pyotp.TOTP(reg["mfa_setup"]["secret"]).now()).status_code == 200
 
 
 def test_wrong_code_does_not_link_mfa(client):
     c = client
-    c.post("/auth/register", json={"email": "otro@acme.com", "password": PASSWORD, "full_name": "O"})
-    headers = {"Authorization": "Bearer " + _login(c, "otro@acme.com").json()["access_token"]}
-    c.post("/auth/mfa/enroll", headers=headers, json={})
-    assert c.post("/auth/mfa/confirm", headers=headers, json={"totp_code": "123456"}).status_code in (400, 401, 422)
-    assert c.get("/auth/mfa/status", headers=headers).json() == {"enabled": False}
-    assert _login(c, "otro@acme.com").status_code == 200
+    reg = _register(c, "otro@acme.com")
+    bad = c.post("/auth/register/mfa/confirm", json={"setup_token": reg["mfa_setup_token"], "totp_code": "123456"})
+    assert bad.status_code == 400
+    assert _login(c, "otro@acme.com").status_code == 200  # nadie queda bloqueado por no terminar el paso
+
+
+def test_confirm_works_even_if_org_subscription_expired(client, monkeypatch):
+    """El caso del reporte: login da 402 (suscripcion vencida) pero el MFA igual se vincula."""
+    c = client
+    reg = _register(c, "vencida@acme.com")
+    monkeypatch.setattr(services, "is_org_active", lambda org: False)
+    assert _login(c, "vencida@acme.com").status_code == 402
+    code = pyotp.TOTP(reg["mfa_setup"]["secret"]).now()
+    assert c.post("/auth/register/mfa/confirm", json={"setup_token": reg["mfa_setup_token"], "totp_code": code}).status_code == 200
+
+
+def test_setup_token_is_single_use_and_garbage_rejected(client):
+    c = client
+    reg = _register(c, "uso@acme.com")
+    code = pyotp.TOTP(reg["mfa_setup"]["secret"]).now()
+    body = {"setup_token": reg["mfa_setup_token"], "totp_code": code}
+    assert c.post("/auth/register/mfa/confirm", json=body).status_code == 200
+    assert c.post("/auth/register/mfa/confirm", json=body).status_code == 400  # ya vinculado
+    assert c.post("/auth/register/mfa/confirm", json={"setup_token": "basura" * 10, "totp_code": code}).status_code == 400
