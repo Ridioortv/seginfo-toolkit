@@ -315,6 +315,11 @@ func TestCompileInBatches(t *testing.T) {
 	if !strings.Contains(builds[0], "--profile build build tero-base") {
 		t.Fatalf("primero la base: %s", builds[0])
 	}
+	for _, b := range builds {
+		if !strings.Contains(b, "--profile build") {
+			t.Fatalf("toda llamada de build lleva --profile build (si no, tero-base es un servicio desconocido): %s", b)
+		}
+	}
 	if !strings.HasSuffix(builds[1], "build a-service b-service c-service") || !strings.HasSuffix(builds[2], "build d-service") {
 		t.Fatalf("tandas de 3: %v", builds[1:])
 	}

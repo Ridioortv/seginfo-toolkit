@@ -316,14 +316,16 @@ func compileInBatches() error {
 	if os.Getenv("COMPOSE_PARALLEL_LIMIT") == "" {
 		_ = os.Setenv("COMPOSE_PARALLEL_LIMIT", "3")
 	}
-	files := []string{"compose", "-f", "docker-compose.yml", "-f", "docker-compose.dev.yml"}
+	// --profile build en TODAS las llamadas: tero-base vive en ese profile y, si no esta activo,
+	// Compose rechaza los servicios que lo usan como contexto ("declares unknown service tero-base").
+	files := []string{"compose", "-f", "docker-compose.yml", "-f", "docker-compose.dev.yml", "--profile", "build"}
 	run := func(extra ...string) error {
 		cmd := dockerCmd(append(append([]string{}, files...), extra...)...)
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		return cmd.Run()
 	}
 	fmt.Println("Compilando la imagen base comun...")
-	if err := run("--profile", "build", "build", "tero-base"); err != nil {
+	if err := run("build", "tero-base"); err != nil {
 		return err
 	}
 	batches := chunk(devServices(string(text)), 3)
