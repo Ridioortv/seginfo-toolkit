@@ -7,7 +7,7 @@ import re
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from urllib.parse import urlencode
-from fastapi import FastAPI, Depends, HTTPException, Request, status
+from fastapi import BackgroundTasks, FastAPI, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
@@ -51,12 +51,18 @@ from app.schemas import (
     SubscriptionPayLinkRequest,
     SubscriptionHistoryOut,
     BlockedPaymentLinkRequest,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
+    ChangePasswordRequest,
+    MessageOut,
+    PasswordResetLinkOut,
 )
 from app.dependencies import (
     get_current_claims, require_role, require_platform_admin, require_org_admin_or_platform_admin,
     require_service_token,
 )
-from app import services, oidc
+from app import services, oidc, password_reset
+from backend.shared.security import hash_password, verify_password
 
 logger = configure_logging("auth-service")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
@@ -325,6 +331,89 @@ async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depe
     return TokenPair(access_token=access, refresh_token=refresh)
 
 
+# --- "Olvide mi contrasena" / cambio de contrasena ---------------------------
+# Respuesta SIEMPRE igual exista o no el email (no se puede usar para averiguar
+# quien tiene cuenta). Ver app/password_reset.py para el diseno del token.
+FORGOT_PASSWORD_MESSAGE = (
+    "Si el email corresponde a una cuenta, te enviamos un link para restablecer la contrasena. "
+    "Revisa tambien la carpeta de spam."
+)
+RESET_LINK_INVALID = "El link no es valido o ya vencio. Pedi uno nuevo desde \"Olvide mi contrasena\"."
+
+
+async def _email_reset_link(user_email: str, user_id: str) -> None:
+    """Segundo plano: arma el token con los datos vigentes y manda el mail (nunca levanta)."""
+    try:
+        async with SessionLocal() as session:
+            user = await services.get_user_by_id(session, user_id)
+            if user is None or not user.is_active or user.hashed_password is None:
+                return
+            url = password_reset.reset_url(password_reset.create_reset_token(user))
+        await asyncio.to_thread(password_reset.send_reset_email, user_email, url)
+    except Exception:
+        logger.exception("no se pudo enviar el mail de restablecer contrasena")
+
+
+@app.post("/auth/password/forgot", response_model=MessageOut)
+async def forgot_password(
+    payload: ForgotPasswordRequest, request: Request, background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    await _enforce_rate_limit(f"forgot:ip:{_client_ip(request)}", limit=10, window_seconds=900)
+    # Por cuenta: 3 mails cada 15 min. Pasado el tope no se avisa nada distinto (misma respuesta).
+    allowed = await check_rate_limit(f"forgot:email:{payload.email.lower()}", 3, 900)
+    user = await services.get_user_by_email(db, payload.email)
+    if allowed and user is not None and user.is_active and user.hashed_password is not None:
+        await services.record_audit_event(db, user.email, "auth.password.forgot_requested")
+        await db.commit()
+        background_tasks.add_task(_email_reset_link, user.email, user.id)
+    return MessageOut(message=FORGOT_PASSWORD_MESSAGE)
+
+
+@app.post("/auth/password/reset", response_model=MessageOut)
+async def reset_password(payload: ResetPasswordRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    await _enforce_rate_limit(f"reset:ip:{_client_ip(request)}", limit=20)
+    claims = password_reset.read_reset_token(payload.token)
+    user = await services.get_user_by_id(db, claims["sub"]) if claims else None
+    if claims is None or not password_reset.token_matches_user(claims, user):
+        raise HTTPException(status_code=400, detail=RESET_LINK_INVALID)
+    if verify_password(payload.new_password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="La contrasena nueva tiene que ser distinta de la actual.")
+    user.hashed_password = hash_password(payload.new_password)
+    await services.record_audit_event(db, user.email, "auth.password.reset")
+    await db.commit()
+    # Los intentos fallidos previos dejan de contar: la persona recupero su cuenta.
+    await clear_failures(f"login:email:{user.email.lower()}")
+    return MessageOut(message="Contrasena actualizada. Ya podes ingresar con la nueva.")
+
+
+@app.post("/auth/password/change", response_model=MessageOut)
+async def change_password(
+    payload: ChangePasswordRequest,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cambiar la contrasena estando adentro: pide la actual (con tope de fallos por cuenta)."""
+    fail_key = f"change_password:user:{claims.get('sub')}"
+    if await too_many_failures(fail_key, 5):
+        raise HTTPException(status_code=429, detail="Demasiados intentos. Espera unos minutos antes de volver a intentar.")
+    user = await services.get_user_by_id(db, claims.get("sub", ""))
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=401, detail="Sesion invalida")
+    if user.hashed_password is None:
+        raise HTTPException(status_code=400, detail="Tu cuenta entra con Google/SSO: no tiene contrasena propia para cambiar.")
+    if not verify_password(payload.current_password, user.hashed_password):
+        await register_failure(fail_key, LOGIN_FAILURE_WINDOW_SECONDS)
+        raise HTTPException(status_code=400, detail="La contrasena actual no es correcta.")
+    if payload.new_password == payload.current_password:
+        raise HTTPException(status_code=400, detail="La contrasena nueva tiene que ser distinta de la actual.")
+    user.hashed_password = hash_password(payload.new_password)
+    await services.record_audit_event(db, user.email, "auth.password.change")
+    await db.commit()
+    await clear_failures(fail_key)
+    return MessageOut(message="Contrasena actualizada.")
+
+
 @app.post("/auth/google", response_model=TokenPair)
 async def google_login(payload: GoogleAuthRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Login o registro con Google: el frontend manda el credential (ID token)
@@ -579,6 +668,39 @@ async def update_org_user(
     )
     await db.commit()
     return _user_admin_out(user)
+
+
+@app.post(
+    "/auth/organizations/{org_id}/users/{user_id}/password-reset-link", response_model=PasswordResetLinkOut,
+)
+async def create_password_reset_link(
+    org_id: str,
+    user_id: str,
+    background_tasks: BackgroundTasks,
+    claims: dict = Depends(require_org_admin_or_platform_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """El admin genera el link de restablecimiento de una cuenta (para pasarselo a la
+    persona cuando no hay mail configurado, o si no le llega). Si hay SMTP, tambien se
+    lo manda por mail. El link vale 30 min y se usa una sola vez."""
+    user = await services.get_user_in_org(db, org_id, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en esta organizacion")
+    if user.is_platform_admin and not claims.get("platform_admin"):
+        raise HTTPException(status_code=403, detail="No podes administrar una cuenta de administrador de plataforma")
+    if user.hashed_password is None:
+        raise HTTPException(status_code=400, detail="Esa cuenta entra con Google/SSO: no tiene contrasena para restablecer.")
+    url = password_reset.reset_url(password_reset.create_reset_token(user))
+    email_sent = password_reset.smtp_configured()
+    if email_sent:
+        background_tasks.add_task(_email_reset_link, user.email, user.id)
+    await services.record_audit_event(
+        db, claims.get("sub", ""), "user.password_reset_link_by_admin", user.email
+    )
+    await db.commit()
+    return PasswordResetLinkOut(
+        reset_url=url, expires_minutes=password_reset.RESET_TOKEN_MINUTES, email_sent=email_sent,
+    )
 
 
 @app.post("/auth/organizations/{org_id}/users/{user_id}/mfa", response_model=MfaEnrollResponse)

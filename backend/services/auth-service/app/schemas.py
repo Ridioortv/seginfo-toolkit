@@ -206,3 +206,27 @@ class UserAdminOut(BaseModel):
     is_active: bool
     mfa_enabled: bool
     auth_provider: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=4096)
+    new_password: str = Field(min_length=12, max_length=128)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(max_length=1024)
+    new_password: str = Field(min_length=12, max_length=128)
+
+
+class MessageOut(BaseModel):
+    message: str
+
+
+class PasswordResetLinkOut(BaseModel):
+    reset_url: str
+    expires_minutes: int
+    email_sent: bool = False
