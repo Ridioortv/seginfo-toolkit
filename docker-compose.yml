@@ -228,11 +228,16 @@ services:
       - SYS_RESOURCE
       - BPF
       - PERFMON
-    # No es un servidor web (corre agent.py, no uvicorn), asi que el
-    # healthcheck de la imagen no aplica -> lo desactivamos para que no
-    # figure "unhealthy".
+    # No es un servidor web (corre agent.py, no uvicorn), asi que el healthcheck de la
+    # imagen (HTTP) no aplica. Este revisa el "latido" del agente: lo actualiza cada vez que
+    # le logra preguntar jobs a scan-service (ver agent.py::_touch_heartbeat), asi que figura
+    # "healthy" solo si esta funcionando de verdad (scan-service alcanzable y api key valida).
     healthcheck:
-      disable: true
+      test: ["CMD", "python", "/agent.py", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     volumes:
       - ./remote-agent/agent.py:/agent.py:ro
     depends_on:
@@ -263,7 +268,11 @@ services:
       SENTINELOPS_YARA_RULES_FILE: /opt/sentinelops-yara-rules/sentinelops.yar
       SENTINELOPS_ZAP_HOME_DIR: /home/sentinelops/.ZAP
     healthcheck:
-      disable: true
+      test: ["CMD", "python", "/agent.py", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     volumes:
       - ./remote-agent/agent.py:/agent.py:ro
     depends_on:

@@ -845,20 +845,43 @@ _FALCO_PRIORITY_SEVERITY_MAP = {
 }
 
 
+def _run_for_fixed_duration(cmd: list, duration_seconds: int, grace_seconds: int = 10):
+    """Corre `cmd` una ventana FIJA. Mismo criterio que
+    scan-service/app/scanners/_duration.py::run_for_fixed_duration: no se confia solo en
+    el flag del programa (falco -M); al vencer la ventana (+5 s) se manda SIGTERM, se lee
+    lo capturado y solo si no responde se lo mata. Devuelve (returncode, stdout, stderr,
+    cortado_por_nosotros); FileNotFoundError si el binario no existe."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stopped = False
+    try:
+        stdout, stderr = proc.communicate(timeout=duration_seconds + 5)
+    except subprocess.TimeoutExpired:
+        stopped = True
+        proc.terminate()
+        try:
+            stdout, stderr = proc.communicate(timeout=grace_seconds)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+    except BaseException:
+        proc.kill()
+        proc.communicate()
+        raise
+    return proc.returncode, stdout, stderr, stopped
+
+
 def run_falco(target: str, options: dict) -> tuple[str, list[dict], str]:
     duration_seconds = _resolve_duration_seconds(options or {})
     cmd = ["falco", "-M", str(duration_seconds), "-o", "engine.kind=modern_ebpf", "-o", "json_output=true"]
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=duration_seconds + 30)
+        returncode, stdout, stderr, stopped = _run_for_fixed_duration(cmd, duration_seconds)
     except FileNotFoundError:
         return "", [], "falco no esta instalado o no esta en el PATH de esta maquina"
-    except subprocess.TimeoutExpired:
-        return "", [], f"falco no termino solo tras {duration_seconds + 30}s -- se lo mato a la fuerza"
-    raw = proc.stdout.decode(errors="replace")
-    if proc.returncode != 0 and not raw.strip():
+    raw = stdout.decode(errors="replace")
+    if returncode not in (0, None) and not stopped and not raw.strip():
         return "", [], (
             "falco no pudo arrancar (revisa permisos/acceso a eBPF en esta maquina): "
-            + proc.stderr.decode(errors="replace")[:1800]
+            + stderr.decode(errors="replace")[:1800]
         )
     findings = []
     for line in raw.splitlines():
@@ -1001,8 +1024,34 @@ def _process_job(job: dict) -> None:
 _job_executor = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_JOBS)
 
 
+# Latido para el healthcheck del contenedor (docker-compose.yml): se actualiza cada vez que el
+# agente logra preguntarle jobs a scan-service. Si pasa de HEARTBEAT_MAX_AGE_SECONDS sin
+# actualizarse (scan-service caido, api key rechazada, el agente colgado) el contenedor pasa a
+# "unhealthy" en vez de figurar "Up" aunque no este haciendo nada.
+HEARTBEAT_FILE = os.environ.get("AGENT_HEARTBEAT_FILE") or os.path.join(tempfile.gettempdir(), "tero-agent-heartbeat")
+HEARTBEAT_MAX_AGE_SECONDS = 120
+
+
+def _touch_heartbeat() -> None:
+    try:
+        with open(HEARTBEAT_FILE, "a"):
+            pass
+        os.utime(HEARTBEAT_FILE, None)
+    except OSError:
+        pass  # sin latido el healthcheck lo marca unhealthy; no tumbar al agente por eso
+
+
+def heartbeat_is_fresh(path: str = "", max_age: int = HEARTBEAT_MAX_AGE_SECONDS) -> bool:
+    """True si el ultimo latido es reciente. Lo usa el healthcheck: python /agent.py --healthcheck."""
+    try:
+        return time.time() - os.path.getmtime(path or HEARTBEAT_FILE) < max_age
+    except OSError:
+        return False
+
+
 def run_once() -> None:
     jobs = poll_jobs()
+    _touch_heartbeat()
     if not jobs:
         return
     # Se despachan todos a threads y se sigue -- no se espera (as_completed)
@@ -1016,6 +1065,8 @@ def run_once() -> None:
 
 
 def main() -> None:
+    if "--healthcheck" in sys.argv[1:]:
+        sys.exit(0 if heartbeat_is_fresh() else 1)
     if not AGENT_API_KEY:
         log("ERROR: falta la variable de entorno AGENT_API_KEY (la api key que te mostro la UI al registrar el agente).")
         sys.exit(1)
