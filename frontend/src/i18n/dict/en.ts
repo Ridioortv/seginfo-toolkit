@@ -999,6 +999,16 @@ const dict: Record<string, string> = {
  "{0} corriendo": "{0} running",
  "cuando termine.": "when it finishes.",
  "agente eliminado": "agent deleted",
- "usuario": "user"
+ "usuario": "user",
+ "Vincula tu MFA": "Link your MFA",
+ "Tu cuenta ya esta creada. Un ultimo paso para proteger el acceso: escanea el QR con tu app de autenticacion.": "Your account is created. One last step to protect access: scan the QR with your authenticator app.",
+ "1) Abri Google Authenticator, Microsoft Authenticator, Authy, 1Password o Bitwarden y elegi \"agregar cuenta\". 2) Escanea este QR. 3) Escribi abajo el codigo de 6 digitos que muestra la app.": "1) Open Google Authenticator, Microsoft Authenticator, Authy, 1Password or Bitwarden and choose \"add account\". 2) Scan this QR. 3) Enter below the 6-digit code the app shows.",
+ "Si no podes escanear, agrega la cuenta a mano con esta clave (tipo: basado en tiempo):": "If you cannot scan, add the account manually with this key (type: time-based):",
+ "Codigo de 6 digitos de tu app": "6-digit code from your app",
+ "Confirmar y entrar": "Confirm and sign in",
+ "Omitir por ahora": "Skip for now",
+ "(lo podes activar despues en Seguridad de la cuenta; mientras no lo actives, el login no pide codigo).": "(you can enable it later in Account security; until you do, sign-in does not ask for a code).",
+ "El codigo tiene 6 digitos, los que muestra tu app de autenticacion.": "The code has 6 digits, the ones your authenticator app shows.",
+ "El codigo no coincide. Revisa que la hora de tu telefono sea automatica y proba con el codigo nuevo.": "The code does not match. Check that your phone's time is automatic and try the new code.",
 };
 export default dict;

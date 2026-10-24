@@ -1066,6 +1066,16 @@ const dict: Record<string, string> = {
  "{0} corriendo": "{0}: выполняется",
  "cuando termine.": "по завершении.",
  "agente eliminado": "агент удалён",
- "usuario": "пользователь"
+ "usuario": "пользователь",
+ "Vincula tu MFA": "Привяжите MFA",
+ "Tu cuenta ya esta creada. Un ultimo paso para proteger el acceso: escanea el QR con tu app de autenticacion.": "Учётная запись создана. Последний шаг для защиты доступа: отсканируйте QR-код в приложении-аутентификаторе.",
+ "1) Abri Google Authenticator, Microsoft Authenticator, Authy, 1Password o Bitwarden y elegi \"agregar cuenta\". 2) Escanea este QR. 3) Escribi abajo el codigo de 6 digitos que muestra la app.": "1) Откройте Google Authenticator, Microsoft Authenticator, Authy, 1Password или Bitwarden и выберите «добавить аккаунт». 2) Отсканируйте этот QR-код. 3) Введите ниже 6-значный код из приложения.",
+ "Si no podes escanear, agrega la cuenta a mano con esta clave (tipo: basado en tiempo):": "Если не удаётся отсканировать, добавьте аккаунт вручную с этим ключом (тип: на основе времени):",
+ "Codigo de 6 digitos de tu app": "6-значный код из вашего приложения",
+ "Confirmar y entrar": "Подтвердить и войти",
+ "Omitir por ahora": "Пропустить пока",
+ "(lo podes activar despues en Seguridad de la cuenta; mientras no lo actives, el login no pide codigo).": "(можно включить позже в разделе «Безопасность учётной записи»; пока он не включён, при входе код не запрашивается).",
+ "El codigo tiene 6 digitos, los que muestra tu app de autenticacion.": "Код состоит из 6 цифр — тех, что показывает приложение-аутентификатор.",
+ "El codigo no coincide. Revisa que la hora de tu telefono sea automatica y proba con el codigo nuevo.": "Код не совпадает. Убедитесь, что время на телефоне задаётся автоматически, и попробуйте новый код.",
 };
 export default dict;
