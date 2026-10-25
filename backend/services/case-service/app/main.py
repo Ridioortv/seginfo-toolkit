@@ -21,6 +21,7 @@ from app import custody_models  # noqa: F401 -- registra la tabla de custodia
 from app.custody_routes import router as custody_router
 from app import egress_models  # noqa: F401 -- registra las tablas de la prueba de soberania
 from app.egress_routes import router as egress_router
+from app.closure_routes import router as closure_router
 from backend.shared import egress
 
 logger = configure_logging("case-service")
@@ -80,6 +81,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/metrics", make_asgi_app())
 app.include_router(custody_router)
 app.include_router(egress_router)
+app.include_router(closure_router)
 
 
 @app.get("/health")

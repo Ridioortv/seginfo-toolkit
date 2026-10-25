@@ -123,3 +123,38 @@ cache ya descargada (volumenes `trivy_cache` y `nuclei_templates`).
   informa figura como "sin informes recientes" y el veredicto no pasa de *Con salidas controladas*.
 - Si `case-service` esta caido, los servicios guardan los contadores y los informan al volver (si el
   servicio se reinicia antes, esos contadores se pierden).
+
+## 3. Cierre verificado de vulnerabilidades
+
+**Que resuelve.** En casi todas las herramientas, "remediada" es un clic de una persona. Si alguien se equivoca (o se apura), la vulnerabilidad figura como cerrada y sigue ahi. TERO no se queda con la declaracion: **repite el mismo escaneo que la encontro y solo la da por cerrada si ya no aparece.**
+
+**Como funciona.**
+
+1. Alguien pasa la vulnerabilidad a *remediada* (en Vulnerabilidades o desde la API).
+2. `vuln-service` pide a `scan-service` repetir el escaneo original (mismo escaner, objetivo y opciones). Queda anotado en la cadena como `vuln.closure_requested`.
+3. Cuando el re-escaneo termina:
+   - **Ya no la detecta** → `verificado`. Se anota `vuln.closure_verified` con el tiempo de cierre real.
+   - **La vuelve a detectar** → `cierre fallido`: la vulnerabilidad se **reabre sola** (`open`, con la nota "Reabierta: el re-escaneo de verificacion la volvio a detectar") y se anota `vuln.closure_failed`.
+   - **El re-escaneo fallo, se borro o no termino en 6 horas** → `sin concluir`. Nunca se da por verificada sin un escaneo completo. Se puede reintentar con "Verificar ahora".
+   - **No se puede repetir** (archivo subido, agente remoto, nube, superficie de ataque, codigo, falco/zeek/yara) → `no verificable`, con el motivo a la vista.
+4. En **Confianza y evidencia → Cierre verificado** se ve el tiempo de cierre **declarado** (hasta que alguien dijo "listo") contra el **real** (hasta la verificacion), la tasa de cierres falsos y el detalle por severidad.
+
+**Prueba firmada.** Cada cierre verificado o fallido se puede bajar con "Descargar prueba" (`GET /closure/{id}/attestation` en case-service): es un atestado `tero-attestation` de tipo `closure`, firmado con la clave de la cadena de custodia. Se comprueba sin TERO:
+
+```
+python verificar_evidencia.py prueba-cierre.json
+```
+
+**Variables (.env).**
+
+| Variable | Por defecto | Para que |
+|---|---|---|
+| `VULN_AUTO_VERIFY_CLOSURE` | `true` | `false` = no se pide el re-escaneo solo; queda "sin verificar" y se pide a mano |
+| `VULN_CLOSURE_POLL_SECONDS` | `30` | cada cuanto se revisan los re-escaneos pendientes |
+| `VULN_CLOSURE_TIMEOUT_HOURS` | `6` | tras cuanto sin terminar pasa a "sin concluir" |
+
+**Limites honestos.**
+
+- "Verificado" quiere decir que *el escaneo repetido ya no la detecta*, no que sea imposible explotarla. Si el objetivo estaba apagado y el escaner termino sin informar un error, podria dar un falso verificado; por eso el detalle muestra cuantos hallazgos tuvo el re-escaneo.
+- Si la vulnerabilidad vuelve a aparecer mas tarde despues de un cierre verificado, se registra como una vulnerabilidad nueva (el cierre anterior sigue siendo cierto para ese momento).
+- Los hallazgos que vienen de un archivo subido o de un agente remoto no se pueden repetir automaticamente.

@@ -2,6 +2,7 @@
 y CISA KEV, y expone el workflow de triage (confirmar, falso positivo,
 riesgo aceptado, remediado). Ver app/enrichment.py para el detalle de las
 fuentes de datos, todas de solo lectura."""
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,15 +10,16 @@ from prometheus_client import Counter, make_asgi_app
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.shared.database import get_db, engine, Base, wait_for_database
+from backend.shared.database import get_db, engine, Base, SessionLocal, wait_for_database
 from backend.shared.logging import configure_logging
 from backend.shared import egress
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
+from app.models import VulnStatus
 from app.schemas import IngestRequest, IngestResponse, TriageRequest, VulnerabilityOut, VulnerabilityStatsOut
 from app.dependencies import get_current_claims, require_role
-from app import services
+from app import closure, services
 
 logger = configure_logging("vuln-service")
 vulns_ingested_total = Counter("vulns_ingested_total", "Hallazgos ingeridos", ["scanner_type"])
@@ -35,8 +37,19 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             f"UPDATE vulnerabilities SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
         ))
+        for column, ddl in (
+            ("remediated_at", "TIMESTAMP WITH TIME ZONE"), ("closure_status", "VARCHAR(20) DEFAULT ''"),
+            ("closure_detail", "TEXT DEFAULT ''"), ("closure_scan_job_id", "VARCHAR(36)"),
+            ("closure_requested_at", "TIMESTAMP WITH TIME ZONE"), ("closure_checked_at", "TIMESTAMP WITH TIME ZONE"),
+            ("closure_attempts", "INTEGER DEFAULT 0"), ("verified_at", "TIMESTAMP WITH TIME ZONE"),
+        ):
+            await conn.execute(text(f"ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS {column} {ddl}"))
+        await conn.execute(text("UPDATE vulnerabilities SET closure_status = '' WHERE closure_status IS NULL"))
+        await conn.execute(text("UPDATE vulnerabilities SET closure_attempts = 0 WHERE closure_attempts IS NULL"))
+    closure_task = asyncio.create_task(closure.loop(SessionLocal))
     logger.info("vuln-service iniciado")
     yield
+    closure_task.cancel()
 
 
 app = FastAPI(title="TERO Security Vulnerability Service", version="0.1.0", lifespan=lifespan)
@@ -98,17 +111,46 @@ async def list_vulnerabilities(
     asset_id: str | None = None,
     min_priority: float | None = None,
     scan_job_id: str | None = None,
+    closure_status: str | None = None,
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ):
     return await services.list_vulnerabilities(
-        db, org_id_from_claims(claims), status_filter, severity, asset_id, min_priority, scan_job_id
+        db, org_id_from_claims(claims), status_filter, severity, asset_id, min_priority, scan_job_id, closure_status
     )
 
 
 @app.get("/vulnerabilities/stats", response_model=VulnerabilityStatsOut)
 async def stats(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
     return await services.get_stats(db, org_id_from_claims(claims))
+
+
+@app.get("/vulnerabilities/closure/stats")
+async def closure_stats(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
+    """Cierres verificados vs declarados y MTTR real (hasta el cierre verificado) vs declarado."""
+    return await closure.stats(db, org_id_from_claims(claims))
+
+
+@app.post("/vulnerabilities/{vuln_id}/verify-closure", response_model=VulnerabilityOut)
+async def verify_closure(
+    vuln_id: str,
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Repite el escaneo que la encontro para comprobar que de verdad se corrigio (o reintenta una verificacion
+    que no pudo completarse). Solo para vulnerabilidades marcadas como remediadas."""
+    vuln = await services.get_vulnerability(db, vuln_id, org_id_from_claims(claims))
+    if vuln is None:
+        raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
+    if vuln.status != VulnStatus.remediated:
+        raise HTTPException(status_code=409, detail="Solo se verifica el cierre de vulnerabilidades marcadas como remediadas")
+    if vuln.closure_status == "pending" and vuln.closure_scan_job_id:
+        raise HTTPException(status_code=409, detail="Ya hay un re-escaneo de verificacion en curso")
+    closure.request_manual(vuln)
+    await closure.step(db, vuln, closure.get_client())  # pide el re-escaneo ya; el ciclo de fondo lo sigue
+    await db.commit()
+    await db.refresh(vuln)
+    return vuln
 
 
 @app.get("/vulnerabilities/{vuln_id}", response_model=VulnerabilityOut)

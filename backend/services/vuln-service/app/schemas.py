@@ -69,6 +69,12 @@ class VulnerabilityOut(BaseModel):
     triage_note: str
     triaged_by: str
     remediation_steps: list[str]
+    remediated_at: datetime | None = None
+    closure_status: str = ""
+    closure_detail: str = ""
+    closure_scan_job_id: str | None = None
+    closure_checked_at: datetime | None = None
+    verified_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

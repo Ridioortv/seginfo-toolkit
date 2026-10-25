@@ -154,6 +154,7 @@ export const CUSTODY_EVENT_LABEL: Record<string, string> = {
   "scan.completed": "Escaneo completado",
   "scan.failed": "Escaneo fallido",
   "vuln.status_changed": "Vulnerabilidad: cambio de estado",
+  "vuln.closure_requested": "Re-escaneo de verificacion pedido",
   "vuln.closure_verified": "Cierre verificado",
   "vuln.closure_failed": "Cierre no verificado",
   "sovereignty.mode_changed": "Modo de soberania",
@@ -208,6 +209,7 @@ export function summarizeCustody(eventType: string, p: Record<string, unknown>, 
     case "scan.failed":
       return `${s("scanner")} · ${s("target")} · ${tr("{0} hallazgos", s("findings") || "0")}`;
     case "vuln.status_changed":
+    case "vuln.closure_requested":
     case "vuln.closure_verified":
     case "vuln.closure_failed":
       return `${s("title")}${s("from") ? `: ${st(s("from"))} → ${st(s("to"))}` : ""}`;
@@ -224,4 +226,57 @@ export function summarizeCustody(eventType: string, p: Record<string, unknown>, 
 
 export function shortHash(hash: string): string {
   return hash.length > 12 ? `${hash.slice(0, 12)}…` : hash;
+}
+
+export type ClosureState = "" | "pending" | "verified" | "failed" | "inconclusive" | "unsupported";
+
+export interface ClosureVuln {
+  id: string;
+  title: string;
+  cve_id: string | null;
+  severity: string;
+  status: string;
+  asset_id: string | null;
+  remediated_at: string | null;
+  verified_at: string | null;
+  created_at: string;
+  closure_status: ClosureState;
+  closure_detail: string;
+  closure_scan_job_id: string | null;
+  closure_checked_at: string | null;
+}
+
+export interface ClosureStats {
+  counts: Record<string, number>;
+  remediated_total: number;
+  remediated_unverified: number;
+  mttr_declared_hours: number | null;
+  mttr_real_hours: number | null;
+  false_closure_rate_pct: number | null;
+  by_severity: Record<string, { verified: number; failed: number; pending: number; unverified: number; mttr_real_hours: number | null; mttr_declared_hours: number | null }>;
+}
+
+export const CLOSURE_LABEL: Record<string, string> = {
+  "": "Sin verificar",
+  pending: "En verificacion",
+  verified: "Verificado",
+  failed: "Cierre fallido (reabierta)",
+  inconclusive: "Sin concluir",
+  unsupported: "No verificable",
+};
+
+export const CLOSURE_BADGE: Record<string, string> = {
+  "": "badge badge-neutral",
+  pending: "badge badge-medium",
+  verified: "badge badge-success",
+  failed: "badge badge-critical",
+  inconclusive: "badge badge-medium",
+  unsupported: "badge badge-neutral",
+};
+
+/** Horas -> texto corto: "26.5 h" o "2.3 d" (desde 48 h). */
+export function formatHours(hours: number | null | undefined): string {
+  if (hours === null || hours === undefined) return "-";
+  if (hours < 48) return `${Math.round(hours * 10) / 10} h`;
+  return `${Math.round((hours / 24) * 10) / 10} d`;
 }

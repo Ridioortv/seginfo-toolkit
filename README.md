@@ -133,6 +133,9 @@ pedirle que confie en nosotros:
   independiente que corre sin acceso a TERO.
 - **Prueba de soberania**: auditor de salidas a internet (que servicio habla con que destino, para que y que
   datos viajan), modo aislado (`docker-compose.aislado.yml`), prueba de red y atestado firmado.
+- **Cierre verificado**: al marcar una vulnerabilidad como remediada, TERO repite el escaneo que la encontro y
+  solo la da por cerrada si ya no aparece (si sigue, la reabre sola). Mide el tiempo de cierre real y entrega
+  una prueba firmada.
 
 Guia completa, configuracion y limites en [`docs/confianza-y-evidencia.md`](./docs/confianza-y-evidencia.md).
 

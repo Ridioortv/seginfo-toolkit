@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CUSTODY_EVENT_LABEL, shortHash, summarizeCustody } from "./trust";
+import { CLOSURE_BADGE, CLOSURE_LABEL, CUSTODY_EVENT_LABEL, formatHours, shortHash, summarizeCustody } from "./trust";
 
 describe("summarizeCustody", () => {
   it("cambio de estado de caso muestra titulo y estados legibles", () => {
@@ -30,5 +30,25 @@ describe("summarizeCustody: soberania", () => {
       "siem-service: modo aislado activado");
     expect(summarizeCustody("sovereignty.mode_changed", { service: "siem-service", isolated_after: false })).toBe(
       "siem-service: modo aislado desactivado");
+  });
+});
+
+describe("cierre verificado", () => {
+  it("formatea horas y dias", () => {
+    expect(formatHours(null)).toBe("-");
+    expect(formatHours(26.54)).toBe("26.5 h");
+    expect(formatHours(47.9)).toBe("47.9 h");
+    expect(formatHours(72)).toBe("3 d");
+    expect(formatHours(60)).toBe("2.5 d");
+  });
+  it("cada estado tiene etiqueta y color", () => {
+    for (const k of ["", "pending", "verified", "failed", "inconclusive", "unsupported"]) {
+      expect(CLOSURE_LABEL[k]).toBeTruthy();
+      expect(CLOSURE_BADGE[k]).toContain("badge");
+    }
+  });
+  it("resume los eventos de cierre", () => {
+    expect(summarizeCustody("vuln.closure_verified", { title: "Panel expuesto" })).toBe("Panel expuesto");
+    expect(summarizeCustody("vuln.closure_failed", { title: "Panel", from: "remediated", to: "open" })).toBe("Panel: Remediada → Abierto");
   });
 });

@@ -4,14 +4,14 @@ enriquecimiento (CVSS/EPSS/KEV), calculo de prioridad y workflow de triage
 import os
 from datetime import datetime, timezone
 import httpx
-from sqlalchemy import select, func
+from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared import custody
 from backend.shared.logging import configure_logging
 from backend.shared.security import create_access_token
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
 from app.models import Vulnerability, VulnStatus, VulnSeverity
-from app import enrichment
+from app import closure, enrichment
 
 logger = configure_logging("vuln-service")
 
@@ -144,8 +144,11 @@ async def ingest_findings(db: AsyncSession, payload, organization_id: str) -> tu
 async def _find_existing(
     db: AsyncSession, organization_id: str, asset_id: str | None, cve_id: str | None, title: str
 ) -> Vulnerability | None:
+    # Una vulnerabilidad "remediada" no se reutiliza, salvo mientras se verifica su cierre: el re-escaneo que
+    # la comprueba tambien la ingesta, y no debe crear un duplicado (closure.step la reabre si sigue ahi).
     query = select(Vulnerability).where(
-        Vulnerability.organization_id == organization_id, Vulnerability.status != VulnStatus.remediated
+        Vulnerability.organization_id == organization_id,
+        or_(Vulnerability.status != VulnStatus.remediated, Vulnerability.closure_status == "pending"),
     )
     if asset_id:
         query = query.where(Vulnerability.asset_id == asset_id)
@@ -188,6 +191,7 @@ async def list_vulnerabilities(
     asset_id: str | None = None,
     min_priority: float | None = None,
     scan_job_id: str | None = None,
+    closure_status: str | None = None,
 ) -> list[Vulnerability]:
     query = select(Vulnerability).where(Vulnerability.organization_id == organization_id)
     if status_filter:
@@ -198,6 +202,8 @@ async def list_vulnerabilities(
         query = query.where(Vulnerability.asset_id == asset_id)
     if min_priority is not None:
         query = query.where(Vulnerability.priority_score >= min_priority)
+    if closure_status:
+        query = query.where(Vulnerability.closure_status == closure_status)
     if scan_job_id:
         # Usado por la pagina de Escaneos para mostrar los resultados
         # enriquecidos (severidad/CVSS/EPSS/remediacion) de UN escaneo
@@ -220,6 +226,10 @@ async def get_vulnerability(db: AsyncSession, vuln_id: str, organization_id: str
 
 async def triage_vulnerability(db: AsyncSession, vuln: Vulnerability, payload, actor: str) -> Vulnerability:
     previous_status = getattr(vuln.status, "value", vuln.status)
+    if payload.status == VulnStatus.remediated and previous_status != "remediated":
+        closure.mark_remediated(vuln)
+    elif payload.status != VulnStatus.remediated and previous_status == "remediated":
+        closure.clear_closure(vuln)
     vuln.status = payload.status
     vuln.triage_note = payload.note
     vuln.triaged_by = actor
