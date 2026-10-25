@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from backend.shared import custody
 from backend.shared.logging import configure_logging
 from backend.shared.service_auth import service_auth_headers
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
@@ -69,7 +70,24 @@ async def _create_alert(db: AsyncSession, rule: SigmaRule, event: dict, organiza
     await db.flush()
     await db.refresh(alert)
     logger.info("alerta generada", extra={"alert_id": alert.id, "rule": rule.name, "severity": rule.severity.value})
+    await custody.record_event(
+        "alert.created", service="siem-service", organization_id=organization_id, actor="siem-service",
+        subject_type="alert", subject_id=alert.id, refs=[f"alert:{alert.id}"],
+        payload={"rule": rule.name, "rule_id": rule.id, "severity": rule.severity.value,
+                 "event_sha256": custody.digest(event), **event_summary(event)},
+    )
     return alert
+
+
+def event_summary(event: dict) -> dict:
+    """Pocos campos identificatorios del evento (host, usuario, IPs) para la evidencia; el evento completo
+    no se copia a la cadena de custodia: se anota su huella SHA-256."""
+    pick = {
+        "host": (event.get("host") or {}).get("name"), "user": (event.get("user") or {}).get("name"),
+        "source_ip": (event.get("source") or {}).get("ip"), "dest_ip": (event.get("destination") or {}).get("ip"),
+        "action": (event.get("event") or {}).get("action"), "event_time": event.get("@timestamp"),
+    }
+    return {k: str(v)[:200] for k, v in pick.items() if v}
 
 
 def _extract_ips_from_event(event: dict) -> list[str]:
@@ -304,12 +322,19 @@ def _resolve_alert_update(
 
 
 async def update_alert(db: AsyncSession, alert: Alert, payload, actor: str) -> Alert:
+    previous_status = getattr(alert.status, "value", alert.status)
     alert.status = payload.status
     alert.notes, alert.acknowledged_by = _resolve_alert_update(
         alert.notes, alert.acknowledged_by, payload.status, payload.notes, actor
     )
     await db.flush()
     await db.refresh(alert)
+    await custody.record_event(
+        "alert.status_changed", service="siem-service", organization_id=alert.organization_id, actor=actor,
+        subject_type="alert", subject_id=alert.id, refs=[f"alert:{alert.id}"],
+        payload={"rule": alert.rule_name, "from": previous_status, "to": getattr(alert.status, "value", alert.status),
+                 "notes": (alert.notes or "")[:500]},
+    )
     return alert
 
 

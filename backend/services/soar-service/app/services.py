@@ -6,6 +6,7 @@ ruta de codigo aca que ejecute algo contra un objetivo real."""
 from datetime import datetime, timezone
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
+from backend.shared import custody
 from backend.shared.logging import configure_logging
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
 from app.models import Playbook, PlaybookRun, PendingCase, RunStatus
@@ -71,6 +72,17 @@ async def _run_steps(db: AsyncSession, playbook: Playbook, context: dict, trigge
     run.finished_at = _now()
     await db.flush()
     await db.refresh(run)
+    refs = [f"run:{run.id}"] + ([f"alert:{run.alert_id}"] if run.alert_id else [])
+    await custody.record_event(
+        "soar.playbook_run", service="soar-service", organization_id=run.organization_id, actor=triggered_by,
+        subject_type="playbook_run", subject_id=run.id, refs=refs,
+        payload={
+            "playbook": playbook.name, "playbook_id": playbook.id, "status": run.status.value,
+            "triggered_by": triggered_by,
+            "steps": [{"action": s.get("action"), "success": s.get("success"), "simulated": s.get("simulated"),
+                       "message": str(s.get("message", ""))[:300]} for s in steps_log],
+        },
+    )
     return run
 
 

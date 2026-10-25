@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
 from backend.shared.security import create_access_token
+from app import custody_service as custody
 from app.models import Case, CaseTimelineEntry, CaseStatus, SLA_HOURS_BY_PRIORITY
 
 logger = configure_logging("case-service")
@@ -84,6 +85,7 @@ async def create_case(db: AsyncSession, payload, organization_id: str, actor: st
     db.add(case)
     await db.flush()
     await _add_timeline_entry(db, case.id, actor or payload.source, "case.created", f"Prioridad: {payload.priority.value}")
+    await custody.record_case_event(db, case, "case.created", actor or payload.source)
     await db.refresh(case, attribute_names=["timeline"])
     return case
 
@@ -115,13 +117,20 @@ async def get_case(db: AsyncSession, case_id: str, organization_id: str) -> Case
 async def update_case(db: AsyncSession, case: Case, payload, actor: str) -> Case:
     changes = payload.model_dump(exclude_unset=True)
     old_status = case.status
+    before = custody.case_state(case)
     for field, value in changes.items():
         setattr(case, field, value)
     if "status" in changes and changes["status"] != old_status:
         case.resolved_at = resolved_at_for_transition(changes["status"], case.resolved_at, _now())
         await _add_timeline_entry(db, case.id, actor, "case.status_changed", f"{old_status.value} -> {changes['status'].value}")
+        await custody.record_case_event(db, case, "case.status_changed", actor,
+                                        {"from": old_status.value, "to": changes["status"].value})
     if changes:
         await _add_timeline_entry(db, case.id, actor, "case.updated", ", ".join(changes.keys()))
+        after = custody.case_state(case)
+        changed = {k: {"from": before[k], "to": after[k]} for k in after if before.get(k) != after[k] and k != "status"}
+        if changed:
+            await custody.record_case_event(db, case, "case.updated", actor, {"changes": changed})
     await db.flush()
     await db.refresh(case, attribute_names=["timeline"])
     return case
@@ -129,6 +138,8 @@ async def update_case(db: AsyncSession, case: Case, payload, actor: str) -> Case
 
 async def add_timeline_entry(db: AsyncSession, case: Case, payload, actor: str) -> Case:
     await _add_timeline_entry(db, case.id, actor, payload.action, payload.notes)
+    await custody.record_case_event(db, case, "case.note_added", actor,
+                                    {"action": payload.action, "notes": payload.notes[:2000]})
     await db.flush()
     await db.refresh(case, attribute_names=["timeline"])
     return case
@@ -203,6 +214,7 @@ async def import_pending_cases_from_soar(db: AsyncSession, organization_id: str)
         db.add(case)
         await db.flush()
         await _add_timeline_entry(db, case.id, "soar-service", "case.imported", "Importado desde pending-cases de soar-service")
+        await custody.record_case_event(db, case, "case.imported", "soar-service")
         imported += 1
 
     await db.flush()

@@ -17,6 +17,8 @@ from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import CaseCreate, CaseUpdate, CaseOut, TimelineEntryCreate, ImportResult
 from app.dependencies import get_current_claims, require_role
 from app import services
+from app import custody_models  # noqa: F401 -- registra la tabla de custodia
+from app.custody_routes import router as custody_router
 
 logger = configure_logging("case-service")
 cases_created_total = Counter("case_created_total", "Casos creados", ["priority", "source"])
@@ -72,6 +74,7 @@ app.add_middleware(
 )
 app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/metrics", make_asgi_app())
+app.include_router(custody_router)
 
 
 @app.get("/health")

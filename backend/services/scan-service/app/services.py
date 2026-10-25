@@ -12,6 +12,7 @@ from datetime import datetime, timezone, timedelta
 import httpx
 from sqlalchemy import select, or_, and_, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from backend.shared import custody
 from backend.shared.ingest_auth import ingest_headers
 from backend.shared.logging import configure_logging
 from backend.shared.security import create_access_token
@@ -724,6 +725,7 @@ async def execute_scan_job(
                 logger.info("scan completado", extra={"job_id": job_id, "hallazgos": len(result.findings)})
             await db.commit()
 
+            await _record_scan_custody(job)
             if result.findings:
                 await _forward_findings_to_vuln_service(job)
                 await _forward_findings_to_siem_service(job)
@@ -748,6 +750,29 @@ async def execute_scan_job(
         unregister_running_scan(job_id)
         if cleanup_dir:
             shutil.rmtree(cleanup_dir, ignore_errors=True)
+
+
+async def _record_scan_custody(job: ScanJob) -> None:
+    """Anota en la cadena de custodia que se hizo este escaneo y cuanto vio, con la huella SHA-256 de la salida cruda
+    del escaner (prueba de que el resultado no se cambio despues). Nunca rompe el flujo del escaneo."""
+    try:
+        started, finished = getattr(job, "started_at", None), getattr(job, "finished_at", None)
+        duration = round((finished - started).total_seconds(), 1) if started and finished else None
+        status = getattr(job.status, "value", job.status)
+        asset_id = getattr(job, "asset_id", None)
+        await custody.record_event(
+            "scan.completed" if status == "completed" else "scan.failed", service="scan-service",
+            organization_id=getattr(job, "organization_id", None), actor=getattr(job, "created_by", "") or "scan-service",
+            subject_type="scan", subject_id=job.id, refs=[f"scan:{job.id}"] + ([f"asset:{asset_id}"] if asset_id else []),
+            payload={
+                "scanner": getattr(job.scanner_type, "value", job.scanner_type), "target": (job.target or "")[:300],
+                "status": status, "findings": len(getattr(job, "findings", None) or []),
+                "raw_output_sha256": custody.digest(getattr(job, "raw_result", "") or ""),
+                "duration_seconds": duration, "error": (getattr(job, "error_message", "") or "")[:300],
+            },
+        )
+    except Exception:  # noqa: BLE001 -- la evidencia es un extra: jamas debe romper el escaneo
+        logger.warning("no se pudo preparar el evento de custodia del escaneo", extra={"job_id": getattr(job, "id", "")})
 
 
 def _warn_if_ingest_rejected(resp: httpx.Response, job_id: str, target: str = "vuln-service") -> None:

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from backend.shared import custody
 from backend.shared.logging import configure_logging
 from backend.shared.security import create_access_token
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
@@ -218,12 +219,21 @@ async def get_vulnerability(db: AsyncSession, vuln_id: str, organization_id: str
 
 
 async def triage_vulnerability(db: AsyncSession, vuln: Vulnerability, payload, actor: str) -> Vulnerability:
+    previous_status = getattr(vuln.status, "value", vuln.status)
     vuln.status = payload.status
     vuln.triage_note = payload.note
     vuln.triaged_by = actor
     vuln.updated_at = _now()
     await db.flush()
     await db.refresh(vuln)
+    await custody.record_event(
+        "vuln.status_changed", service="vuln-service", organization_id=vuln.organization_id, actor=actor,
+        subject_type="vuln", subject_id=vuln.id,
+        refs=[f"vuln:{vuln.id}"] + ([f"asset:{vuln.asset_id}"] if vuln.asset_id else []),
+        payload={"title": vuln.title, "cve": vuln.cve_id or "", "severity": getattr(vuln.severity, "value", vuln.severity),
+                 "from": previous_status, "to": getattr(vuln.status, "value", vuln.status),
+                 "note": (vuln.triage_note or "")[:500]},
+    )
     return vuln
 
 
