@@ -1035,3 +1035,39 @@ td.panel { border: none; border-bottom: 1px solid var(--border); margin: 0; }
 .lang-item:hover { background: var(--bg-2); }
 .lang-item-active { font-weight: 600; color: var(--accent, var(--text-primary)); }
 .lang-item svg { width: 15px; height: 15px; }
+
+/* ---- Gobernanza de codigo con IA ---------------------------------------- */
+
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 18px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.tab {
+  padding: 7px 14px; border-radius: 999px; border: 1px solid var(--border-strong);
+  background: var(--bg-1); color: var(--text-secondary); font-size: 0.85rem; font-weight: 600; cursor: pointer;
+}
+.tab:hover { border-color: var(--accent); color: var(--text-primary, inherit); }
+.tab.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+.gov-callout { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius-md, 10px); padding: 10px 14px; margin: 0 0 16px; background: var(--bg-2); font-size: 0.85rem; color: var(--text-secondary); }
+.gov-callout strong { color: inherit; }
+.gov-ok { border-left-color: var(--success); }
+.gov-bad { border-left-color: var(--danger); }
+.gov-warn { border-left-color: var(--warning); }
+
+.gov-bars { display: flex; align-items: flex-end; gap: 10px; height: 150px; padding: 8px 0; overflow-x: auto; }
+.gov-bar-col { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 54px; flex: 1; }
+.gov-bar { width: 100%; max-width: 44px; display: flex; flex-direction: column-reverse; justify-content: flex-start; height: 110px; background: var(--bg-2); border-radius: 6px; overflow: hidden; }
+.gov-bar-human { background: var(--accent-2, #22d3ee); }
+.gov-bar-ai { background: var(--accent); }
+.gov-bar-label { font-size: 0.68rem; color: var(--text-muted); white-space: nowrap; }
+.gov-legend { display: flex; gap: 16px; font-size: 0.8rem; color: var(--text-secondary); margin-top: 6px; }
+.gov-dot { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
+
+.gov-detail { background: var(--bg-2); border-radius: var(--radius-md, 10px); padding: 12px 16px; margin: 6px 0 12px; }
+.gov-detail h4 { margin: 10px 0 6px; font-size: 0.82rem; color: var(--text-secondary); }
+.gov-detail h4:first-child { margin-top: 0; }
+.gov-code { display: block; white-space: pre-wrap; word-break: break-word; font-family: var(--font-mono, monospace); font-size: 0.78rem; background: var(--bg-1); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 6px 0; max-height: 320px; overflow: auto; }
+.gov-row-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+.gov-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.gov-form-grid label { display: block; font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 4px; font-weight: 600; }
+.gov-form-grid input, .gov-form-grid select, .gov-form-grid textarea { width: 100%; }
+.gov-pager { display: flex; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 12px; font-size: 0.85rem; color: var(--text-secondary); }
+.gov-hash { font-family: var(--font-mono, monospace); font-size: 0.76rem; }

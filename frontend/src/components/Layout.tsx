@@ -22,6 +22,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/surface", label: "Superficie Externa", icon: "surface" },
       { to: "/cloud", label: "Integraciones Cloud", icon: "cloud" },
       { to: "/code-repos", label: "Código y Repositorios", icon: "code" },
+      { to: "/ai-governance", label: "Gobernanza de IA", icon: "ledger" },
     ],
   },
   {
