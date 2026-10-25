@@ -108,6 +108,21 @@ docs/                # arquitectura, modelo de amenazas y runbook
   sintaxis del backend, build+typecheck del frontend, validacion de
   `docker-compose.yml` y build (sin push todavia) de cada imagen Docker.
 
+## Gobernanza de IA en el codigo
+
+Menu **Gobernanza de IA** (`/ai-governance`, servicio `coderepo-service`). Al escanear un repositorio conectado
+en **Codigo y Repositorios**, TERO lee su historial de git y arma, por commit: quien lo escribio, si fue una
+persona, una IA o ambas (por las marcas del commit o por declaracion manual), cuantas lineas toco y que
+hallazgos tiene (secretos y patrones inseguros). Sobre eso:
+
+- **Compuerta de seguridad** antes de integrar cambios (tambien consultable desde GitHub Actions).
+- **Politicas por equipo o zona** del codigo (IA permitida / con revision / prohibida, aprobaciones, umbral de
+  severidad), en modo *Observar* (solo mide) o *Exigir* (bloquea).
+- **Registro auditable**: encadenado y firmado, exportable (JSON verificable / CSV) y con ancla externa.
+- **Tablero para direccion**: porcentaje de codigo con IA, cobertura de revision, hallazgos cada 1000 lineas.
+
+Guia completa, variables y limites en [`docs/gobernanza-ia.md`](./docs/gobernanza-ia.md).
+
 ## Olvide mi contrasena
 
 En la pantalla de entrada: **¿Olvidaste tu contrasena?** -> email -> link de un solo uso (30 min). Requiere
