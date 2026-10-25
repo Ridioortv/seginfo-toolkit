@@ -8,8 +8,10 @@ import { SeverityBadge, StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
 import { isSlaBreached } from "../utils/sla";
 import { currentLocale } from "../i18n";
+import { saveBlob } from "../utils/download";
 
 const CAN_SYNC = ["admin", "soc_manager"];
+const CAN_EXPORT_EVIDENCE = ["admin", "soc_manager", "analyst"];
 
 const STATUS_TRANSITIONS: Record<string, { next: string; label: string }[]> = {
   open: [{ next: "in_progress", label: "Tomar caso" }],
@@ -22,12 +24,14 @@ export default function Cases() {
   const queryClient = useQueryClient();
   const claims = useAuthStore((s) => s.claims);
   const canSync = !!claims?.role && CAN_SYNC.includes(claims.role);
+  const canExportEvidence = !!claims?.role && CAN_EXPORT_EVIDENCE.includes(claims.role);
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [assigneeDraft, setAssigneeDraft] = useState<Record<string, string>>({});
   const [noteDraft, setNoteDraft] = useState<Record<string, string>>({});
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [caseActionError, setCaseActionError] = useState<string | null>(null);
+  const [evidenceFeedback, setEvidenceFeedback] = useState<string | null>(null);
 
   const cases = useQuery({
     queryKey: ["cases"],
@@ -64,6 +68,21 @@ export default function Cases() {
       setNoteDraft((prev) => ({ ...prev, [vars.id]: "" }));
       setCaseActionError(null);
       queryClient.invalidateQueries({ queryKey: ["cases"] });
+    },
+    onError: (err: unknown) => {
+      setCaseActionError(connectionErrorDetail(err));
+    },
+  });
+
+  const exportEvidence = useMutation({
+    mutationFn: async (id: string) => {
+      const resp = await caseApi.post<Blob>(`/custody/cases/${id}/package`, {}, { responseType: "blob" });
+      return saveBlob(resp, "evidencia-caso.zip");
+    },
+    onSuccess: (name) => {
+      setCaseActionError(null);
+      setEvidenceFeedback(`Listo: se descargo ${name}. Para verificarlo, ejecuta el verificador sobre ese archivo.`);
+      queryClient.invalidateQueries({ queryKey: ["custody"] });
     },
     onError: (err: unknown) => {
       setCaseActionError(connectionErrorDetail(err));
@@ -113,6 +132,7 @@ export default function Cases() {
       )}
 
       <div className="panel">
+        {evidenceFeedback && <p className="empty-hint">{evidenceFeedback}</p>}
         {caseActionError && (
           <p className="error-text">
             No se pudo completar la accion sobre el caso.{" "}
@@ -177,6 +197,16 @@ export default function Cases() {
                                 {t.label}
                               </button>
                             ))}
+                            {canExportEvidence && (
+                              <button
+                                className="btn-secondary"
+                                disabled={exportEvidence.isPending}
+                                title="Zip firmado con la cadena de custodia del caso y un verificador independiente"
+                                onClick={() => exportEvidence.mutate(c.id)}
+                              >
+                                {exportEvidence.isPending ? "Preparando..." : "Descargar evidencia"}
+                              </button>
+                            )}
                           </div>
 
                           <div className="inline-form" style={{ marginTop: 8 }}>

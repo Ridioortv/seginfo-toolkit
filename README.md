@@ -123,6 +123,17 @@ hallazgos tiene (secretos y patrones inseguros). Sobre eso:
 
 Guia completa, variables y limites en [`docs/gobernanza-ia.md`](./docs/gobernanza-ia.md).
 
+## Confianza y evidencia
+
+Menu **Confianza y evidencia** (`/trust`). Lo que TERO puede *demostrar* a un auditor, un cliente o un juez sin
+pedirle que confie en nosotros:
+
+- **Cadena de custodia digital**: alertas, respuestas, cambios de estado, escaneos y cierres quedan en una
+  cadena firmada (Ed25519). Se exporta un paquete de evidencia por caso (`.zip`) con un verificador
+  independiente que corre sin acceso a TERO.
+
+Guia completa, configuracion y limites en [`docs/confianza-y-evidencia.md`](./docs/confianza-y-evidencia.md).
+
 ## Olvide mi contrasena
 
 En la pantalla de entrada: **¿Olvidaste tu contrasena?** -> email -> link de un solo uso (30 min). Requiere

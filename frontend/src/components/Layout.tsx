@@ -32,6 +32,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/siem", label: "SIEM", icon: "activity" },
       { to: "/soar", label: "SOAR", icon: "zap" },
       { to: "/cases", label: "Casos", icon: "briefcase" },
+      { to: "/trust", label: "Confianza y evidencia", icon: "seal" },
       { to: "/purple-team", label: "Purple Team", icon: "target" },
     ],
   },

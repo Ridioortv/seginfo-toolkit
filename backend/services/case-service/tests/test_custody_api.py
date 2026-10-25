@@ -76,6 +76,12 @@ def test_org_comes_from_the_token_and_chains_are_isolated(client):
     assert client.get("/custody/verify", headers=tok(org=A)).json()["ok"] is True
 
 
+def test_verifier_download(client):
+    assert client.get("/custody/verifier").status_code == 401
+    r = client.get("/custody/verifier", headers=tok("viewer"))
+    assert r.status_code == 200 and "def ed25519_verify" in r.text and "verificar_evidencia.py" in r.headers["content-disposition"]
+
+
 def test_status_exposes_public_key_and_fingerprint(client):
     s = client.get("/custody/status", headers=tok("viewer")).json()
     assert len(s["public_key"]) == 64 and s["key_fingerprint"].count("-") == 7

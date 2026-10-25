@@ -89,6 +89,13 @@ async def custody_anchor(claims: dict = Depends(get_current_claims), db: AsyncSe
     return await custody.anchor(db, org_id_from_claims(claims))
 
 
+@router.get("/custody/verifier")
+async def custody_verifier(claims: dict = Depends(get_current_claims)):
+    """El mismo verificador independiente que viaja dentro de cada paquete (solo biblioteca estandar de Python)."""
+    return Response(content=custody.VERIFIER_PATH.read_text(encoding="utf-8"), media_type="text/x-python",
+                    headers={"Content-Disposition": 'attachment; filename="verificar_evidencia.py"'})
+
+
 @router.post("/custody/cases/{case_id}/package")
 async def custody_case_package(
     case_id: str, claims: dict = Depends(require_role(*WRITERS)), db: AsyncSession = Depends(get_db),
