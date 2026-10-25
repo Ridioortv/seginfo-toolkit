@@ -372,6 +372,8 @@ services:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
       SIEM_SERVICE_URL: http://siem-service:8000
+      CASE_SERVICE_URL: http://case-service:8000
+      SOAR_SERVICE_URL: http://soar-service:8000
     depends_on:
       postgres:
         condition: service_healthy

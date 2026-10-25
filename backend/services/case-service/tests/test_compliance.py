@@ -47,6 +47,7 @@ def good_facts():
         "siem_latest": ok([{"@timestamp": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()}]),
         "siem_rules": ok([{"id": "r1"}, {"id": "r2"}]),
         "playbooks": ok([{"id": "p1", "is_enabled": True}]),
+        "drills": ok({"completed_total": 2, "days_since_last": 20.0, "last_score": 90, "median_ack_seconds": 420.0}),
         "custody": ok({"ok": True, "entries": 30, "reason": ""}),
         "cases": ok({"total": 4, "open": 1, "stale_open": 0}),
         "sovereignty": ok({"verdict": "controlled", "summary": {"external_destinations": 2, "unknown_destinations": 0}}),
@@ -155,6 +156,24 @@ def test_siem_freshness():
     assert status_of({"siem_rules": ok([])}, "siem_rules") == "no_cumple"
 
 
+def test_drills_recent_states():
+    def f(**kw):
+        return {"drills": ok({"completed_total": 1, "days_since_last": 10.0, "last_score": 85, **kw})}
+    assert status_of(f(), "drills_recent") == "cumple"
+    assert status_of(f(days_since_last=200.0), "drills_recent") == "parcial"
+    assert status_of(f(last_score=40), "drills_recent") == "parcial"
+    assert status_of({"drills": ok({"completed_total": 0, "days_since_last": None, "last_score": None})}, "drills_recent") == "no_cumple"
+    assert status_of({"drills": down()}, "drills_recent") == "sin_datos"
+
+
+def test_drill_rules_do_not_count_as_real_detection_rules():
+    only_drill = ok([{"id": "r", "tags": ["tero-drill", "tero-drill:phishing"]}])
+    assert status_of({"siem_rules": only_drill}, "siem_rules") == "no_cumple"
+    mixed = ok([{"id": "r", "tags": ["tero-drill"]}, {"id": "r2", "tags": ["attack.t1110"]}])
+    r = evd.run_check("siem_rules", {"siem_rules": mixed})
+    assert r["status"] == "cumple" and r["evidence"][0]["value"] == "1"
+
+
 def test_custody_sovereignty_cases_playbooks():
     assert status_of({"custody": ok({"ok": False, "entries": 9, "reason": "x"})}, "custody_chain") == "no_cumple"
     assert status_of({"custody": ok({"ok": True, "entries": 0})}, "custody_chain") == "sin_datos"
@@ -211,17 +230,17 @@ def test_declaration_fills_in_an_auto_control_only_when_there_is_no_data():
 def test_scores_keep_verified_and_declared_apart():
     items = svc.evaluate_controls(good_facts(), {}, NOW)
     s = svc.scores(items)
-    assert s["score_verified"] == 100.0 and s["verified_controls"] == s["automatic_controls"] == 13
+    assert s["score_verified"] == 100.0 and s["verified_controls"] == s["automatic_controls"] == 14
     assert s["total_controls"] == len(cat.CONTROLS)
     # lo pendiente baja el total pero no lo verificado
-    assert s["score_total"] == round(100 * 13 / len(cat.CONTROLS), 1)
+    assert s["score_total"] == round(100 * 14 / len(cat.CONTROLS), 1)
     decls = {c["id"]: decl(c["id"]) for c in cat.CONTROLS if c["mode"] == "manual"}
     s2 = svc.scores(svc.evaluate_controls(good_facts(), decls, NOW))
     assert s2["score_total"] == 100.0 and s2["score_verified"] == 100.0
     # declarar 'no' en todo no cambia lo verificado
     decls = {c["id"]: decl(c["id"], "no") for c in cat.CONTROLS if c["mode"] == "manual"}
     s3 = svc.scores(svc.evaluate_controls(good_facts(), decls, NOW))
-    assert s3["score_verified"] == 100.0 and s3["score_total"] < 50
+    assert s3["score_verified"] == 100.0 and s3["score_total"] <= 50
 
 
 def test_no_data_at_all_gives_no_verified_score():
@@ -288,7 +307,7 @@ def test_roles(client):
 
 def test_status_shape(client):
     r = client.get("/compliance/status", headers=tok()).json()
-    assert len(r["controls"]) == len(cat.CONTROLS) and len(r["questionnaire"]) == 18
+    assert len(r["controls"]) == len(cat.CONTROLS) and len(r["questionnaire"]) == 19
     assert r["summary"]["score_verified"] == 100.0 and r["disclaimer"] and r["history"] == []
     first = r["controls"][0]
     assert {"id", "title", "status", "basis", "summary", "evidence", "refs", "mode", "why", "area_label"} <= set(first)
@@ -384,7 +403,7 @@ def test_questionnaire_csv(client):
     text = r.content.decode("utf-8")
     assert text.startswith("﻿") and text.count("\nQ") + text.startswith("﻿Id") >= 18
     lines = [l for l in text.splitlines() if l.startswith("Q")]
-    assert len(lines) == 18
+    assert len(lines) == 19
     assert "Si" in text and "No es asesoramiento legal" in text
     # nada que empiece con = + - @ al inicio de una celda (inyeccion de formulas)
     import csv, io
@@ -433,7 +452,7 @@ def test_gather_calls_each_service_with_an_org_token_and_survives_failures():
     assert facts["siem_latest"] == {"ok": False, "error": "ConnectError"}
     assert facts["custody"]["ok"] and facts["cases"]["data"]["total"] == 0 and "verdict" in facts["sovereignty"]["data"]
     hosts = {h for h, *_ in seen}
-    assert hosts == {"auth-service", "asset-service", "scan-service", "vuln-service", "siem-service", "soar-service"}
+    assert hosts == {"auth-service", "asset-service", "scan-service", "vuln-service", "siem-service", "soar-service", "purple-service"}
     assert all(org == A and sub == "system:case-service" and role == "admin" for _, _, org, sub, role in seen)
     paths = {p for _, p, *_ in seen}
-    assert f"/auth/organizations/{A}/users" in paths and "/vulnerabilities/posture" in paths and "/scans/summary" in paths
+    assert f"/auth/organizations/{A}/users" in paths and "/vulnerabilities/posture" in paths and "/scans/summary" in paths and "/drills/stats" in paths

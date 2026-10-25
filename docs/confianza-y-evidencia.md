@@ -175,7 +175,7 @@ Esto ordena evidencia; **no es asesoramiento legal ni una certificacion.**
 
 | Tipo | Ejemplos | De donde sale |
 |---|---|---|
-| Automatico (13) | MFA en administradores y usuarios, pocas cuentas administradoras, inventario con responsable, escaneos periodicos, criticas y explotadas (KEV) abiertas, cierres verificados, registros recientes, reglas de deteccion, cadena de custodia integra, playbooks de respuesta, casos sin abandonar, soberania | datos reales de `auth`, `asset`, `scan`, `vuln`, `siem`, `soar` y `case-service`, consultados con un JWT de servicio de la organizacion |
+| Automatico (14) | MFA en administradores y usuarios, pocas cuentas administradoras, inventario con responsable, escaneos periodicos, criticas y explotadas (KEV) abiertas, cierres verificados, registros recientes, reglas de deteccion, cadena de custodia integra, playbooks de respuesta, casos sin abandonar, simulacros de respuesta recientes, soberania | datos reales de `auth`, `asset`, `scan`, `vuln`, `siem`, `soar`, `purple` y `case-service`, consultados con un JWT de servicio de la organizacion |
 | Manual (14) | respaldos con restauracion probada, copia fuera de linea, capacitacion, EDR, filtrado de correo, cifrado, inscripcion ante la AAIP, politica de seguridad, proveedores | una persona (admin o soc_manager) lo **declara**: respuesta (si / parcial / no), nota de al menos 10 letras y vigencia de 6, 12 o 24 meses |
 
 **Reglas que no se rompen.**
@@ -186,7 +186,7 @@ Esto ordena evidencia; **no es asesoramiento legal ni una certificacion.**
 - Una declaracion vencida deja de contar.
 - Cada declaracion, foto y atestado queda anotado en la cadena de custodia (`compliance.declaration`, `compliance.declaration_removed`, `compliance.snapshot`, `compliance.attestation`). De la nota solo se guarda su huella en la cadena.
 
-**Cuestionario de ciberseguro.** 18 preguntas que casi todas las aseguradoras hacen, respondidas con la evidencia de arriba (Si / Parcial / No / Sin responder). Cada aseguradora tiene su formulario propio: es una base para completarlo, no un reemplazo. Se baja como CSV (`/compliance/questionnaire.csv`).
+**Cuestionario de ciberseguro.** 19 preguntas que casi todas las aseguradoras hacen, respondidas con la evidencia de arriba (Si / Parcial / No / Sin responder). Cada aseguradora tiene su formulario propio: es una base para completarlo, no un reemplazo. Se baja como CSV (`/compliance/questionnaire.csv`).
 
 **Evolucion.** "Guardar foto de hoy" guarda el puntaje del momento; ademas `case-service` guarda una foto por organizacion cada 24 horas (`COMPLIANCE_SNAPSHOT_HOURS`, `0` la apaga). El grafico muestra los dos puntajes en el tiempo.
 
@@ -201,7 +201,7 @@ python verificar_evidencia.py atestado-cumplimiento.json
 | Variable | Por defecto | Para que |
 |---|---|---|
 | `COMPLIANCE_SNAPSHOT_HOURS` | `24` | cada cuanto se guarda una foto automatica (`0` = nunca) |
-| `AUTH_SERVICE_URL`, `ASSET_SERVICE_URL`, `SCAN_SERVICE_URL`, `VULN_SERVICE_URL`, `SIEM_SERVICE_URL`, `SOAR_SERVICE_URL` | nombres de servicio de Docker | solo si los servicios no estan en la red de compose |
+| `AUTH_SERVICE_URL`, `ASSET_SERVICE_URL`, `SCAN_SERVICE_URL`, `VULN_SERVICE_URL`, `SIEM_SERVICE_URL`, `SOAR_SERVICE_URL`, `PURPLE_SERVICE_URL` | nombres de servicio de Docker | solo si los servicios no estan en la red de compose |
 
 **Limites honestos.**
 
@@ -210,3 +210,54 @@ python verificar_evidencia.py atestado-cumplimiento.json
 - TERO solo ve lo que gestiona: un equipo que no esta en el inventario o un usuario que entra por SSO queda fuera de lo verificado (se dice en el detalle).
 - Lo declarado lo afirma una persona; TERO no puede comprobarlo.
 - Los umbrales (por ejemplo "hasta 3 administradores o un tercio" o "criticas abiertas hace mas de 30 dias") son referencias razonables, no un requisito legal.
+
+## 5. Simulacros medibles de respuesta
+
+**Que resuelve.** Tener un plan de respuesta a incidentes no prueba que el equipo sepa usarlo. Un auditor o una aseguradora preguntan "lo probaron alguna vez, y cuanto tardaron?". TERO hace el ejercicio y deja la respuesta medida y firmada.
+
+**Como funciona.**
+
+1. En **Confianza y evidencia > Simulacros** un administrador o un responsable del SOC elige un escenario (phishing, ransomware, fuerza bruta o exfiltracion de datos) y toca "Empezar simulacro".
+2. `purple-service` pone en el SIEM **una sola linea de registro de ejemplo**, rotulada `[SIMULACRO TERO]` (equipo `simulacro-tero`, IP de documentacion `192.0.2.10`). Una regla propia del simulacro (`[SIMULACRO] ...`, con la etiqueta `tero-drill`) la detecta y crea una alerta marcada como simulacro.
+3. El equipo hace lo que haria en un incidente real: **reconoce** la alerta en SIEM y la **cierra con una nota** de lo hecho. El reloj corre desde que se inyecto el evento.
+4. TERO toma los tiempos de la **cadena de custodia** (eventos `alert.created` y `alert.status_changed` con su hora), que no se puede alterar despues, y calcula el puntaje.
+5. El resultado queda en el historial y como atestado firmado (`GET /drills/{id}/attestation` en `case-service`, tipo `drill`) que se verifica sin TERO:
+
+```
+python verificar_evidencia.py prueba-simulacro.json
+```
+
+**Puntaje (0 a 100).** Los umbrales estan a la vista en la pantalla.
+
+| Parte | Puntos | Como se gana |
+|---|---|---|
+| Deteccion | 30 | el SIEM crea la alerta |
+| Reconocer | 40 | hasta 15 min: 40, hasta 1 h: 30, hasta 4 h: 20, despues: 10 |
+| Cerrar con nota | 30 | hasta 4 h: 30, hasta 24 h: 20, despues: 10; sin una nota de al menos 10 letras, la mitad |
+
+Preparado desde 80, parcial desde 50, insuficiente por debajo. El puntaje de preparacion es el promedio de los ultimos 5 simulacros. Si nadie cierra la alerta en 24 horas, el simulacro vence y se puntua lo que paso. Solo puede haber un simulacro en curso por organizacion.
+
+**Que garantiza que es seguro.**
+
+- No ejecuta ninguna tecnica de ataque ni toca ningun equipo: solo agrega una linea de registro inofensiva.
+- **No dispara respuestas reales.** `siem-service` omite los playbooks de SOAR y el enriquecimiento externo para las alertas de reglas con la etiqueta `tero-drill`; la pantalla solo informa cuantos playbooks habrian respondido.
+- Las reglas del simulacro no cuentan como cobertura de deteccion real en el control de cumplimiento correspondiente.
+
+**Conexion con las otras funciones.** Cada simulacro deja `drill.started`, `drill.completed` o `drill.cancelled` en la cadena de custodia. En **Cumplimiento** el control `INC-03` (simulacros de respuesta con tiempos medidos) se comprueba solo: cumple si el ultimo simulacro fue hace 180 dias o menos y saco 70 puntos o mas; es parcial si es mas viejo o salio flojo; no cumple si nunca se hizo. La pregunta Q19 del cuestionario de ciberseguro se responde con esa evidencia.
+
+**Variables (.env).**
+
+| Variable | Por defecto | Para que |
+|---|---|---|
+| `DRILL_EXPIRE_HOURS` | `24` | horas hasta que un simulacro sin cerrar vence |
+| `DRILL_POLL_SECONDS` | `20` | cada cuanto `purple-service` revisa los simulacros en curso |
+| `SIEM_INGEST_TOKEN` | el del `.env` | `purple-service` lo usa para enviar el evento de ejemplo al SIEM |
+| `SIEM_SERVICE_URL`, `CASE_SERVICE_URL`, `SOAR_SERVICE_URL` | nombres de servicio de Docker | solo si los servicios no estan en la red de compose |
+
+**Limites honestos.**
+
+- El simulacro prueba que el camino evento -> alerta funciona y que **las personas responden a tiempo**. **No prueba las reglas de deteccion reales de tu organizacion**: para eso esta el analisis de cobertura ATT&CK.
+- Los tiempos miden lo que se hizo en el SIEM; si el equipo actua fuera de TERO (por telefono, por ejemplo) y no lo registra en la alerta, no se ve.
+- Los umbrales de puntaje son una referencia razonable, no un estandar. Si tu equipo trabaja por guardias, ajusta las expectativas antes de interpretar el numero.
+- Quien reconoce o cierra la alerta puede hacerlo sin hacer nada de verdad: el simulacro mide tiempos y notas, no la calidad de la respuesta.
+- Para que existan la tabla y los endpoints nuevos hay que reconstruir las imagenes (`--compilar`).

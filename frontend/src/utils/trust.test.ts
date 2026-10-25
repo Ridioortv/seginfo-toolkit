@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ANSWER_BADGE, ANSWER_LABEL, CLOSURE_BADGE, CLOSURE_LABEL, CONTROL_STATUS_BADGE, CONTROL_STATUS_LABEL, CUSTODY_EVENT_LABEL,
-  canDeclare, formatHours, needsAction, shortHash, sparkPoints, summarizeCustody,
+  canDeclare, DRILL_STATUS_BADGE, DRILL_STATUS_LABEL, RATING_BADGE, RATING_LABEL, formatHours, formatSeconds, needsAction, shortHash, sparkPoints, summarizeCustody,
 } from "./trust";
 
 describe("summarizeCustody", () => {
@@ -88,5 +88,28 @@ describe("cumplimiento", () => {
     expect(sparkPoints(h, "score_total", 100, 40)).toBe("0,20 50,0 100,0");
     expect(sparkPoints([], "score_total", 100, 40)).toBe("");
     expect(sparkPoints([h[0]], "score_total", 100, 40)).toBe("0,20");
+  });
+});
+
+describe("simulacros", () => {
+  it("formatSeconds elige la unidad mas legible", () => {
+    expect(formatSeconds(null)).toBe("-");
+    expect(formatSeconds(0)).toBe("0 s");
+    expect(formatSeconds(45)).toBe("45 s");
+    expect(formatSeconds(89)).toBe("89 s");
+    expect(formatSeconds(420)).toBe("7 min");
+    expect(formatSeconds(5399)).toBe("90 min");
+    expect(formatSeconds(5400)).toBe("1.5 h");
+    expect(formatSeconds(4 * 3600)).toBe("4 h");
+  });
+  it("todos los estados y notas tienen etiqueta y color", () => {
+    for (const st of ["running", "completed", "expired", "cancelled"] as const) {
+      expect(DRILL_STATUS_LABEL[st]).toBeTruthy();
+      expect(DRILL_STATUS_BADGE[st]).toMatch(/^badge /);
+    }
+    for (const r of ["preparado", "parcial", "insuficiente", "sin_datos"]) {
+      expect(RATING_LABEL[r]).toBeTruthy();
+      expect(RATING_BADGE[r]).toMatch(/^badge /);
+    }
   });
 });

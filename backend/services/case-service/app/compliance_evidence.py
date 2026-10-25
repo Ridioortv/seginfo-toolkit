@@ -35,9 +35,10 @@ URLS = {
     "vuln": os.getenv("VULN_SERVICE_URL", "http://vuln-service:8000"),
     "siem": os.getenv("SIEM_SERVICE_URL", "http://siem-service:8000"),
     "soar": os.getenv("SOAR_SERVICE_URL", "http://soar-service:8000"),
+    "purple": os.getenv("PURPLE_SERVICE_URL", "http://purple-service:8000"),
 }
 SERVICE_NAME = {"auth": "auth-service", "asset": "asset-service", "scan": "scan-service", "vuln": "vuln-service",
-                "siem": "siem-service", "soar": "soar-service", "case": "case-service"}
+                "siem": "siem-service", "soar": "soar-service", "purple": "purple-service", "case": "case-service"}
 
 
 def m(text: str, *args) -> dict:
@@ -116,7 +117,7 @@ async def gather(db: AsyncSession, org_id: str | None, client: httpx.AsyncClient
     client = client or httpx.AsyncClient(timeout=TIMEOUT_SECONDS)
     org = org_id or ""
     try:
-        keys = ["users", "sso", "assets", "scans", "posture", "closure", "siem_latest", "siem_rules", "playbooks"]
+        keys = ["users", "sso", "assets", "scans", "posture", "closure", "siem_latest", "siem_rules", "playbooks", "drills"]
         remote = await asyncio.gather(
             _get(client, org_id, "auth", f"/auth/organizations/{org}/users"),
             _get(client, org_id, "auth", f"/auth/organizations/{org}/sso"),
@@ -127,6 +128,7 @@ async def gather(db: AsyncSession, org_id: str | None, client: httpx.AsyncClient
             _get(client, org_id, "siem", "/logs/search", {"size": 1}),
             _get(client, org_id, "siem", "/rules", {"enabled_only": "true"}),
             _get(client, org_id, "soar", "/playbooks"),
+            _get(client, org_id, "purple", "/drills/stats"),
         )
         facts = dict(zip(keys, remote))
     finally:
@@ -289,7 +291,9 @@ def check_siem_recent(f: dict) -> dict:
 
 def check_siem_rules(f: dict) -> dict:
     rules = need(f, "siem_rules", "siem-service")
-    n = len(rules) if isinstance(rules, list) else 0
+    # las reglas propias de los simulacros (etiqueta tero-drill) no son deteccion real: no cuentan
+    real = [r for r in rules if "tero-drill" not in [str(t).lower() for t in (r.get("tags") or [])]] if isinstance(rules, list) else []
+    n = len(real)
     e = [ev("Reglas de deteccion activas", n, "siem-service")]
     if n:
         return _res("cumple", m("Hay {0} reglas de deteccion activas.", n), e)
@@ -314,6 +318,25 @@ def check_soar_playbooks(f: dict) -> dict:
     if enabled:
         return _res("cumple", m("Hay {0} playbooks de respuesta automatizada activos.", len(enabled)), e)
     return _res("no_cumple", m("No hay playbooks de respuesta activos."), e)
+
+
+def check_drills_recent(f: dict) -> dict:
+    d = need(f, "drills", "purple-service")
+    total, days, last = int(d.get("completed_total") or 0), d.get("days_since_last"), d.get("last_score")
+    e = [ev("Simulacros completados", total, "purple-service")]
+    if last is not None:
+        e.append(ev("Puntaje del ultimo simulacro", last, "purple-service"))
+    if days is not None:
+        e.append(ev("Dias desde el ultimo simulacro", days, "purple-service"))
+    if d.get("median_ack_seconds") is not None:
+        e.append(ev("Tiempo mediano hasta reconocer la alerta (segundos)", d["median_ack_seconds"], "purple-service"))
+    if total == 0:
+        return _res("no_cumple", m("Todavia no se hizo ningun simulacro de respuesta."), e)
+    if days is not None and days <= 180 and last is not None and last >= 70:
+        return _res("cumple", m("El ultimo simulacro fue hace {0} dias y saco {1} puntos.", round(days), last), e)
+    if days is not None and days > 180:
+        return _res("parcial", m("El ultimo simulacro fue hace {0} dias: conviene repetirlo al menos cada 6 meses.", round(days)), e)
+    return _res("parcial", m("El ultimo simulacro saco {0} puntos: el equipo tiene que mejorar los tiempos de respuesta.", last), e)
 
 
 def check_cases_handling(f: dict) -> dict:
@@ -356,7 +379,7 @@ CHECKS = {
     "assets_inventory": check_assets_inventory, "scans_recent": check_scans_recent,
     "vulns_open_critical": check_vulns_open_critical, "closure_verified": check_closure_verified,
     "siem_recent": check_siem_recent, "siem_rules": check_siem_rules, "custody_chain": check_custody_chain,
-    "soar_playbooks": check_soar_playbooks, "cases_handling": check_cases_handling, "sovereignty": check_sovereignty,
+    "soar_playbooks": check_soar_playbooks, "drills_recent": check_drills_recent, "cases_handling": check_cases_handling, "sovereignty": check_sovereignty,
 }
 
 

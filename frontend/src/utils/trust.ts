@@ -397,3 +397,104 @@ export function sparkPoints(history: ComplianceHistoryPoint[], key: "score_verif
     .filter((x): x is string => x !== null)
     .join(" ");
 }
+
+// ---------------- Simulacros medibles de respuesta ----------------
+
+export type DrillStatus = "running" | "completed" | "expired" | "cancelled";
+
+export interface DrillResult {
+  detected: boolean;
+  detect_seconds: number | null;
+  ack_seconds: number | null;
+  close_seconds: number | null;
+  acked_by: string;
+  closed_by: string;
+  note_ok: boolean;
+  playbooks_would_respond: number | null;
+  score: number;
+  parts: { key: "detect" | "ack" | "close"; points: number; max: number }[];
+  rating: "preparado" | "parcial" | "insuficiente" | "sin_datos";
+}
+
+export interface DrillView {
+  id: string;
+  scenario: string;
+  title: string;
+  severity: string;
+  status: DrillStatus;
+  narrative: string;
+  steps: string[];
+  started_by: string;
+  started_at: string | null;
+  injected_at: string | null;
+  alert_id: string | null;
+  acked_at: string | null;
+  closed_at: string | null;
+  completed_at: string | null;
+  score: number | null;
+  result: DrillResult;
+  last_error: string;
+  expires_at: string | null;
+}
+
+export interface DrillStats {
+  completed_total: number;
+  running: string | null;
+  last_completed_at: string | null;
+  days_since_last: number | null;
+  last_score: number | null;
+  average_score_last5: number | null;
+  rating: DrillResult["rating"];
+  median_ack_seconds: number | null;
+  median_close_seconds: number | null;
+  completed_last_90_days: number;
+  scenarios_done: string[];
+}
+
+export interface DrillScenarios {
+  scenarios: { key: string; title: string; severity: string; narrative: string; steps: string[] }[];
+  scoring: {
+    points: Record<string, number>;
+    ack_bands: [number, number][];
+    close_bands: [number, number][];
+    floors: { ack: number; close: number };
+    min_note_chars: number;
+    expire_hours: number;
+  };
+}
+
+export const DRILL_STATUS_LABEL: Record<DrillStatus, string> = {
+  running: "En curso",
+  completed: "Completado",
+  expired: "Vencido",
+  cancelled: "Cancelado",
+};
+
+export const DRILL_STATUS_BADGE: Record<DrillStatus, string> = {
+  running: "badge badge-medium",
+  completed: "badge badge-success",
+  expired: "badge badge-neutral",
+  cancelled: "badge badge-neutral",
+};
+
+export const RATING_LABEL: Record<string, string> = {
+  preparado: "Preparado",
+  parcial: "Parcial",
+  insuficiente: "Insuficiente",
+  sin_datos: "Sin datos",
+};
+
+export const RATING_BADGE: Record<string, string> = {
+  preparado: "badge badge-success",
+  parcial: "badge badge-medium",
+  insuficiente: "badge badge-critical",
+  sin_datos: "badge badge-neutral",
+};
+
+/** Segundos -> texto corto: "45 s", "7 min", "1.5 h". */
+export function formatSeconds(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined) return "-";
+  if (seconds < 90) return `${Math.round(seconds)} s`;
+  if (seconds < 90 * 60) return `${Math.round(seconds / 60)} min`;
+  return `${Math.round((seconds / 3600) * 10) / 10} h`;
+}

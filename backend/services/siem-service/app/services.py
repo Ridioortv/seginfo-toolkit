@@ -27,6 +27,13 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+DRILL_TAG = "tero-drill"
+
+
+def is_drill_rule(rule) -> bool:
+    return DRILL_TAG in [str(t).lower() for t in (rule.tags or [])]
+
+
 async def ingest_events(db: AsyncSession, os_client, payload) -> tuple[int, int]:
     organization_id = payload.organization_id or DEFAULT_ORGANIZATION_ID
     indexed = 0
@@ -51,6 +58,10 @@ async def ingest_events(db: AsyncSession, os_client, payload) -> tuple[int, int]
             if matched:
                 alert = await _create_alert(db, rule, document, organization_id)
                 alerts_created += 1
+                if is_drill_rule(rule):
+                    # Simulacro de TERO: es un ejercicio. Nunca se dispara respuesta automatica real (bloqueo de IP,
+                    # aislamiento...) ni se consulta inteligencia de amenazas externa por una IP de ejemplo.
+                    continue
                 await _enrich_alert_with_threat_intel(alert, document)
                 alert.soar_triggered = await _notify_soar(alert, organization_id, rule.tags)
 
@@ -287,9 +298,12 @@ async def seed_default_rules(db: AsyncSession, organization_id: str) -> list[Sig
 
 
 async def list_alerts(
-    db: AsyncSession, organization_id: str, status_filter: str | None = None, severity: str | None = None
+    db: AsyncSession, organization_id: str, status_filter: str | None = None, severity: str | None = None,
+    rule_id: str | None = None,
 ) -> list[Alert]:
     query = select(Alert).where(Alert.organization_id == organization_id)
+    if rule_id:
+        query = query.where(Alert.rule_id == rule_id)
     if status_filter:
         query = query.where(Alert.status == status_filter)
     if severity:

@@ -232,10 +232,11 @@ async def internal_rule_tags(
 async def list_alerts(
     status_filter: str | None = None,
     severity: str | None = None,
+    rule_id: str | None = None,
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ):
-    return await services.list_alerts(db, org_id_from_claims(claims), status_filter, severity)
+    return await services.list_alerts(db, org_id_from_claims(claims), status_filter, severity, rule_id)
 
 
 @app.get("/alerts/{alert_id}", response_model=AlertOut)
