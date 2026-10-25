@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.database import get_db, engine, Base, wait_for_database
 from backend.shared.logging import configure_logging
+from backend.shared import egress
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
 from backend.shared.ingest_auth import ingest_token_valid, org_ingest_token
@@ -83,6 +84,7 @@ async def _ensure_index_with_retry(attempts: int = 60, delay_seconds: float = 5.
 
 
 app = FastAPI(title="TERO Security SIEM Service", version="0.1.0", lifespan=lifespan)
+egress.install("siem-service", app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),

@@ -19,6 +19,9 @@ from app.dependencies import get_current_claims, require_role
 from app import services
 from app import custody_models  # noqa: F401 -- registra la tabla de custodia
 from app.custody_routes import router as custody_router
+from app import egress_models  # noqa: F401 -- registra las tablas de la prueba de soberania
+from app.egress_routes import router as egress_router
+from backend.shared import egress
 
 logger = configure_logging("case-service")
 cases_created_total = Counter("case_created_total", "Casos creados", ["priority", "source"])
@@ -66,6 +69,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="TERO Security Case Service", version="0.1.0", lifespan=lifespan)
+egress.install("case-service", app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -75,6 +79,7 @@ app.add_middleware(
 app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/metrics", make_asgi_app())
 app.include_router(custody_router)
+app.include_router(egress_router)
 
 
 @app.get("/health")

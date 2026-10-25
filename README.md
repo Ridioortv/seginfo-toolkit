@@ -131,6 +131,8 @@ pedirle que confie en nosotros:
 - **Cadena de custodia digital**: alertas, respuestas, cambios de estado, escaneos y cierres quedan en una
   cadena firmada (Ed25519). Se exporta un paquete de evidencia por caso (`.zip`) con un verificador
   independiente que corre sin acceso a TERO.
+- **Prueba de soberania**: auditor de salidas a internet (que servicio habla con que destino, para que y que
+  datos viajan), modo aislado (`docker-compose.aislado.yml`), prueba de red y atestado firmado.
 
 Guia completa, configuracion y limites en [`docs/confianza-y-evidencia.md`](./docs/confianza-y-evidencia.md).
 

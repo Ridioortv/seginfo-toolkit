@@ -9,6 +9,7 @@ Uso:
     python verificar_evidencia.py evidencia-caso-xxxx.zip
     python verificar_evidencia.py manifest.json --huella 9f3a-01bc-...      # fija la clave esperada
     python verificar_evidencia.py evidencia-caso-xxxx.zip --json
+    python verificar_evidencia.py atestado-soberania.json                   # atestados firmados (soberania, cumplimiento...)
 
 Que comprueba (todo debe dar OK):
   1. La cadena de custodia esta completa desde el primer evento: cada entrada apunta a la anterior,
@@ -140,6 +141,31 @@ def _fingerprint(pub_hex: str) -> str:
     return "-".join(digest[i:i + 4] for i in range(0, 32, 4))
 
 
+ATTESTATION_VERSION = 1
+
+
+def verify_attestation(doc: dict, expected_fingerprint: str = "") -> dict:
+    """Atestado firmado (soberania, cumplimiento, simulacro, cierre): misma firma Ed25519, otro formato."""
+    result = {"ok": False, "kind": "", "fingerprint": "", "generated_at": "", "reason": ""}
+    try:
+        message = ("tero-attestation|" + _canonical({
+            "v": doc["version"], "kind": doc["kind"], "org": doc.get("organization_id") or "",
+            "generated_at": doc["generated_at"], "body": doc["body"],
+        })).encode()
+        result.update(kind=doc["kind"], generated_at=doc["generated_at"], fingerprint=_fingerprint(doc["public_key"]))
+        if doc.get("format") != "tero-attestation" or doc["version"] != ATTESTATION_VERSION:
+            result["reason"] = "formato o version desconocidos"
+        elif not _verify_hex(doc["public_key"], message, doc["signature"]):
+            result["reason"] = "la firma no es valida: el documento fue modificado o no lo firmo esta clave"
+        elif expected_fingerprint and expected_fingerprint.strip().lower() != result["fingerprint"]:
+            result["reason"] = "la huella de la clave no es la esperada"
+        else:
+            result["ok"] = True
+    except (KeyError, TypeError, ValueError):
+        result["reason"] = "documento mal formado"
+    return result
+
+
 def load_manifest(path: str) -> dict:
     if path.lower().endswith(".zip"):
         with zipfile.ZipFile(path) as zf:
@@ -262,7 +288,7 @@ def verify_manifest(manifest: dict, expected_fingerprint: str = "") -> dict:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Verifica un paquete de evidencia de TERO Security")
-    parser.add_argument("paquete", help="archivo .zip del paquete o su manifest.json")
+    parser.add_argument("paquete", help="archivo .zip del paquete, su manifest.json o un atestado .json")
     parser.add_argument("--huella", default="", help="huella esperada de la clave publica (la que informa el emisor)")
     parser.add_argument("--json", action="store_true", help="salida en JSON")
     args = parser.parse_args(argv)
@@ -271,6 +297,18 @@ def main(argv=None) -> int:
     except (OSError, KeyError, ValueError, zipfile.BadZipFile) as exc:
         print(f"No se pudo leer el paquete: {exc}", file=sys.stderr)
         return 2
+    if manifest.get("format") == "tero-attestation":
+        att = verify_attestation(manifest, args.huella)
+        if args.json:
+            print(json.dumps(att, ensure_ascii=False, indent=2))
+        else:
+            print("Verificacion de atestado - TERO Security")
+            print("Tipo: %s  Generado: %s" % (att["kind"] or "?", att["generated_at"] or "?"))
+            print("Huella de la clave publica: %s" % (att["fingerprint"] or "?"))
+            print("RESULTADO: %s" % ("ATESTADO INTEGRO (la firma es valida)" if att["ok"] else "ATESTADO NO CONFIABLE: " + att["reason"]))
+            if att["ok"]:
+                print("Esto prueba que el contenido no cambio desde que TERO lo firmo; recorda confirmar la huella de la clave.")
+        return 0 if att["ok"] else 1
     result = verify_manifest(manifest, args.huella)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -15,6 +15,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
+from backend.shared import egress
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
 from backend.shared.ssrf_guard import validate_outbound_url, UnsafeUrlError
 from app.models import NotificationChannel, NotificationLog
@@ -125,6 +126,7 @@ async def _send_email(
         msg["Subject"] = subject
         msg["From"] = os.getenv("SMTP_FROM", "sentinelops@localhost")
         msg["To"] = to_addr
+        egress.guard(smtp_host, "smtp", "Envio de avisos por correo")
         with smtplib.SMTP(smtp_host, int(os.getenv("SMTP_PORT", "587")), timeout=10) as server:
             if os.getenv("SMTP_USER"):
                 server.starttls()

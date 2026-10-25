@@ -45,6 +45,103 @@ export interface CustodyAnchor {
   signature: string;
 }
 
+export type SovereigntyVerdict = "no_data" | "unexpected" | "controlled" | "isolated_unverified" | "isolated_verified";
+
+export interface SovereigntyDestination {
+  service: string;
+  host: string;
+  kind: string;
+  count: number;
+  blocked: number;
+  first_seen: string;
+  last_seen: string;
+  classification: "catalogado" | "configurado" | "no_catalogado";
+  purposes: string[];
+  recent: boolean;
+  catalog: { id: string; category: string; purpose: string; sends: string; optional: boolean; offline: string } | null;
+}
+
+export interface SovereigntyService {
+  service: string;
+  isolated: boolean;
+  instance: string;
+  allowlist: string[];
+  last_seen: string;
+  reporting: boolean;
+  configurable: string;
+}
+
+export interface ProbeResult {
+  target: string;
+  kind: string;
+  reachable: boolean;
+  detail: string;
+  informational: boolean;
+}
+
+export interface SovereigntyProbe {
+  id: string;
+  created_at: string;
+  actor: string;
+  reachable: number;
+  total: number;
+  results: ProbeResult[];
+  verdict?: SovereigntyVerdict;
+}
+
+export interface SovereigntyStatus {
+  verdict: SovereigntyVerdict;
+  notes: { text: string; args: string[] }[];
+  summary: {
+    services_expected: number;
+    services_reporting: number;
+    services_missing: string[];
+    isolated_services: number;
+    external_destinations: number;
+    unknown_destinations: number;
+    blocked_attempts: number;
+  };
+  services: SovereigntyService[];
+  destinations: SovereigntyDestination[];
+  probe: SovereigntyProbe | null;
+  network_exceptions: string[];
+  limits: string[];
+}
+
+export const VERDICT_TEXT: Record<SovereigntyVerdict, { title: string; detail: string; tone: "ok" | "warn" | "bad" | "info" }> = {
+  isolated_verified: {
+    title: "Aislado y verificado",
+    detail: "Todos los servicios estan en modo aislado y la prueba de red no pudo salir a internet.",
+    tone: "ok",
+  },
+  isolated_unverified: {
+    title: "Aislado por la aplicacion, falta confirmar la red",
+    detail: "Todos los servicios bloquean las salidas, pero la red todavia no demostro que no se pueda salir.",
+    tone: "warn",
+  },
+  controlled: {
+    title: "Con salidas controladas",
+    detail: "TERO habla con internet solo con destinos conocidos. Abajo ves cuales, para que y que datos viajan.",
+    tone: "info",
+  },
+  unexpected: {
+    title: "Hay salidas no catalogadas",
+    detail: "Algun servicio hablo con un destino externo que no esta en el catalogo. Revisalo primero.",
+    tone: "bad",
+  },
+  no_data: {
+    title: "Todavia sin datos",
+    detail: "Los servicios informan cada minuto; si despues de unos minutos sigue vacio, revisa que case-service este activo.",
+    tone: "info",
+  },
+};
+
+export const CLASSIFICATION_LABEL: Record<string, string> = {
+  catalogado: "Conocido",
+  configurado: "Configurado por un administrador",
+  no_catalogado: "No catalogado",
+};
+
 export const CUSTODY_EVENT_LABEL: Record<string, string> = {
   "case.created": "Caso creado",
   "case.status_changed": "Caso: cambio de estado",
@@ -60,6 +157,8 @@ export const CUSTODY_EVENT_LABEL: Record<string, string> = {
   "vuln.closure_verified": "Cierre verificado",
   "vuln.closure_failed": "Cierre no verificado",
   "sovereignty.mode_changed": "Modo de soberania",
+  "sovereignty.probe": "Prueba de salida a internet",
+  "sovereignty.attestation": "Atestado de soberania firmado",
   "drill.completed": "Simulacro completado",
   "compliance.snapshot": "Foto de cumplimiento",
   "evidence.exported": "Paquete de evidencia exportado",
@@ -112,6 +211,12 @@ export function summarizeCustody(eventType: string, p: Record<string, unknown>, 
     case "vuln.closure_verified":
     case "vuln.closure_failed":
       return `${s("title")}${s("from") ? `: ${st(s("from"))} → ${st(s("to"))}` : ""}`;
+    case "sovereignty.probe":
+      return tr("{0} de {1} destinos alcanzables", s("reachable") || "0", s("total") || "0");
+    case "sovereignty.mode_changed":
+      return `${s("service")}: ${p.isolated_after ? tr("modo aislado activado") : tr("modo aislado desactivado")}`;
+    case "sovereignty.attestation":
+      return s("verdict");
     default:
       return JSON.stringify(p).slice(0, 120);
   }

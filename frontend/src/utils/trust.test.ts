@@ -22,3 +22,13 @@ describe("summarizeCustody", () => {
     expect(shortHash("abc")).toBe("abc");
   });
 });
+
+describe("summarizeCustody: soberania", () => {
+  it("prueba de salida y cambio de modo", () => {
+    expect(summarizeCustody("sovereignty.probe", { reachable: 0, total: 3 })).toBe("0 de 3 destinos alcanzables");
+    expect(summarizeCustody("sovereignty.mode_changed", { service: "siem-service", isolated_after: true })).toBe(
+      "siem-service: modo aislado activado");
+    expect(summarizeCustody("sovereignty.mode_changed", { service: "siem-service", isolated_after: false })).toBe(
+      "siem-service: modo aislado desactivado");
+  });
+});

@@ -27,6 +27,7 @@ final. Mismo patron estructural que cloud-service/app/services.py."""
 import asyncio
 import json
 import os
+from urllib.parse import urlsplit
 import re
 import shutil
 import tempfile
@@ -37,6 +38,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.crypto import decrypt_secret, encrypt_secret
+from backend.shared import egress
 from backend.shared.logging import configure_logging
 from backend.shared.ssrf_guard import UnsafeUrlError, validate_outbound_url
 from app.models import RepoScanStatus, RepoTarget, SecretFinding, SecretSeverity
@@ -309,6 +311,10 @@ async def _clone_repo(repo_url: str, branch: str, token: str | None, dest_dir: s
     unsafe = repo_url_safety_error(repo_url)
     if unsafe:
         raise RuntimeError(f"repo_url no permitido: {unsafe}")
+    try:
+        egress.guard(urlsplit(repo_url).hostname or "", "git", "Clonar el repositorio a escanear")
+    except egress.EgressBlocked as exc:
+        raise RuntimeError(str(exc))
     authenticated_url = build_authenticated_clone_url(repo_url, token)
     # -c core.symlinks=false: los symlinks del repo (atacante) se materializan
     # como archivos de texto planos, no como enlaces. -c http.followRedirects=false:

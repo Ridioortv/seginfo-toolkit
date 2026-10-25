@@ -22,6 +22,7 @@ from urllib.parse import quote
 from jwt import PyJWTError
 
 from backend.shared.security import create_token, decode_token
+from backend.shared import egress
 
 logger = logging.getLogger("auth.password_reset")
 
@@ -88,6 +89,7 @@ def send_reset_email(to_addr: str, url: str) -> bool:
         "Si no lo pediste vos, ignora este mensaje: tu contrasena sigue igual."
     )
     try:
+        egress.guard(host, "smtp", "Mail para restablecer contrasenas")
         with smtplib.SMTP(host, int(os.getenv("SMTP_PORT", "587")), timeout=10) as server:
             server.ehlo()
             if os.getenv("SMTP_STARTTLS", "true").lower() != "false":

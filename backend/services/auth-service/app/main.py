@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.database import get_db, engine, Base, SessionLocal, wait_for_database
 from backend.shared.logging import configure_logging
+from backend.shared import egress
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
 from backend.shared.rate_limit import (
@@ -242,6 +243,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="TERO Security Auth Service", version="0.1.0", lifespan=lifespan)
+egress.install("auth-service", app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -475,6 +477,10 @@ async def google_login(payload: GoogleAuthRequest, request: Request, db: AsyncSe
     await _enforce_rate_limit(f"google_login:ip:{_client_ip(request)}", limit=20)
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=503, detail="Login con Google no esta configurado en este servidor (falta GOOGLE_CLIENT_ID)")
+    try:
+        egress.guard("www.googleapis.com", "http", "Validar el inicio de sesion con Google")
+    except egress.EgressBlocked:
+        raise HTTPException(status_code=503, detail="Login con Google no disponible: este servidor esta en modo aislado")
     try:
         claims = google_id_token.verify_oauth2_token(payload.credential, google_requests.Request(), GOOGLE_CLIENT_ID)
     except ValueError:

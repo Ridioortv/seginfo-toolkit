@@ -169,3 +169,47 @@ def verify_chain_rows(rows: list[dict], org: str | None, pub_hex: str) -> dict:
 def _broken(rows: list[dict], seq: int, reason: str) -> dict:
     return {"ok": False, "entries": len(rows), "head_hash": rows[-1]["entry_hash"] if rows else GENESIS_HASH,
             "broken_at_seq": seq, "reason": reason}
+
+
+# --- Atestados firmados (soberania, cumplimiento, simulacros, cierres) ---------------------------------
+# Un atestado es un documento JSON firmado con la misma clave Ed25519 de la cadena: lo que TERO afirma en un
+# momento dado ("estas son las salidas a internet que observe", "este es el estado de cumplimiento"). Se
+# puede verificar sin TERO con verificar_evidencia.py.
+
+ATTESTATION_VERSION = 1
+ATTESTATION_KINDS = ("sovereignty", "compliance", "drill", "closure")
+
+
+def attestation_message(kind: str, org: str | None, generated_at: str, body: dict) -> bytes:
+    return ("tero-attestation|" + canonical({
+        "v": ATTESTATION_VERSION, "kind": kind, "org": org or "", "generated_at": generated_at, "body": body,
+    })).encode()
+
+
+def make_attestation(kind: str, org: str | None, body: dict) -> dict:
+    generated_at = now_ts()
+    pub = public_key_hex()
+    # El cuerpo se pasa por JSON para firmar exactamente lo que despues se lee (fechas y numeros incluidos).
+    clean = json.loads(canonical(body))
+    return {
+        "format": "tero-attestation", "version": ATTESTATION_VERSION, "kind": kind,
+        "organization_id": org or "", "generated_at": generated_at, "body": clean,
+        "public_key": pub, "key_fingerprint": key_fingerprint(pub),
+        "signature": sign_bytes(attestation_message(kind, org, generated_at, clean)),
+    }
+
+
+def verify_attestation(doc: dict, expected_fingerprint: str = "") -> dict:
+    try:
+        ok = (doc.get("format") == "tero-attestation" and doc.get("version") == ATTESTATION_VERSION
+              and verify_bytes(doc["public_key"],
+                               attestation_message(doc["kind"], doc.get("organization_id"), doc["generated_at"], doc["body"]),
+                               doc["signature"]))
+        fp = key_fingerprint(doc["public_key"])
+    except (KeyError, TypeError, ValueError):
+        return {"ok": False, "fingerprint": "", "reason": "documento mal formado"}
+    if not ok:
+        return {"ok": False, "fingerprint": fp, "reason": "la firma no es valida: el documento fue modificado o no lo firmo esta clave"}
+    if expected_fingerprint and expected_fingerprint.strip().lower() != fp:
+        return {"ok": False, "fingerprint": fp, "reason": "la huella de la clave no es la esperada"}
+    return {"ok": True, "fingerprint": fp, "reason": ""}
