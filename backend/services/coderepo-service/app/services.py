@@ -583,6 +583,16 @@ async def run_repo_scan(db: AsyncSession, target: RepoTarget) -> None:
             for item in secret_items:
                 await _create_secret_finding_if_needed(db, target, item)
 
+            # Gobernanza: procedencia (humano/IA) de los commits nuevos, hallazgos por commit y compuerta.
+            # Si esto falla, el escaneo de secretos/dependencias igual se completa (solo se avisa).
+            try:
+                from app import governance  # import local: governance importa este modulo indirectamente
+                async with db.begin_nested():  # SAVEPOINT: si falla, no contamina el resto del escaneo
+                    await governance.ingest_history(db, target, tmp_dir, secret_items)
+            except Exception as gov_exc:  # noqa: BLE001
+                tool_warnings.append(f"gobernanza: {type(gov_exc).__name__}")
+                logger.warning("fallo la ingesta de gobernanza", extra={"repo_target_id": target.id, "error": str(gov_exc)[:300]})
+
             # Contador del ULTIMO escaneo (no acumulado, ver app/models.py):
             # refleja lo DETECTADO en esta corrida, incluso si algunos
             # hallazgos ya estaban registrados de una corrida anterior.

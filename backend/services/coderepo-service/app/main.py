@@ -25,7 +25,9 @@ from backend.shared.tenancy import org_id_from_claims
 from app.models import RepoTarget
 from app.schemas import RepoTargetCreate, RepoTargetOut, SecretFindingOut, SecretFindingUpdate
 from app.dependencies import get_current_claims, require_role
-from app import services
+from app import services, ledger
+from app import gov_models  # noqa: F401 -- registra las tablas de gobernanza en Base.metadata
+from app.gov_routes import router as governance_router
 
 logger = configure_logging("coderepo-service")
 
@@ -97,6 +99,7 @@ app.add_middleware(
 )
 app.add_middleware(SecurityHeadersMiddleware)
 app.mount("/metrics", make_asgi_app())
+app.include_router(governance_router)
 
 
 def _target_out(target: RepoTarget) -> RepoTargetOut:
@@ -145,6 +148,8 @@ async def create_repo(
     if unsafe:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"repo_url no permitido: {unsafe}")
     target = await services.create_target(db, payload, org_id_from_claims(claims), (claims.get("email") or claims.get("sub", "")))
+    await ledger.append_entry(db, target.organization_id, "repo.connected", (claims.get("email") or claims.get("sub", "")),
+                              target.id, {"name": target.name, "repo_url": services.strip_repo_url_userinfo(target.repo_url), "branch": target.branch})
     await db.commit()
     logger.info("repositorio agregado", extra={"repo_target_id": target.id, "actor": claims.get("sub")})
     return _target_out(target)
@@ -165,6 +170,8 @@ async def delete_repo(
     target = await services.get_target(db, repo_id, org_id_from_claims(claims))
     if target is None:
         raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+    await ledger.append_entry(db, target.organization_id, "repo.deleted", (claims.get("email") or claims.get("sub", "")),
+                              target.id, {"name": target.name})
     await services.delete_target(db, target)
     await db.commit()
     logger.info("repositorio borrado", extra={"repo_target_id": repo_id, "actor": claims.get("sub")})
