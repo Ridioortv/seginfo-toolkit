@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { CLOSURE_BADGE, CLOSURE_LABEL, CUSTODY_EVENT_LABEL, formatHours, shortHash, summarizeCustody } from "./trust";
+import {
+  ANSWER_BADGE, ANSWER_LABEL, CLOSURE_BADGE, CLOSURE_LABEL, CONTROL_STATUS_BADGE, CONTROL_STATUS_LABEL, CUSTODY_EVENT_LABEL,
+  canDeclare, formatHours, needsAction, shortHash, sparkPoints, summarizeCustody,
+} from "./trust";
 
 describe("summarizeCustody", () => {
   it("cambio de estado de caso muestra titulo y estados legibles", () => {
@@ -50,5 +53,40 @@ describe("cierre verificado", () => {
   it("resume los eventos de cierre", () => {
     expect(summarizeCustody("vuln.closure_verified", { title: "Panel expuesto" })).toBe("Panel expuesto");
     expect(summarizeCustody("vuln.closure_failed", { title: "Panel", from: "remediated", to: "open" })).toBe("Panel: Remediada → Abierto");
+  });
+});
+
+describe("cumplimiento", () => {
+  const STATUSES = ["cumple", "parcial", "no_cumple", "declarado_si", "declarado_parcial", "declarado_no", "pendiente", "vencido", "sin_datos"] as const;
+  it("todos los estados tienen etiqueta y color", () => {
+    for (const st of STATUSES) {
+      expect(CONTROL_STATUS_LABEL[st]).toBeTruthy();
+      expect(CONTROL_STATUS_BADGE[st]).toMatch(/^badge /);
+    }
+    for (const a of ["yes", "partial", "no", "pending"]) {
+      expect(ANSWER_LABEL[a]).toBeTruthy();
+      expect(ANSWER_BADGE[a]).toMatch(/^badge /);
+    }
+  });
+  it("needsAction solo deja afuera lo que cumple o esta declarado que si", () => {
+    expect(STATUSES.filter((st) => !needsAction({ status: st }))).toEqual(["cumple", "declarado_si"]);
+  });
+  it("se declara a mano lo manual y lo automatico sin datos, nunca lo que TERO ya verifico", () => {
+    expect(canDeclare({ mode: "manual", status: "pendiente", basis: "ninguno" })).toBe(true);
+    expect(canDeclare({ mode: "auto", status: "sin_datos", basis: "ninguno" })).toBe(true);
+    expect(canDeclare({ mode: "auto", status: "declarado_si", basis: "declarado" })).toBe(true);
+    expect(canDeclare({ mode: "auto", status: "no_cumple", basis: "verificado" })).toBe(false);
+    expect(canDeclare({ mode: "auto", status: "cumple", basis: "verificado" })).toBe(false);
+  });
+  it("sparkPoints escala 0-100 al alto y saltea los vacios", () => {
+    const h = [
+      { id: "1", created_at: "", score_verified: 0, score_total: 50 },
+      { id: "2", created_at: "", score_verified: null, score_total: 100 },
+      { id: "3", created_at: "", score_verified: 100, score_total: 100 },
+    ];
+    expect(sparkPoints(h, "score_verified", 100, 40)).toBe("0,40 100,0");
+    expect(sparkPoints(h, "score_total", 100, 40)).toBe("0,20 50,0 100,0");
+    expect(sparkPoints([], "score_total", 100, 40)).toBe("");
+    expect(sparkPoints([h[0]], "score_total", 100, 40)).toBe("0,20");
   });
 });

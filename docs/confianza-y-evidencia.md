@@ -158,3 +158,55 @@ python verificar_evidencia.py prueba-cierre.json
 - "Verificado" quiere decir que *el escaneo repetido ya no la detecta*, no que sea imposible explotarla. Si el objetivo estaba apagado y el escaner termino sin informar un error, podria dar un falso verificado; por eso el detalle muestra cuantos hallazgos tuvo el re-escaneo.
 - Si la vulnerabilidad vuelve a aparecer mas tarde despues de un cierre verificado, se registra como una vulnerabilidad nueva (el cierre anterior sigue siendo cierto para ese momento).
 - Los hallazgos que vienen de un archivo subido o de un agente remoto no se pueden repetir automaticamente.
+
+## 4. Cumplimiento con evidencia viva
+
+**Que resuelve.** Preparar una auditoria, una renovacion de seguro o una consulta legal suele ser juntar capturas y completar planillas a mano. TERO ordena los controles que se le piden a una organizacion argentina que trata datos personales y los **comprueba con datos reales**; lo que no puede ver lo declara una persona, con nombre, nota, fecha y vencimiento.
+
+**Normativa que se cita (verificada).**
+
+- **Ley 25.326** de Proteccion de los Datos Personales: art. 9 (seguridad de los datos, la obligacion legal de fondo), art. 10 (confidencialidad), art. 12 (transferencia internacional), arts. 14 a 16 (acceso, rectificacion, actualizacion y supresion) y art. 21 (inscripcion de las bases).
+- **Resolucion AAIP 47/2018**: aprueba medidas de seguridad **recomendadas** (referenciales, no obligatorias). Derogo la Disposicion DNPDP 11/2006 y la 9/2008, que ya **no** estan vigentes. Anexo I: A Recoleccion, B Control de acceso, C Control de cambios, D Respaldo y recuperacion, E Gestion de vulnerabilidades, F Destruccion, G Incidentes, H Entornos de desarrollo.
+- **CIS Controls v8**: referencia tecnica internacional que muchos seguros usan de base.
+
+Esto ordena evidencia; **no es asesoramiento legal ni una certificacion.**
+
+**Como se comprueba cada control.**
+
+| Tipo | Ejemplos | De donde sale |
+|---|---|---|
+| Automatico (13) | MFA en administradores y usuarios, pocas cuentas administradoras, inventario con responsable, escaneos periodicos, criticas y explotadas (KEV) abiertas, cierres verificados, registros recientes, reglas de deteccion, cadena de custodia integra, playbooks de respuesta, casos sin abandonar, soberania | datos reales de `auth`, `asset`, `scan`, `vuln`, `siem`, `soar` y `case-service`, consultados con un JWT de servicio de la organizacion |
+| Manual (14) | respaldos con restauracion probada, copia fuera de linea, capacitacion, EDR, filtrado de correo, cifrado, inscripcion ante la AAIP, politica de seguridad, proveedores | una persona (admin o soc_manager) lo **declara**: respuesta (si / parcial / no), nota de al menos 10 letras y vigencia de 6, 12 o 24 meses |
+
+**Reglas que no se rompen.**
+
+- Si una fuente no responde, el control queda **sin datos**; nunca "cumple".
+- **Verificado** y **declarado** no se mezclan: hay dos puntajes ("Verificado por TERO" y "Con lo declarado"), y lo pendiente cuenta como no cumplido en el total.
+- Una declaracion **no pisa** lo que TERO ve: solo completa un control automatico cuando TERO no tiene datos (por ejemplo, administradores que entran por SSO, donde el MFA lo controla el proveedor de identidad).
+- Una declaracion vencida deja de contar.
+- Cada declaracion, foto y atestado queda anotado en la cadena de custodia (`compliance.declaration`, `compliance.declaration_removed`, `compliance.snapshot`, `compliance.attestation`). De la nota solo se guarda su huella en la cadena.
+
+**Cuestionario de ciberseguro.** 18 preguntas que casi todas las aseguradoras hacen, respondidas con la evidencia de arriba (Si / Parcial / No / Sin responder). Cada aseguradora tiene su formulario propio: es una base para completarlo, no un reemplazo. Se baja como CSV (`/compliance/questionnaire.csv`).
+
+**Evolucion.** "Guardar foto de hoy" guarda el puntaje del momento; ademas `case-service` guarda una foto por organizacion cada 24 horas (`COMPLIANCE_SNAPSHOT_HOURS`, `0` la apaga). El grafico muestra los dos puntajes en el tiempo.
+
+**Atestado firmado.** `GET /compliance/attestation` entrega un atestado `tero-attestation` de tipo `compliance` con cada control, su estado, de donde sale, las observaciones y el cuestionario, firmado con la clave de la cadena de custodia. Se comprueba sin TERO:
+
+```
+python verificar_evidencia.py atestado-cumplimiento.json
+```
+
+**Variables (.env).**
+
+| Variable | Por defecto | Para que |
+|---|---|---|
+| `COMPLIANCE_SNAPSHOT_HOURS` | `24` | cada cuanto se guarda una foto automatica (`0` = nunca) |
+| `AUTH_SERVICE_URL`, `ASSET_SERVICE_URL`, `SCAN_SERVICE_URL`, `VULN_SERVICE_URL`, `SIEM_SERVICE_URL`, `SOAR_SERVICE_URL` | nombres de servicio de Docker | solo si los servicios no estan en la red de compose |
+
+**Limites honestos.**
+
+- El puntaje es una ayuda para ordenar el trabajo; no asegura el resultado de una auditoria ni de una renovacion de seguro.
+- Lo verificado prueba el estado de TERO en el momento de la consulta, no lo anterior ni lo posterior.
+- TERO solo ve lo que gestiona: un equipo que no esta en el inventario o un usuario que entra por SSO queda fuera de lo verificado (se dice en el detalle).
+- Lo declarado lo afirma una persona; TERO no puede comprobarlo.
+- Los umbrales (por ejemplo "hasta 3 administradores o un tercio" o "criticas abiertas hace mas de 30 dias") son referencias razonables, no un requisito legal.

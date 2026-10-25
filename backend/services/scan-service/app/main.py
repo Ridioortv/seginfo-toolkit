@@ -381,6 +381,12 @@ async def list_scans(
     return await services.list_scan_jobs(db, org_id_from_claims(claims), status_filter, scanner_type)
 
 
+@app.get("/scans/summary")
+async def scans_summary(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
+    """Cuantos escaneos terminaron en los ultimos 30 dias y cuantos programados hay (lo usa Cumplimiento)."""
+    return await services.scan_summary(db, org_id_from_claims(claims))
+
+
 @app.get("/scans/{job_id}", response_model=ScanJobOut)
 async def get_scan(job_id: str, claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
     job = await services.get_scan_job(db, job_id, org_id_from_claims(claims))

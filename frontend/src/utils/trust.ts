@@ -280,3 +280,120 @@ export function formatHours(hours: number | null | undefined): string {
   if (hours < 48) return `${Math.round(hours * 10) / 10} h`;
   return `${Math.round((hours / 24) * 10) / 10} d`;
 }
+
+// ---------------- Cumplimiento con evidencia viva ----------------
+
+export type ControlStatus =
+  | "cumple" | "parcial" | "no_cumple" | "declarado_si" | "declarado_parcial" | "declarado_no" | "pendiente" | "vencido" | "sin_datos";
+
+export interface Msg { text: string; args: string[] }
+
+export interface ComplianceDeclaration {
+  answer: "yes" | "partial" | "no";
+  note: string;
+  declared_by: string;
+  declared_at: string;
+  valid_until: string | null;
+  expired: boolean;
+}
+
+export interface ComplianceControl {
+  id: string;
+  area: string;
+  area_label: string;
+  title: string;
+  why: string;
+  refs: string[];
+  mode: "auto" | "manual";
+  status: ControlStatus;
+  basis: "verificado" | "declarado" | "ninguno";
+  summary: Msg;
+  evidence: { label: string; value: string; source: string }[];
+  declaration: ComplianceDeclaration | null;
+}
+
+export interface ComplianceQuestion {
+  id: string;
+  text: string;
+  answer: "yes" | "partial" | "no" | "pending";
+  controls: { id: string; title: string; status: ControlStatus; basis: string; summary: Msg }[];
+}
+
+export interface ComplianceHistoryPoint {
+  id: string;
+  created_at: string;
+  score_verified: number | null;
+  score_total: number | null;
+}
+
+export interface ComplianceStatus {
+  evaluated_at: string;
+  disclaimer: string;
+  summary: {
+    score_verified: number | null;
+    verified_controls: number;
+    automatic_controls: number;
+    score_total: number | null;
+    total_controls: number;
+    counts: Record<string, number>;
+    by_area: Record<string, { label: string; total: number; score: number }>;
+  };
+  controls: ComplianceControl[];
+  questionnaire: ComplianceQuestion[];
+  history: ComplianceHistoryPoint[];
+}
+
+export const CONTROL_STATUS_LABEL: Record<ControlStatus, string> = {
+  cumple: "Cumple",
+  parcial: "Parcial",
+  no_cumple: "No cumple",
+  declarado_si: "Declarado: si",
+  declarado_parcial: "Declarado: parcial",
+  declarado_no: "Declarado: no",
+  pendiente: "Pendiente de declarar",
+  vencido: "Declaracion vencida",
+  sin_datos: "Sin datos",
+};
+
+export const CONTROL_STATUS_BADGE: Record<ControlStatus, string> = {
+  cumple: "badge badge-success",
+  parcial: "badge badge-medium",
+  no_cumple: "badge badge-critical",
+  declarado_si: "badge badge-success",
+  declarado_parcial: "badge badge-medium",
+  declarado_no: "badge badge-critical",
+  pendiente: "badge badge-neutral",
+  vencido: "badge badge-medium",
+  sin_datos: "badge badge-neutral",
+};
+
+export const BASIS_LABEL: Record<string, string> = {
+  verificado: "Verificado por TERO",
+  declarado: "Declarado por una persona",
+  ninguno: "-",
+};
+
+export const ANSWER_LABEL: Record<string, string> = { yes: "Si", partial: "Parcial", no: "No", pending: "Sin responder" };
+export const ANSWER_BADGE: Record<string, string> = {
+  yes: "badge badge-success", partial: "badge badge-medium", no: "badge badge-critical", pending: "badge badge-neutral",
+};
+
+/** Los que hay que mirar: no cumple, parcial, sin declarar, vencido o sin datos. */
+export function needsAction(c: Pick<ComplianceControl, "status">): boolean {
+  return !["cumple", "declarado_si"].includes(c.status);
+}
+
+/** Se puede declarar a mano un control manual, o uno automatico al que TERO no le pudo ver datos. */
+export function canDeclare(c: Pick<ComplianceControl, "mode" | "status" | "basis">): boolean {
+  return c.mode === "manual" || c.status === "sin_datos" || c.basis === "declarado";
+}
+
+/** Puntos de una linea (SVG) para el historial: 0-100 en vertical, los vacios se saltean. */
+export function sparkPoints(history: ComplianceHistoryPoint[], key: "score_verified" | "score_total", w: number, h: number): string {
+  if (history.length === 0) return "";
+  const step = history.length > 1 ? w / (history.length - 1) : 0;
+  return history
+    .map((p, i) => (p[key] === null ? null : `${Math.round(i * step * 10) / 10},${Math.round((h - (p[key] as number) / 100 * h) * 10) / 10}`))
+    .filter((x): x is string => x !== null)
+    .join(" ");
+}

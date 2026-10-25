@@ -136,6 +136,9 @@ pedirle que confie en nosotros:
 - **Cierre verificado**: al marcar una vulnerabilidad como remediada, TERO repite el escaneo que la encontro y
   solo la da por cerrada si ya no aparece (si sigue, la reabre sola). Mide el tiempo de cierre real y entrega
   una prueba firmada.
+- **Cumplimiento con evidencia viva**: Ley 25.326 y medidas recomendadas por la Res. AAIP 47/2018. 13 controles
+  se comprueban solos con datos reales de TERO; el resto los declara una persona (con nota, fecha y vencimiento).
+  Autocompleta un cuestionario de ciberseguro y entrega un atestado firmado.
 
 Guia completa, configuracion y limites en [`docs/confianza-y-evidencia.md`](./docs/confianza-y-evidencia.md).
 

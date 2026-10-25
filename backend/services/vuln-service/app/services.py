@@ -297,3 +297,25 @@ async def get_stats(db: AsyncSession, organization_id: str) -> dict:
         "kev_count": kev_count,
         "avg_priority_score": round(float(avg_priority), 2),
     }
+
+
+async def get_posture(db: AsyncSession, organization_id: str) -> dict:
+    """Lo abierto hoy, para el panel de cumplimiento: por severidad, explotadas activamente (KEV) y la mas vieja."""
+    rows = (await db.execute(
+        select(Vulnerability.severity, Vulnerability.is_kev, Vulnerability.created_at).where(
+            Vulnerability.organization_id == organization_id, Vulnerability.status.in_([VulnStatus.open, VulnStatus.confirmed])
+        )
+    )).all()
+    now = datetime.now(timezone.utc)
+    by_sev: dict[str, int] = {}
+    kev_open = 0
+    oldest = {"critical": 0.0, "high": 0.0}
+    for sev, kev, created in rows:
+        key = getattr(sev, "value", sev)
+        by_sev[key] = by_sev.get(key, 0) + 1
+        kev_open += 1 if kev else 0
+        if key in oldest and created is not None:
+            c = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+            oldest[key] = max(oldest[key], round((now - c).total_seconds() / 86400, 1))
+    return {"open_total": len(rows), "open_by_severity": by_sev, "open_kev": kev_open,
+            "oldest_open_days": oldest}

@@ -10,7 +10,7 @@ import hashlib
 import hmac
 from datetime import datetime, timezone, timedelta
 import httpx
-from sqlalchemy import select, or_, and_, text
+from sqlalchemy import select, or_, and_, text, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared import custody
 from backend.shared.ingest_auth import ingest_headers
@@ -364,6 +364,26 @@ async def list_scan_jobs(
         query = query.where(ScanJob.scanner_type == scanner_type)
     result = await db.execute(query.order_by(ScanJob.created_at.desc()))
     return list(result.scalars().all())
+
+
+async def scan_summary(db: AsyncSession, organization_id: str, days: int = 30) -> dict:
+    """Resumen liviano para el panel de cumplimiento (sin traer los hallazgos de cada escaneo)."""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    done = ScanJob.status == ScanStatus.completed
+    completed_recent = (await db.execute(
+        select(func.count(ScanJob.id)).where(ScanJob.organization_id == organization_id, done, ScanJob.finished_at >= since)
+    )).scalar_one()
+    last = (await db.execute(
+        select(func.max(ScanJob.finished_at)).where(ScanJob.organization_id == organization_id, done)
+    )).scalar_one()
+    schedules = (await db.execute(
+        select(ScanSchedule.enabled).where(ScanSchedule.organization_id == organization_id)
+    )).scalars().all()
+    return {
+        "window_days": days, "completed_in_window": completed_recent,
+        "last_completed_at": last.isoformat() if last else None,
+        "schedules_total": len(schedules), "schedules_enabled": sum(1 for e in schedules if e),
+    }
 
 
 async def get_scan_job(db: AsyncSession, job_id: str, organization_id: str) -> ScanJob | None:

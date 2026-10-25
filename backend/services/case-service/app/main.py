@@ -17,11 +17,14 @@ from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import CaseCreate, CaseUpdate, CaseOut, TimelineEntryCreate, ImportResult
 from app.dependencies import get_current_claims, require_role
 from app import services
+from app import compliance_service
 from app import custody_models  # noqa: F401 -- registra la tabla de custodia
 from app.custody_routes import router as custody_router
 from app import egress_models  # noqa: F401 -- registra las tablas de la prueba de soberania
 from app.egress_routes import router as egress_router
 from app.closure_routes import router as closure_router
+from app import compliance_models  # noqa: F401 -- registra las tablas de cumplimiento
+from app.compliance_routes import router as compliance_router
 from backend.shared import egress
 
 logger = configure_logging("case-service")
@@ -64,9 +67,11 @@ async def lifespan(app: FastAPI):
             f"UPDATE cases SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
         ))
     sync_task = asyncio.create_task(_soar_sync_loop())
+    snapshot_task = asyncio.create_task(compliance_service.snapshot_loop(SessionLocal, services.list_organization_ids))
     logger.info("case-service iniciado")
     yield
     sync_task.cancel()
+    snapshot_task.cancel()
 
 
 app = FastAPI(title="TERO Security Case Service", version="0.1.0", lifespan=lifespan)
@@ -82,6 +87,7 @@ app.mount("/metrics", make_asgi_app())
 app.include_router(custody_router)
 app.include_router(egress_router)
 app.include_router(closure_router)
+app.include_router(compliance_router)
 
 
 @app.get("/health")

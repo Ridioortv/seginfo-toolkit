@@ -125,6 +125,12 @@ async def stats(claims: dict = Depends(get_current_claims), db: AsyncSession = D
     return await services.get_stats(db, org_id_from_claims(claims))
 
 
+@app.get("/vulnerabilities/posture")
+async def posture(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
+    """Vulnerabilidades abiertas hoy por severidad y explotadas activamente (lo usa Cumplimiento)."""
+    return await services.get_posture(db, org_id_from_claims(claims))
+
+
 @app.get("/vulnerabilities/closure/stats")
 async def closure_stats(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
     """Cierres verificados vs declarados y MTTR real (hasta el cierre verificado) vs declarado."""
