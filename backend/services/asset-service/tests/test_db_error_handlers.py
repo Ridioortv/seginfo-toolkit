@@ -46,3 +46,38 @@ def test_data_error_is_422(orig):
     r = _client(DataError("INSERT INTO secret_table", {}, orig)).get("/boom")
     assert r.status_code == 422
     assert "secret_table" not in r.text
+
+
+def _wrapped(cause_cls, msg="x"):
+    """Como llega de verdad con asyncpg: DBAPIError cuyo orig es un wrapper
+    generico y el error real de asyncpg esta en orig.__cause__."""
+    from sqlalchemy.exc import DBAPIError
+
+    class Wrapper(Exception):
+        pass
+
+    orig = Wrapper(msg)
+    orig.__cause__ = cause_cls(msg)
+    return DBAPIError("INSERT INTO secret_table", {}, orig)
+
+
+def test_generic_dbapi_error_value_too_long_is_422():
+    """'value too long for type character varying(255)' llegaba como DBAPIError
+    generico (no DataError) y terminaba en 500 (ej. dominio de 300 caracteres)."""
+    r = _client(_wrapped(asyncpg.exceptions.StringDataRightTruncationError)).get("/boom")
+    assert r.status_code == 422 and "secret_table" not in r.text
+
+
+def test_generic_dbapi_error_invalid_uuid_is_422():
+    r = _client(_wrapped(asyncpg.exceptions.InvalidTextRepresentationError)).get("/boom")
+    assert r.status_code == 422
+
+
+def test_generic_dbapi_error_unique_is_409():
+    r = _client(_wrapped(asyncpg.exceptions.UniqueViolationError)).get("/boom")
+    assert r.status_code == 409 and "Ya existe" in r.json()["detail"]
+
+
+def test_other_dbapi_errors_stay_500_without_leaking():
+    r = _client(_wrapped(asyncpg.exceptions.DeadlockDetectedError)).get("/boom")
+    assert r.status_code == 500 and "secret_table" not in r.text
