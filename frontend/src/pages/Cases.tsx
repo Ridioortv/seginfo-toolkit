@@ -7,7 +7,7 @@ import PageHeader from "../components/PageHeader";
 import { SeverityBadge, StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
 import { isSlaBreached } from "../utils/sla";
-import { currentLocale } from "../i18n";
+import { currentLocale, t } from "../i18n";
 import { saveBlob } from "../utils/download";
 
 const CAN_SYNC = ["admin", "soc_manager"];
@@ -45,7 +45,7 @@ export default function Cases() {
       queryClient.invalidateQueries({ queryKey: ["cases"] });
     },
     onError: (err: unknown) => {
-      setSyncFeedback(err instanceof Error ? err.message : "No se pudo sincronizar con SOAR.");
+      setSyncFeedback(`${t("No se pudo sincronizar con SOAR.")} ${connectionErrorDetail(err)}`);
     },
   });
 

@@ -120,8 +120,10 @@ export default function Assets() {
       setFormError(null);
       queryClient.invalidateQueries({ queryKey: ["assets"] });
     },
-    onError: (err: unknown) => {
-      setFormError(err instanceof Error ? err.message : "No se pudo agregar el activo.");
+    onError: () => {
+      // El motivo real (IP invalida, nombre repetido...) lo muestra el bloque createAsset.isError de abajo;
+      // antes se pisaba con "Request failed with status code 422".
+      setFormError(null);
     },
   });
 
