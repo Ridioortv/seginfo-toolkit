@@ -13,6 +13,7 @@ from backend.shared.database import get_db, engine, Base, SessionLocal, wait_for
 from backend.shared.logging import configure_logging
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
+from backend.shared.db_errors import install_db_error_handlers
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import CaseCreate, CaseUpdate, CaseOut, TimelineEntryCreate, ImportResult
 from app.dependencies import get_current_claims, require_role
@@ -84,6 +85,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
+install_db_error_handlers(app)  # 409/422 claros en vez de 500 ante datos que la base rechaza
 app.mount("/metrics", make_asgi_app())
 app.include_router(custody_router)
 app.include_router(egress_router)
