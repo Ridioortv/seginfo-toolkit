@@ -53,3 +53,23 @@ class TestAssetUpdatePartial:
     def test_rejects_unknown_criticality_on_update_too(self):
         with pytest.raises(ValidationError):
             AssetUpdate(criticality="no-existe")
+
+
+class TestIpValidation:
+    """La IP se usa luego como objetivo de escaneo: la API aceptaba "999.1.1.1"."""
+
+    @pytest.mark.parametrize("bad", ["999.1.1.1", "10.0.0", "abc", "10.0.0.1; ls", "1.2.3.4/24", "http://x"])
+    def test_invalid_ip_is_rejected_on_create(self, bad):
+        with pytest.raises(ValidationError):
+            AssetCreate(hostname="web-01", ip_address=bad)
+
+    def test_invalid_ip_is_rejected_on_update(self):
+        with pytest.raises(ValidationError):
+            AssetUpdate(ip_address="999.1.1.1")
+
+    def test_valid_ipv4_ipv6_and_blank_are_accepted(self):
+        assert AssetCreate(hostname="a", ip_address=" 10.0.0.5 ").ip_address == "10.0.0.5"
+        assert AssetCreate(hostname="a", ip_address="::1").ip_address == "::1"
+        assert AssetCreate(hostname="a", ip_address="").ip_address == ""
+        assert AssetUpdate(ip_address="").ip_address == ""
+        assert AssetUpdate().ip_address is None

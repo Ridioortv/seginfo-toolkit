@@ -1,7 +1,22 @@
 """Pydantic schemas for asset-service."""
+import ipaddress
 from datetime import datetime
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from app.models import AssetCriticality, AssetEnvironment
+
+
+def _clean_ip(v: str | None) -> str | None:
+    """La IP se usa luego como objetivo de escaneo: tiene que ser una IPv4/IPv6
+    valida (la API aceptaba "999.1.1.1" o texto cualquiera). Vacia = sin IP."""
+    if v is None:
+        return None
+    v = v.strip()
+    if not v:
+        return ""
+    try:
+        return str(ipaddress.ip_address(v))
+    except ValueError:
+        raise ValueError(f"'{v}' no es una direccion IP valida (ej. 192.168.1.10)")
 
 
 class AssetCreate(BaseModel):
@@ -15,6 +30,11 @@ class AssetCreate(BaseModel):
     owner: str = ""
     tags: list[str] = Field(default_factory=list)
     notes: str = ""
+
+    @field_validator("ip_address")
+    @classmethod
+    def _valid_ip(cls, v: str) -> str:
+        return _clean_ip(v) or ""
 
     @model_validator(mode="after")
     def _needs_hostname_or_ip(self):
@@ -40,6 +60,11 @@ class AssetUpdate(BaseModel):
     tags: list[str] | None = None
     notes: str | None = None
     is_active: bool | None = None
+
+    @field_validator("ip_address")
+    @classmethod
+    def _valid_ip(cls, v: str | None) -> str | None:
+        return _clean_ip(v)
 
 
 class AssetOut(BaseModel):
