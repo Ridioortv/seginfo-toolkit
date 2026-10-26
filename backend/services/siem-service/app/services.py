@@ -36,16 +36,25 @@ def is_drill_rule(rule) -> bool:
 
 async def ingest_events(db: AsyncSession, os_client, payload) -> tuple[int, int]:
     organization_id = payload.organization_id or DEFAULT_ORGANIZATION_ID
+    documents = [normalize_event(event_in.model_dump(), organization_id) for event_in in payload.events]
+    return await ingest_documents(db, os_client, documents, organization_id)
+
+
+async def ingest_documents(db: AsyncSession, os_client, documents: list[dict], organization_id: str,
+                           evaluate: bool = True) -> tuple[int, int]:
+    """Indexa documentos ya normalizados (ECS-lite) y, si evaluate=True, los cruza con las reglas habilitadas.
+    Lo usan POST /logs/ingest (via ingest_events) y las integraciones que traen su propio formato (AntiEstafa)."""
     indexed = 0
     alerts_created = 0
 
-    rules_result = await db.execute(
-        select(SigmaRule).where(SigmaRule.organization_id == organization_id, SigmaRule.is_enabled.is_(True))
-    )
-    enabled_rules = list(rules_result.scalars().all())
+    enabled_rules: list[SigmaRule] = []
+    if evaluate:
+        rules_result = await db.execute(
+            select(SigmaRule).where(SigmaRule.organization_id == organization_id, SigmaRule.is_enabled.is_(True))
+        )
+        enabled_rules = list(rules_result.scalars().all())
 
-    for event_in in payload.events:
-        document = normalize_event(event_in.model_dump(), organization_id)
+    for document in documents:
         await opensearch_client.index_event(os_client, document)
         indexed += 1
 

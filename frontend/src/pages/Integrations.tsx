@@ -6,6 +6,7 @@ import PageHeader from "../components/PageHeader";
 import { StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
 import { currentLocale } from "../i18n";
+import AntiEstafa from "./integrations/AntiEstafa";
 
 type ConnectorKind = "firewall" | "edr" | "ticketing";
 
@@ -114,6 +115,8 @@ export default function Integrations() {
         title="Integraciones"
         subtitle="Conectores de contencion (firewall/EDR) y de ticketing (ej. Jira). Por defecto en modo DRY-RUN: ninguna accion toca infraestructura real sin un conector configurado y el flag explicitamente desactivado."
       />
+
+      <AntiEstafa />
 
       <div className="panel">
         <h2>Nuevo conector</h2>

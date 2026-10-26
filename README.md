@@ -144,6 +144,10 @@ pedirle que confie en nosotros:
 
 Guia completa, configuracion y limites en [`docs/confianza-y-evidencia.md`](./docs/confianza-y-evidencia.md).
 
+- **AntiEstafa AR**: las estafas que revisan los empleados (WhatsApp falso del gerente, audio del banco, links y QR)
+  llegan al SIEM, abren una alerta, avisan al equipo y abren un caso; detecta campanas repetidas y cubre T1566.
+  Guia en [`docs/integracion-antiestafa.md`](./docs/integracion-antiestafa.md).
+
 ## Olvide mi contrasena
 
 En la pantalla de entrada: **¿Olvidaste tu contrasena?** -> email -> link de un solo uso (30 min). Requiere

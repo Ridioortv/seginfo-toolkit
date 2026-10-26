@@ -17,6 +17,7 @@ import Icon, { type IconName } from "../components/Icon";
 import LogStorageWarning from "../components/LogStorageWarning";
 import { useAuthStore } from "../store/auth";
 import { currentLocale } from "../i18n";
+import type { AntiEstafaStatus } from "../utils/antiestafa";
 
 type DashboardScan = {
   id: string;
@@ -171,6 +172,13 @@ export default function Dashboard() {
   // (ver failedServiceLabels mas abajo: mostrar "0 alertas activas" cuando
   // en realidad siem-service no respondio es peor que mostrar nada, porque
   // da una falsa sensacion de que todo esta tranquilo).
+  // Opcional: solo se muestra si la integracion con AntiEstafa esta en uso; si falla no molesta (no entra en los avisos).
+  const antiestafa = useQuery({
+    queryKey: ["antiestafa-status"], retry: false, refetchInterval: 60_000,
+    queryFn: async () => (await siemApi.get<AntiEstafaStatus>("/integrations/antiestafa/status")).data,
+  });
+  const antiestafaInUse = Boolean(antiestafa.data && (antiestafa.data.rules.active > 0 || antiestafa.data.reports > 0));
+
   const serviceStatuses: { label: string; query: { isError: boolean; error: unknown } }[] = [
     { label: "vuln-service", query: vulnStats },
     { label: "siem-service", query: alerts },
@@ -265,6 +273,15 @@ export default function Dashboard() {
           value={scansLoading || scansError ? "-" : scansRunning}
           hint={`de ${scansError ? "-" : allScans.length} totales`}
         />
+        {antiestafaInUse && antiestafa.data && (
+          <StatCard
+            icon="shield"
+            tone="warning"
+            label="Estafas reportadas (7 dias)"
+            value={antiestafa.data.reports}
+            hint={`${antiestafa.data.campaigns.length} campanas en curso`}
+          />
+        )}
       </div>
 
       <div className="dash-grid">

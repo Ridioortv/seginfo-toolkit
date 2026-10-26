@@ -2,6 +2,7 @@
 evaluacion de reglas Sigma y generacion de alertas. Ver app/sigma.py para
 el motor de deteccion y app/opensearch_client.py para el almacen de logs."""
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,7 +24,7 @@ from app.schemas import (
     AlertUpdate, AlertOut,
 )
 from app.dependencies import get_current_claims, require_role
-from app import services, opensearch_client
+from app import services, opensearch_client, antiestafa
 
 logger = configure_logging("siem-service")
 logs_ingested_total = Counter("siem_logs_ingested_total", "Eventos de log ingeridos")
@@ -212,6 +213,84 @@ async def seed_default_rules(
     await db.commit()
     logger.info("reglas por defecto cargadas", extra={"cantidad": len(created), "actor": claims.get("sub")})
     return created
+
+
+# ---------------------------------------------------------------------------------------------
+# Integracion AntiEstafa AR (ver app/antiestafa.py): avisos de estafas que revisaron las personas.
+# ---------------------------------------------------------------------------------------------
+
+def _bearer_or_ingest_token(authorization: str | None, x_ingest_token: str | None) -> str | None:
+    if x_ingest_token:
+        return x_ingest_token
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip() or None
+    return None
+
+
+@app.post(antiestafa.INGEST_PATH, status_code=status.HTTP_201_CREATED)
+async def antiestafa_ingest(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_ingest_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recibe el aviso de AntiEstafa (JSON tipo ECS). Credencial: la misma de los forwarders de la organizacion
+    (token derivado de GET /logs/ingest-token), en `Authorization: Bearer <token>` o `X-Ingest-Token`. Solo vale
+    para la organizacion del token. Se indexa un documento armado campo por campo (no se guarda lo que mande el
+    cliente tal cual) y se evaluan las reglas de AntiEstafa."""
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
+    if declared > antiestafa.MAX_BODY_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Evento demasiado grande")
+    body = await request.body()
+    if len(body) > antiestafa.MAX_BODY_BYTES:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Evento demasiado grande")
+    try:
+        raw = json.loads(body or b"null")
+        org = antiestafa.org_from_event(raw) if isinstance(raw, dict) else None
+    except (ValueError, antiestafa.AntiEstafaError) as exc:
+        # sin credencial valida no se dice nada del formato
+        if not ingest_token_valid(_bearer_or_ingest_token(authorization, x_ingest_token), DEFAULT_ORGANIZATION_ID):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token de ingesta invalido")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    organization_id = org or DEFAULT_ORGANIZATION_ID
+    if not ingest_token_valid(_bearer_or_ingest_token(authorization, x_ingest_token), organization_id):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token de ingesta invalido")
+    try:
+        document = antiestafa.build_document(raw, organization_id)
+    except antiestafa.AntiEstafaError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    test = antiestafa.is_test_event(raw)
+    indexed, alerts = await services.ingest_documents(db, os_client, [document], organization_id, evaluate=not test)
+    campaigns = 0
+    if not test:
+        for key, count in await antiestafa.new_campaign_keys(db, organization_id, document):
+            _, n = await services.ingest_documents(db, os_client, [antiestafa.campaign_document(organization_id, key, count)],
+                                                   organization_id)
+            campaigns += n
+    await db.commit()
+    antiestafa.record_seen(organization_id, test)
+    logs_ingested_total.inc(indexed)
+    return {"indexed": indexed, "alerts_created": alerts + campaigns, "test": test, "campaigns": campaigns}
+
+
+@app.get("/integrations/antiestafa/status")
+async def antiestafa_status(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
+    return await antiestafa.status(db, org_id_from_claims(claims))
+
+
+@app.post("/integrations/antiestafa/setup")
+async def antiestafa_setup(
+    claims: dict = Depends(require_role("admin", "soc_manager")), db: AsyncSession = Depends(get_db),
+):
+    """Carga (sin duplicar) las reglas de AntiEstafa en la organizacion. Una regla borrada a mano se vuelve a crear
+    al repetir esta accion; una regla desactivada o editada no se toca."""
+    created = await antiestafa.seed_rules(db, org_id_from_claims(claims))
+    await db.commit()
+    logger.info("reglas de AntiEstafa cargadas", extra={"cantidad": len(created), "actor": claims.get("sub")})
+    return {"created": [r.name for r in created], "status": await antiestafa.status(db, org_id_from_claims(claims))}
 
 
 @app.get("/internal/rule-tags")
