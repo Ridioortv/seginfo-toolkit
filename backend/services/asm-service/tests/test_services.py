@@ -190,3 +190,26 @@ class TestIsBlockedTargetIp:
         # normal (no una IP) devuelve False aca, no una excepcion.
         assert is_blocked_target_ip("not-an-ip") is False
         assert is_blocked_target_ip("empresa.com") is False
+
+
+class TestDomainSyntax:
+    """Se aceptaba 'a b.com', '-mal.com', 'host:8080' y nombres de 300
+    caracteres (que terminaban en 500 al guardar)."""
+
+    @pytest.mark.parametrize("bad", ["a b.com", "-mal.com", "mal-.com", "host.com:8080", "x" * 64 + ".com",
+                                     "a..com", ("a" * 60 + ".") * 5 + "com", "bad_name.com", "e<script>.com"])
+    def test_invalid_syntax_rejected(self, bad):
+        with pytest.raises(ValueError):
+            normalize_domain(bad)
+
+    def test_valid_names_still_accepted(self):
+        assert normalize_domain("Sub-Dominio.Empresa.com.ar.") == "sub-dominio.empresa.com.ar"
+        assert normalize_domain("https://empresa.com/login?x=1") == "empresa.com"
+        assert normalize_domain("xn--nicode-2ya.com") == "xn--nicode-2ya.com"
+
+    def test_idn_is_converted_to_punycode(self):
+        assert normalize_domain("ünicode.com") == "xn--nicode-2ya.com"
+
+    def test_ip_literals_keep_their_own_checks(self):
+        with pytest.raises(ValueError):
+            normalize_domain("10.0.0.1")

@@ -10,6 +10,7 @@ Funciones puras (testeables sin DB/red/TLS real) arriba; funciones de I/O
 import asyncio
 import hashlib
 import ipaddress
+import re
 import os
 import socket
 import ssl
@@ -72,6 +73,24 @@ def normalize_domain(raw: str) -> str:
     domain = domain.strip().rstrip(".")
     if not domain or "." not in domain:
         raise ValueError(f"Dominio invalido: '{raw}' -- se espera algo como 'empresa.com'")
+    # Sintaxis de nombre de host: etiquetas de 1-63 caracteres con letras, numeros y guiones
+    # (sin empezar ni terminar en guion), 253 en total. Antes se aceptaba "a b.com", "-mal.com",
+    # "host:8080" o un nombre de 300 caracteres (que terminaba en 500 al guardarlo). Los
+    # nombres con acentos (IDN) se convierten a punycode. Una IP literal pasa a las
+    # comprobaciones de abajo.
+    try:
+        ipaddress.ip_address(domain)
+        is_ip = True
+    except ValueError:
+        is_ip = False
+    if not is_ip:
+        try:
+            domain = domain.encode("idna").decode("ascii")
+        except UnicodeError:
+            raise ValueError(f"Dominio invalido: '{raw}' -- contiene caracteres no permitidos")
+        labels = domain.split(".")
+        if len(domain) > 253 or not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", lb) for lb in labels):
+            raise ValueError(f"Dominio invalido: '{raw[:80]}' -- usa solo letras, numeros, guiones y puntos (ej. 'empresa.com')")
     # SSRF: si lo que el usuario tipeo es literalmente una direccion IP (no
     # un nombre de dominio) y esa IP es privada/loopback/link-local/reservada
     # (incluye 169.254.169.254, el endpoint de metadata de AWS/GCP/Azure),
