@@ -48,3 +48,20 @@ class TestDryRunDefaultsToTrue:
     def test_dry_run_can_be_disabled_explicitly(self, monkeypatch):
         monkeypatch.setenv("NOTIFICATION_DRY_RUN", "false")
         assert dry_run_enabled() is False
+
+
+class TestChannelName:
+    """El nombre vacio se aceptaba y uno de mas de 255 caracteres daba 500."""
+
+    @pytest.mark.parametrize("bad", ["", "   ", "x" * 256])
+    def test_bad_names_rejected(self, bad):
+        from app.schemas import ChannelUpdate
+        with pytest.raises(ValidationError):
+            ChannelCreate(name=bad, channel_type="email")
+        with pytest.raises(ValidationError):
+            ChannelUpdate(name=bad)
+
+    def test_name_trimmed_and_update_without_name_ok(self):
+        from app.schemas import ChannelUpdate
+        assert ChannelCreate(name="  SOC  ", channel_type="email").name == "SOC"
+        assert ChannelUpdate(enabled=False).name is None

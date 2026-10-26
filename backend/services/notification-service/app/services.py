@@ -189,9 +189,9 @@ async def send_notification(
         organization_id=channel.organization_id,
         channel_id=channel.id,
         channel_type=channel.channel_type,
-        subject=subject,
+        subject=subject[:500],  # columna String(500): un asunto mas largo daba 500 en Postgres
         body=body,
-        severity=severity,
+        severity=(severity or "info")[:20],
         status=status_,
         error=error,
     )
