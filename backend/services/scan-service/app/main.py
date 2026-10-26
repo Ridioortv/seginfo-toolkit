@@ -432,7 +432,9 @@ async def cancel_scan(
 
 @app.get("/scan-images", response_model=list[ImageInventoryItem])
 async def list_image_inventory(
-    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    # Solo lectura, igual que GET /scans y /vulnerabilities: el menu le muestra esta pagina a
+    # todos los roles y un viewer recibia 403 ("No se pudo conectar con scan-service").
+    claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ):
     """Dashboard: una fila por imagen/archivo escaneado con trivy (el mas
