@@ -167,6 +167,14 @@ def reject_dangerous_network_target(target: str) -> None:
     referencia de imagen de trivy ni al target de un agente remoto."""
     has_scheme = bool(_SCHEME_RE.match(target))
 
+    if has_scheme:
+        # nuclei/zap solo hablan http(s). "file:///etc/passwd", "gopher://..." o
+        # "ftp://..." no son un host de red: _host_only() los dejaba pasar
+        # (host vacio o inocuo) hasta el scanner.
+        scheme = target.split("://", 1)[0].lower()
+        if scheme not in ("http", "https"):
+            raise ValueError(f"el esquema '{scheme}://' no es valido para un escaneo de red: usa http:// o https://")
+
     if not has_scheme:
         # Target "pelado" (nuclei): puede ser un host, una IP o un
         # CIDR ("10.0.0.0/24") -- probarlo como red primero para que una

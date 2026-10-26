@@ -195,3 +195,21 @@ def test_schedule_lan_target_needs_an_agent(monkeypatch):
         ScanScheduleCreate(**base)
     ok = ScanScheduleCreate(**base, agent_id="a1", agent_api_key="k" * 20)
     assert ok.target == "192.168.1.0/24"
+
+
+@pytest.mark.parametrize("target", [
+    "file:///etc/passwd", "gopher://example.com/x", "ftp://example.com", "dict://example.com:11211",
+    "FILE:///etc/hosts", "ldap://example.com",
+])
+def test_non_http_schemes_rejected_for_network_scanners(target):
+    """nuclei/zap solo hablan http(s): file:///etc/passwd pasaba el denylist
+    porque su 'host' queda vacio."""
+    with pytest.raises(ValueError):
+        reject_dangerous_network_target(target)
+    with pytest.raises(ValidationError):
+        ScanJobCreate(name="t", scanner_type="nuclei", target=target)
+
+
+@pytest.mark.parametrize("target", ["http://example.com/x", "https://example.com:8443/a?b=1", "example.com", "203.0.113.5"])
+def test_http_https_and_bare_hosts_still_accepted(target):
+    reject_dangerous_network_target(target)
