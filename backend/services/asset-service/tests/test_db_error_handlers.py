@@ -81,3 +81,15 @@ def test_generic_dbapi_error_unique_is_409():
 def test_other_dbapi_errors_stay_500_without_leaking():
     r = _client(_wrapped(asyncpg.exceptions.DeadlockDetectedError)).get("/boom")
     assert r.status_code == 500 and "secret_table" not in r.text
+
+
+def test_wrapped_integrity_error_still_says_already_exists():
+    """Caso real: IntegrityError de SQLAlchemy cuyo orig es un wrapper y el
+    UniqueViolationError de asyncpg esta en __cause__ (dos grupos con el mismo nombre)."""
+    class Wrapper(Exception):
+        pass
+
+    orig = Wrapper("dup")
+    orig.__cause__ = asyncpg.exceptions.UniqueViolationError("dup")
+    r = _client(IntegrityError("INSERT INTO secret_table", {}, orig)).get("/boom")
+    assert r.status_code == 409 and "Ya existe" in r.json()["detail"] and "secret_table" not in r.text

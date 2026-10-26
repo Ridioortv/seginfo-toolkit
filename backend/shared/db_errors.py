@@ -17,14 +17,16 @@ logger = logging.getLogger(__name__)
 
 
 def _orig_name(exc) -> str:
+    """Nombre de la clase del error REAL de asyncpg (UniqueViolationError, etc.).
+    SQLAlchemy lo envuelve en un error generico y deja el original en __cause__."""
     orig = getattr(exc, "orig", None)
-    return type(orig).__name__ if orig is not None else ""
+    cause = getattr(orig, "__cause__", None)
+    target = cause if cause is not None else orig
+    return type(target).__name__ if target is not None else ""
 
 
 async def _integrity_error(request: Request, exc: DBAPIError):
     kind = _orig_name(exc)
-    if not kind.endswith("Error") or kind == "Error":  # orig generico: mirar el error real de asyncpg
-        kind = type(getattr(getattr(exc, "orig", None), "__cause__", None)).__name__
     logger.warning("integridad de datos violada", extra={"path": request.url.path, "kind": kind})
     if "Unique" in kind:
         detail = "Ya existe un registro con esos datos (nombre o identificador repetido)."
