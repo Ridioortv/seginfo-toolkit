@@ -1,7 +1,36 @@
 """Pydantic schemas for soar-service."""
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from app.models import RunStatus, CaseStatus
+
+
+SEVERITIES = ("info", "low", "medium", "high", "critical")
+
+
+def _check_min_severity(v: str | None) -> str | None:
+    """Una severidad desconocida (ej. "ultra") tenia rango 0 en el motor, asi
+    que el playbook disparaba con CUALQUIER alerta (fallaba abierto)."""
+    if v is None:
+        return None
+    v = v.strip().lower()
+    if v not in SEVERITIES:
+        raise ValueError("min_severity debe ser una de: " + ", ".join(SEVERITIES))
+    return v
+
+
+def _check_steps(steps: list[dict] | None) -> list[dict] | None:
+    """Cada paso necesita una 'action' conocida; antes se guardaba cualquier
+    cosa y el error recien aparecia al ejecutar el playbook."""
+    if steps is None:
+        return None
+    from app.actions import ACTIONS
+    for i, step in enumerate(steps, 1):
+        action = step.get("action") if isinstance(step, dict) else None
+        if action not in ACTIONS:
+            raise ValueError(f"Paso {i}: accion desconocida {action!r}. Disponibles: " + ", ".join(sorted(ACTIONS)))
+        if "params" in step and not isinstance(step["params"], dict):
+            raise ValueError(f"Paso {i}: 'params' debe ser un objeto")
+    return steps
 
 
 class PlaybookCreate(BaseModel):
@@ -12,6 +41,16 @@ class PlaybookCreate(BaseModel):
     steps: list[dict] = Field(default_factory=list)
     is_enabled: bool = True
 
+    @field_validator("min_severity")
+    @classmethod
+    def _v_sev(cls, v):
+        return _check_min_severity(v)
+
+    @field_validator("steps")
+    @classmethod
+    def _v_steps(cls, v):
+        return _check_steps(v)
+
 
 class PlaybookUpdate(BaseModel):
     description: str | None = None
@@ -19,6 +58,16 @@ class PlaybookUpdate(BaseModel):
     rule_tags: list[str] | None = None
     steps: list[dict] | None = None
     is_enabled: bool | None = None
+
+    @field_validator("min_severity")
+    @classmethod
+    def _v_sev(cls, v):
+        return _check_min_severity(v)
+
+    @field_validator("steps")
+    @classmethod
+    def _v_steps(cls, v):
+        return _check_steps(v)
 
 
 class PlaybookOut(BaseModel):
