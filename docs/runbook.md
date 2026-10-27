@@ -387,7 +387,7 @@ adentro del contenedor.
   (activos, vulnerabilidades, casos, ejercicios purple team, reportes
   generados, canales de notificacion, conectores). En AWS via
   `infra/terraform`, RDS ya tiene `backup_retention_period = 7` dias; en
-  `docker-compose.yml` hay scripts listos: `tools/respaldar.sh` (Linux/Mac)
+  `docker-compose.yml` hay scripts listos: `respaldar.sh` (Linux; en el repo de Windows esta en `tools/`)
   o `tools/respaldar.ps1` (Windows) generan un `.dump` comprimido con fecha,
   lo validan y borran los de mas de 14 dias; `tools/restaurar.sh` /
   `tools/restaurar.ps1` lo restauran (frenan los servicios, restauran en una

@@ -36,9 +36,9 @@ docker compose up -d
 ```
 
 ## 4. Respaldos
-- Diario: `tools/respaldar.sh` (Linux) o `tools/respaldar.ps1` (Windows). Ver `docs/runbook.md`.
+- Diario: `./respaldar.sh` (paquete Linux Mint, en la raiz) o `tools\respaldar.ps1` (Windows; en el repo tambien `tools/respaldar.sh`). Ver `docs/runbook.md`.
 - Copia los `.dump` y el `.env` (cifrado) fuera del servidor.
-- Prueba `tools/restaurar.*` en una copia de prueba antes de confiar en ellos.
+- Prueba `restaurar.sh` / `restaurar.ps1` en una copia de prueba antes de confiar en ellos.
 
 ## 5. Correo (recuperar contrasena / notificaciones)
 Completa `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` en `.env`.
