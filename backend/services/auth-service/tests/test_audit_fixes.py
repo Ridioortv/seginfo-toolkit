@@ -131,7 +131,8 @@ def test_auth_payload_fields_have_upper_bounds():
     from app.schemas import LoginRequest, UserCreate
     with pytest.raises(ValidationError):
         LoginRequest(email="a@b.com", password="x" * 5000)
+    varied = lambda n: "".join(chr(97 + (i * 7) % 26) for i in range(n))  # contrasena larga y no repetitiva
     with pytest.raises(ValidationError):
-        UserCreate(email="a@b.com", password="x" * 129)
+        UserCreate(email="a@b.com", password=varied(129))
     assert LoginRequest(email="a@b.com", password="x" * 1024)
-    assert UserCreate(email="a@b.com", password="x" * 128)
+    assert UserCreate(email="a@b.com", password=varied(128))

@@ -3,7 +3,7 @@ roles, SSO config, audit log."""
 import uuid
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import String, Boolean, DateTime, ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 from backend.shared.database import Base
 
 # Duracion de cada periodo de suscripcion (ver Organization.subscription_expires_at
@@ -121,6 +121,12 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     hashed_password: Mapped[str | None] = mapped_column(String(255), nullable=True)
     full_name: Mapped[str] = mapped_column(String(255), default="")
+
+    @validates("email")
+    def _normalize_email(self, _key, value):
+        # Siempre en minusculas y sin espacios, venga de registro, alta de admin, Google u OIDC:
+        # "Ana@x.com" y "ana@x.com" eran dos cuentas distintas.
+        return (value or "").strip().lower()
     auth_provider: Mapped[str] = mapped_column(String(20), default="local")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     mfa_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)

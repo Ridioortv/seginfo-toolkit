@@ -194,10 +194,14 @@ async def upsert_sso_config(
 # --- Usuarios ---
 
 async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
+    # Sin distinguir mayusculas: antes "Ana@x.com" y "ana@x.com" eran cuentas distintas. Si por datos
+    # viejos hubiera dos filas, se usa la mas antigua (nunca un error 500 por "mas de una fila").
     result = await db.execute(
-        select(User).options(selectinload(User.role)).where(User.email == email)
+        select(User).options(selectinload(User.role))
+        .where(func.lower(User.email) == (email or "").strip().lower())
+        .order_by(User.created_at).limit(1)
     )
-    return result.scalar_one_or_none()
+    return result.scalars().first()
 
 
 async def get_user_by_id(db: AsyncSession, user_id: str) -> User | None:

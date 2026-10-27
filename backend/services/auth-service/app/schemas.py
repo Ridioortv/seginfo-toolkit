@@ -1,7 +1,41 @@
 """Pydantic request/response schemas for auth-service."""
 from datetime import datetime
 from typing import Literal
-from pydantic import BaseModel, EmailStr, Field
+import re
+from typing import Annotated
+from pydantic import AfterValidator, BaseModel, EmailStr, Field
+
+
+# --- Normalizacion de email y politica de contrasenas ---------------------------------------
+# users.email es unico pero sensible a mayusculas: "Ana@x.com" y "ana@x.com" eran dos cuentas
+# distintas (y el login con la otra grafia entraba a la segunda). Todo email que llega en un
+# pedido se guarda y compara en minusculas.
+NormEmail = Annotated[EmailStr, AfterValidator(lambda v: str(v).strip().lower())]
+
+_COMMON_PASSWORD_BASES = frozenset({
+    "password", "passw0rd", "contrasena", "contraseña", "qwertyuiop", "qwerty", "asdfghjkl", "abcdefgh",
+    "administrator", "admin", "welcome", "letmein", "iloveyou", "changeme", "monkey", "dragon",
+    "football", "baseball", "master", "login", "princess", "sunshine", "superman", "trustno",
+    "bienvenido", "argentina", "boca", "river", "tero", "teroseguridad", "sentinelops",
+})
+
+
+def check_password_strength(value: str) -> str:
+    """Ademas del largo minimo (12): rechaza contrasenas triviales ("password1234", "12345678901234",
+    "aaaaaaaaaaaa", "qwertyuiop12"). No exige simbolos raros: se prefiere una frase larga."""
+    if value.isdigit():
+        raise ValueError("La contrasena no puede ser solo numeros")
+    if len(set(value.lower())) < 5:
+        raise ValueError("La contrasena es demasiado repetitiva: usa una frase larga o mezcla mas caracteres")
+    base = re.sub(r"[^a-z]", "", value.lower())
+    if base in _COMMON_PASSWORD_BASES or (
+        len(base) <= 14 and any(base.startswith(w) and len(base) - len(w) <= 2 for w in _COMMON_PASSWORD_BASES)
+    ):
+        raise ValueError("Esa contrasena es demasiado comun: elegi una frase larga que solo vos conozcas")
+    return value
+
+
+StrongPassword = Annotated[str, Field(min_length=12, max_length=128), AfterValidator(check_password_strength)]
 
 
 class OrganizationOut(BaseModel):
@@ -83,8 +117,8 @@ class OrganizationCreate(BaseModel):
     endpoint (ver require_platform_admin en dependencies.py)."""
 
     name: str = Field(..., min_length=1)
-    admin_email: EmailStr
-    admin_password: str = Field(min_length=12, max_length=128)
+    admin_email: NormEmail
+    admin_password: StrongPassword
     admin_full_name: str = ""
 
 
@@ -112,8 +146,8 @@ class SsoConfigOut(BaseModel):
 
 
 class UserCreate(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=12, max_length=128)
+    email: NormEmail
+    password: StrongPassword
     full_name: str = ""
     # role_name NO es parte del payload publico a proposito: si lo fuera,
     # cualquiera podria auto-registrarse como admin. El primer usuario que
@@ -136,7 +170,7 @@ class UserOut(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: NormEmail
     # Tope generoso (las contrasenas nuevas llegan a 128): evita pasarle megabytes al hash
     # (bcrypt/passlib levanta PasswordSizeError con >4096 -> 500) y gastar CPU gratis.
     password: str = Field(max_length=1024)
@@ -187,10 +221,10 @@ class UserAdminCreate(BaseModel):
     """Alta de una cuenta hecha por un ADMIN (la unica via donde se elige el rol).
     Con password: cuenta de email+contrasena. Sin password: cuenta que entra con
     Google (pre-aprobada con este rol)."""
-    email: EmailStr
+    email: NormEmail
     full_name: str = ""
     role: str
-    password: str | None = Field(default=None, min_length=12, max_length=128)
+    password: Annotated[str, Field(min_length=12, max_length=128), AfterValidator(check_password_strength)] | None = None
 
 
 class UserAdminUpdate(BaseModel):
@@ -209,17 +243,17 @@ class UserAdminOut(BaseModel):
 
 
 class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
+    email: NormEmail
 
 
 class ResetPasswordRequest(BaseModel):
     token: str = Field(min_length=20, max_length=4096)
-    new_password: str = Field(min_length=12, max_length=128)
+    new_password: StrongPassword
 
 
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(max_length=1024)
-    new_password: str = Field(min_length=12, max_length=128)
+    new_password: StrongPassword
 
 
 class MessageOut(BaseModel):
