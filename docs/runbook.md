@@ -387,8 +387,16 @@ adentro del contenedor.
   (activos, vulnerabilidades, casos, ejercicios purple team, reportes
   generados, canales de notificacion, conectores). En AWS via
   `infra/terraform`, RDS ya tiene `backup_retention_period = 7` dias; en
-  `docker-compose.yml` local no hay backup automatico -- usar
-  `pg_dump` periodicamente si se corre en produccion sin RDS.
+  `docker-compose.yml` hay scripts listos: `tools/respaldar.sh` (Linux/Mac)
+  o `tools/respaldar.ps1` (Windows) generan un `.dump` comprimido con fecha,
+  lo validan y borran los de mas de 14 dias; `tools/restaurar.sh` /
+  `tools/restaurar.ps1` lo restauran (frenan los servicios, restauran en una
+  sola transaccion y vuelven a levantar). Programalos a diario (cron o
+  Programador de tareas de Windows), copia los `.dump` FUERA del servidor y
+  proba una restauracion en una copia de prueba al menos una vez.
+- **`.env`**: guarda una copia cifrada aparte. Tiene `CUSTODY_SIGNING_SEED` y
+  `ENCRYPTION_KEY`: sin ellas, un respaldo de la base no permite verificar la
+  cadena de custodia ni descifrar credenciales de conectores/cloud.
 - **OpenSearch**: contiene logs normalizados. Definir una politica de
   retencion/snapshot separada segun el volumen real de logs del cliente;
   no esta cubierta todavia por este repo.

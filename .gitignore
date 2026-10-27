@@ -53,3 +53,7 @@ Thumbs.db
 
 # Lo escribe el launcher (iniciar.exe / tero-iniciar.sh): version de las imagenes ya instaladas
 .tero-version-instalada
+
+# Respaldos de la base (tools/respaldar.*)
+backups/
+*.dump
