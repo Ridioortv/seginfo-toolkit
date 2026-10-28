@@ -9,6 +9,7 @@ import { connectionErrorDetail } from "../utils/errors";
 import { isSlaBreached } from "../utils/sla";
 import { currentLocale, t } from "../i18n";
 import { saveBlob } from "../utils/download";
+import TicketLinks from "../components/TicketLinks";
 
 const CAN_SYNC = ["admin", "soc_manager"];
 const CAN_EXPORT_EVIDENCE = ["admin", "soc_manager", "analyst"];
@@ -208,6 +209,8 @@ export default function Cases() {
                               </button>
                             )}
                           </div>
+
+                          <TicketLinks subjectType="case" subjectId={c.id} />
 
                           <div className="inline-form" style={{ marginTop: 8 }}>
                             <input

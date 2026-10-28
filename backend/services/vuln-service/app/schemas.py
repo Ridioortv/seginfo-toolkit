@@ -52,6 +52,14 @@ class RiskAcceptanceRequest(BaseModel):
     actor: str = Field(default="", max_length=255)
 
 
+class TicketResolvedRequest(BaseModel):
+    """Lo manda integration-service cuando el ticket externo de la vulnerabilidad se resolvio."""
+    ticket_key: str = Field(min_length=1, max_length=100)
+    provider: str = Field(default="", max_length=30)
+    note: str = Field(default="", max_length=500)
+    actor: str = Field(default="", max_length=255)
+
+
 class VulnerabilityOut(BaseModel):
     id: str
     cve_id: str | None

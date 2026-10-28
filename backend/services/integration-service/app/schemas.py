@@ -11,17 +11,34 @@ def _hide_urls(value: str) -> str:
 ConnectorKind = Literal["firewall", "edr", "ticketing"]
 
 
+def _check_provider(config: dict | None) -> dict | None:
+    provider = (config or {}).get("provider")
+    if provider is not None and str(provider).lower() not in ("jira", "servicenow"):
+        raise ValueError("El proveedor de tickets debe ser 'jira' o 'servicenow'")
+    return config
+
+
 class ConnectorCreate(BaseModel):
     name: str
     kind: ConnectorKind
     config: dict = Field(default_factory=dict, description="ej. {'base_url': 'https://fw.example/api', 'api_key': '...'}")
     enabled: bool = True
 
+    @field_validator("config")
+    @classmethod
+    def _v_config(cls, v):
+        return _check_provider(v)
+
 
 class ConnectorUpdate(BaseModel):
     name: str | None = None
     config: dict | None = None
     enabled: bool | None = None
+
+    @field_validator("config")
+    @classmethod
+    def _v_config(cls, v):
+        return _check_provider(v)
 
 
 class ConnectorOut(BaseModel):
@@ -95,3 +112,9 @@ class TicketLogOut(BaseModel):
     @classmethod
     def _error_without_urls(cls, v: str) -> str:
         return _hide_urls(v)
+
+
+class TicketLinkCreate(BaseModel):
+    subject_type: Literal["vulnerability", "case"]
+    subject_id: str = Field(min_length=1, max_length=36)
+    connector_id: str | None = None

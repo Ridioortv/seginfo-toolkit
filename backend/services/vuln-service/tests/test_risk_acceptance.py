@@ -121,3 +121,31 @@ def test_internal_cannot_touch_closed_or_foreign_vulnerabilities(env):
 def test_invalid_action_is_422(env):
     client, ids = env
     assert client.post(f"/internal/vulnerabilities/{ids['crit']}/risk-acceptance", headers=service(), json={"action": "borrar"}).status_code == 422
+
+
+# ---- ticket externo resuelto (integration-service) ----
+
+def test_internal_ticket_resolved_marks_remediated_and_starts_closure(env):
+    client, ids = env
+    body = {"ticket_key": "SEC-12", "provider": "jira", "note": "Parcheado por infraestructura"}
+    r = client.post(f"/internal/vulnerabilities/{ids['high']}/ticket-resolved", headers=service(), json=body)
+    assert r.status_code == 200 and r.json()["changed"] is True and r.json()["status"] == "remediated"
+    v = client.get(f"/internal/vulnerabilities/{ids['high']}", headers=service()).json()
+    assert v["status"] == "remediated" and v["fixed_version"] == "" and "remediation_steps" in v and "description" in v
+    # la verificacion con un nuevo escaneo queda en marcha (o sin soporte), nunca se da por "verificada" sola
+    assert client.get(f"/vulnerabilities/{ids['high']}", headers=user()).json()["closure_status"] != "verified"
+    # repetir el aviso no cambia nada
+    again = client.post(f"/internal/vulnerabilities/{ids['high']}/ticket-resolved", headers=service(), json=body)
+    assert again.json() == {"id": ids["high"], "status": "remediated", "changed": False}
+
+
+def test_ticket_resolved_does_not_touch_accepted_or_other_org_and_requires_service_token(env):
+    client, ids = env
+    body = {"ticket_key": "SEC-1", "provider": "jira"}
+    client.post(f"/internal/vulnerabilities/{ids['med']}/risk-acceptance", headers=service(), json={"action": "accept"})
+    r = client.post(f"/internal/vulnerabilities/{ids['med']}/ticket-resolved", headers=service(), json=body)
+    assert r.json()["changed"] is False and r.json()["status"] == "accepted_risk"
+    assert client.post(f"/internal/vulnerabilities/{ids['other']}/ticket-resolved", headers=service(), json=body).status_code == 404
+    assert client.post(f"/internal/vulnerabilities/{ids['crit']}/ticket-resolved", headers=user("admin"), json=body).status_code == 403
+    assert client.post(f"/internal/vulnerabilities/{ids['crit']}/ticket-resolved", json=body).status_code == 401
+    assert client.post(f"/internal/vulnerabilities/{ids['crit']}/ticket-resolved", headers=service(), json={}).status_code == 422

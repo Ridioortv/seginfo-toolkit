@@ -4,7 +4,7 @@ from typing import Literal
 import re
 from pydantic import BaseModel, Field, field_validator
 
-ChannelType = Literal["email", "slack_webhook", "generic_webhook"]
+ChannelType = Literal["email", "slack_webhook", "teams_webhook", "generic_webhook"]
 
 
 def _channel_name(v: str | None) -> str | None:

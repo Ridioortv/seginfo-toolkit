@@ -1,3 +1,4 @@
+import TicketLinks from "../components/TicketLinks";
 import { Fragment, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -286,6 +287,7 @@ export default function Vulnerabilities() {
                               <li key={idx}>{step}</li>
                             ))}
                           </ol>
+                          {v.status !== "false_positive" && <TicketLinks subjectType="vulnerability" subjectId={v.id} />}
                           {v.status !== "remediated" && v.status !== "false_positive" && (
                             <div className="inline-form">
                               {TRIAGE_ACTIONS.map((action) =>

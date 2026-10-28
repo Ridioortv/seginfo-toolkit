@@ -62,6 +62,10 @@ CATALOG: list[dict] = [
      "purpose": "Crea tickets en Jira (si lo configuraste)",
      "sends": "Titulo y descripcion de la alerta o del hallazgo, y tu token de Jira.", "optional": True,
      "offline": "Sin salida, los tickets se crean en un Jira o GLPI interno."},
+    {"id": "servicenow", "host": "*.service-now.com", "services": ["integration-service"], "category": "Tickets",
+     "purpose": "Crea tickets en ServiceNow y consulta su estado (si lo configuraste)",
+     "sends": "Titulo y descripcion del hallazgo o del caso, y las credenciales de ServiceNow.", "optional": True,
+     "offline": "Sin salida, los tickets se crean en un ServiceNow, Jira o GLPI interno."},
 ]
 
 # Servicios que, por diseno, hablan con destinos que define un usuario o un administrador.

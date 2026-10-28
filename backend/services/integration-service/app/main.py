@@ -26,6 +26,10 @@ from app.schemas import (
 )
 from app.dependencies import get_current_claims, require_role
 from app import services
+from app import ticket_models  # noqa: F401  (registra la tabla)
+from app import ticket_service
+from app.ticket_routes import router as ticket_router, public_router as ticket_public_router
+import asyncio
 
 logger = configure_logging("integration-service")
 actions_total = Counter("integration_action_total", "Acciones de contencion procesadas", ["action", "status"])
@@ -53,7 +57,10 @@ async def lifespan(app: FastAPI):
             f"UPDATE integration_ticket_logs SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
         ))
     logger.info("integration-service iniciado", extra={"dry_run": services.dry_run_enabled()})
+    from backend.shared.database import SessionLocal
+    sync_task = asyncio.create_task(ticket_service.loop(SessionLocal))
     yield
+    sync_task.cancel()
 
 
 app = FastAPI(title="TERO Security Integration Service", version="0.1.0", lifespan=lifespan)
@@ -67,6 +74,8 @@ app.add_middleware(
 app.add_middleware(SecurityHeadersMiddleware)
 install_db_error_handlers(app)  # 409/422 claros en vez de 500 ante datos que la base rechaza
 app.mount("/metrics", make_asgi_app())
+app.include_router(ticket_router)
+app.include_router(ticket_public_router)
 
 
 @app.get("/health")

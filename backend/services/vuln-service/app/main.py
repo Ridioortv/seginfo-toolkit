@@ -19,7 +19,7 @@ from backend.shared.db_errors import install_db_error_handlers
 from backend.shared.service_auth import require_service_token
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.models import VulnStatus
-from app.schemas import IngestRequest, IngestResponse, RiskAcceptanceRequest, TriageRequest, VulnerabilityOut, VulnerabilityStatsOut
+from app.schemas import IngestRequest, IngestResponse, RiskAcceptanceRequest, TicketResolvedRequest, TriageRequest, VulnerabilityOut, VulnerabilityStatsOut
 from app.dependencies import get_current_claims, require_role
 from app import closure, services
 
@@ -237,7 +237,34 @@ async def internal_get_vulnerability(vuln_id: str, claims: dict = Depends(requir
     if vuln is None:
         raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
     return {"id": vuln.id, "title": vuln.title, "severity": vuln.severity.value, "status": vuln.status.value,
-            "cve_id": vuln.cve_id or "", "asset_id": vuln.asset_id or ""}
+            "cve_id": vuln.cve_id or "", "asset_id": vuln.asset_id or "",
+            # Lo que necesita integration-service para armar el ticket (Jira, ServiceNow...).
+            "description": (vuln.description or "")[:3000], "cvss_score": vuln.cvss_score, "is_kev": bool(vuln.is_kev),
+            "port": vuln.port, "service": vuln.service or "", "package": vuln.package or "",
+            "installed_version": vuln.installed_version or "", "fixed_version": vuln.fixed_version or "",
+            "remediation_steps": list(vuln.remediation_steps)[:10]}
+
+
+@app.post("/internal/vulnerabilities/{vuln_id}/ticket-resolved")
+async def internal_ticket_resolved(
+    vuln_id: str, payload: TicketResolvedRequest, claims: dict = Depends(require_service_token),
+    db: AsyncSession = Depends(get_db),
+):
+    """El ticket externo (Jira/ServiceNow) de esta vulnerabilidad se resolvio. Pasa a "remediada" (lo que declara el
+    equipo) y de ahi arranca solo la verificacion con un nuevo escaneo: que el ticket diga "Hecho" no la da por corregida.
+    Solo mueve una vulnerabilidad abierta o confirmada; en cualquier otro estado no toca nada y lo informa."""
+    vuln = await services.get_vulnerability(db, vuln_id, org_id_from_claims(claims))
+    if vuln is None:
+        raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
+    current = vuln.status.value
+    if current not in ("open", "confirmed"):
+        return {"id": vuln.id, "status": current, "changed": False}
+    note = (f"Ticket {payload.ticket_key} resuelto en {payload.provider}. " + payload.note).strip()[:1000]
+    vuln = await services.triage_vulnerability(db, vuln, TriageRequest(status=VulnStatus.remediated, note=note),
+                                               payload.actor or claims.get("sub", ""))
+    await db.commit()
+    vulns_triaged_total.labels(new_status="remediated").inc()
+    return {"id": vuln.id, "status": vuln.status.value, "changed": True, "closure_status": vuln.closure_status}
 
 
 @app.post("/internal/vulnerabilities/{vuln_id}/risk-acceptance")

@@ -44,14 +44,22 @@ def _decrypt_secret_fields(config: dict) -> dict:
     return out
 
 
+def _clean_incoming(config: dict) -> dict:
+    """Las claves que empiezan con "_" las maneja el servicio (por ejemplo el hash del secreto del webhook entrante):
+    no se aceptan desde afuera."""
+    return {k: v for k, v in (config or {}).items() if not str(k).startswith("_")}
+
+
 def redact_connector_config(config: dict) -> dict:
     """Para cualquier respuesta HTTP (ConnectorOut) -- nunca se devuelve el
     valor cifrado ni, mucho menos, el plano. Mismo criterio que
     SsoConfigOut en auth-service (que jamas incluye client_secret)."""
-    out = dict(config)
+    out = {k: v for k, v in config.items() if not str(k).startswith("_")}
     for key in _SECRET_CONFIG_KEYS:
         if out.get(key):
             out[key] = "••••••••"
+    if config.get("_webhook_sha256"):
+        out["webhook_enabled"] = True  # hay un secreto de webhook generado (el secreto en si solo se muestra al crearlo)
     return out
 
 
@@ -66,7 +74,7 @@ def _now() -> datetime:
 async def create_connector(db: AsyncSession, payload, organization_id: str) -> Connector:
     connector = Connector(
         organization_id=organization_id, name=payload.name, kind=payload.kind,
-        config=_encrypt_secret_fields(payload.config), enabled=payload.enabled,
+        config=_encrypt_secret_fields(_clean_incoming(payload.config)), enabled=payload.enabled,
     )
     db.add(connector)
     await db.flush()
@@ -91,7 +99,21 @@ async def get_connector(db: AsyncSession, connector_id: str, organization_id: st
 async def update_connector(db: AsyncSession, connector: Connector, payload) -> Connector:
     data = payload.model_dump(exclude_unset=True)
     if "config" in data and data["config"] is not None:
-        data["config"] = _encrypt_secret_fields(data["config"])
+        current = connector.config or {}
+        merged = _clean_incoming(data["config"])
+        for key in _SECRET_CONFIG_KEYS:
+            sent = merged.get(key)
+            if sent in (None, "", "••••••••"):
+                # vacio o la mascara que mostro la API: se conserva el secreto ya guardado (cifrado)
+                if current.get(key):
+                    merged[key] = current[key]
+                else:
+                    merged.pop(key, None)
+            else:
+                merged[key] = encrypt_secret(sent)
+        if current.get("_webhook_sha256"):
+            merged["_webhook_sha256"] = current["_webhook_sha256"]
+        data["config"] = merged
     for field, value in data.items():
         setattr(connector, field, value)
     await db.flush()
