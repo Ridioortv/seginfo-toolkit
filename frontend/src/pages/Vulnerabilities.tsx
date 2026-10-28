@@ -1,10 +1,12 @@
 import { Fragment, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { vulnApi } from "../services/api";
 import type { VulnerabilityOut, VulnerabilityStatsOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { SeverityBadge, StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
+import { needsException } from "../utils/exceptions";
 
 const TRIAGE_ACTIONS: { status: string; label: string }[] = [
   { status: "confirmed", label: "Confirmar" },
@@ -286,16 +288,23 @@ export default function Vulnerabilities() {
                           </ol>
                           {v.status !== "remediated" && v.status !== "false_positive" && (
                             <div className="inline-form">
-                              {TRIAGE_ACTIONS.map((action) => (
-                                <button
-                                  key={action.status}
-                                  className="btn-secondary"
-                                  disabled={triage.isPending}
-                                  onClick={() => triage.mutate({ id: v.id, status: action.status })}
-                                >
-                                  {action.label}
-                                </button>
-                              ))}
+                              {TRIAGE_ACTIONS.map((action) =>
+                                action.status === "accepted_risk" && needsException(v.severity, v.status) ? (
+                                  // Alta o critica: aceptar el riesgo exige una excepcion aprobada por otra persona.
+                                  <Link key={action.status} className="btn-secondary" to={`/trust?tab=exceptions&vuln=${v.id}`}>
+                                    Pedir excepcion de riesgo
+                                  </Link>
+                                ) : (
+                                  <button
+                                    key={action.status}
+                                    className="btn-secondary"
+                                    disabled={triage.isPending}
+                                    onClick={() => triage.mutate({ id: v.id, status: action.status })}
+                                  >
+                                    {action.label}
+                                  </button>
+                                ),
+                              )}
                             </div>
                           )}
                           {v.triage_note && (

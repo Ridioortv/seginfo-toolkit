@@ -224,6 +224,18 @@ async def get_vulnerability(db: AsyncSession, vuln_id: str, organization_id: str
     return vuln
 
 
+def accept_risk_needs_exception(vuln: Vulnerability) -> bool:
+    """Aceptar el riesgo de una vulnerabilidad ALTA o CRITICA no es una decision de una sola persona con un clic: exige una
+    excepcion aprobada (case-service, Confianza y evidencia -> Excepciones), con justificacion, controles compensatorios,
+    otra persona que apruebe y vencimiento. VULN_ACCEPT_RISK_REQUIRES_EXCEPTION=false lo desactiva (instalaciones de una
+    sola persona). Reafirmar un riesgo ya aceptado no cambia el estado y no pide excepcion."""
+    if os.getenv("VULN_ACCEPT_RISK_REQUIRES_EXCEPTION", "true").strip().lower() in ("0", "false", "no"):
+        return False
+    severity = getattr(vuln.severity, "value", vuln.severity)
+    status_ = getattr(vuln.status, "value", vuln.status)
+    return severity in ("critical", "high") and status_ != "accepted_risk"
+
+
 async def triage_vulnerability(db: AsyncSession, vuln: Vulnerability, payload, actor: str) -> Vulnerability:
     previous_status = getattr(vuln.status, "value", vuln.status)
     if payload.status == VulnStatus.remediated and previous_status != "remediated":

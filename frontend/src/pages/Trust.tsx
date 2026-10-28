@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import PageHeader from "../components/PageHeader";
 import Custody from "./trust/Custody";
 import Sovereignty from "./trust/Sovereignty";
@@ -6,9 +7,10 @@ import Closure from "./trust/Closure";
 import Compliance from "./trust/Compliance";
 import Drills from "./trust/Drills";
 import Vendors from "./trust/Vendors";
+import Exceptions from "./trust/Exceptions";
 import { useAuthStore } from "../store/auth";
 
-type Tab = "custody" | "sovereignty" | "closure" | "compliance" | "drills" | "vendors";
+type Tab = "custody" | "sovereignty" | "closure" | "compliance" | "drills" | "vendors" | "exceptions";
 
 const TABS: { key: Tab; label: string; roles?: string[] }[] = [
   { key: "custody", label: "Cadena de custodia" },
@@ -17,11 +19,14 @@ const TABS: { key: Tab; label: string; roles?: string[] }[] = [
   { key: "compliance", label: "Cumplimiento", roles: ["admin", "soc_manager", "analyst"] },
   { key: "drills", label: "Simulacros" },
   { key: "vendors", label: "Proveedores", roles: ["admin", "soc_manager", "analyst"] },
+  { key: "exceptions", label: "Excepciones de riesgo", roles: ["admin", "soc_manager", "analyst"] },
 ];
 
 // Confianza y evidencia: lo que TERO puede demostrarle a un tercero (auditor, cliente, juez) sin pedirle que confie.
 export default function Trust() {
-  const [tab, setTab] = useState<Tab>("custody");
+  const [params] = useSearchParams();
+  const initial = TABS.find((x) => x.key === params.get("tab"))?.key ?? "custody";
+  const [tab, setTab] = useState<Tab>(initial);
   const role = useAuthStore((s) => s.claims?.role) ?? "";
   const tabs = TABS.filter((x) => !x.roles || x.roles.includes(role));
   return (
@@ -43,6 +48,7 @@ export default function Trust() {
       {tab === "compliance" && <Compliance />}
       {tab === "drills" && <Drills />}
       {tab === "vendors" && <Vendors />}
+      {tab === "exceptions" && <Exceptions />}
     </div>
   );
 }

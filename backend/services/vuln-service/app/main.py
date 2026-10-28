@@ -16,9 +16,10 @@ from backend.shared import egress
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
 from backend.shared.db_errors import install_db_error_handlers
+from backend.shared.service_auth import require_service_token
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.models import VulnStatus
-from app.schemas import IngestRequest, IngestResponse, TriageRequest, VulnerabilityOut, VulnerabilityStatsOut
+from app.schemas import IngestRequest, IngestResponse, RiskAcceptanceRequest, TriageRequest, VulnerabilityOut, VulnerabilityStatsOut
 from app.dependencies import get_current_claims, require_role
 from app import closure, services
 
@@ -209,8 +210,50 @@ async def triage(
     vuln = await services.get_vulnerability(db, vuln_id, org_id_from_claims(claims))
     if vuln is None:
         raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
+    if payload.status == VulnStatus.accepted_risk and services.accept_risk_needs_exception(vuln):
+        raise HTTPException(
+            status_code=409,
+            detail="Aceptar el riesgo de una vulnerabilidad alta o critica requiere una excepcion aprobada: "
+                   "pedila en Confianza y evidencia -> Excepciones.",
+        )
     vuln = await services.triage_vulnerability(db, vuln, payload, (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     vulns_triaged_total.labels(new_status=payload.status.value).inc()
     logger.info("vulnerabilidad triada", extra={"vuln_id": vuln_id, "status": payload.status.value, "actor": claims.get("sub")})
     return vuln
+
+
+# --- Servicio a servicio: las usa case-service para el flujo de excepciones de riesgo -------------------------------
+
+@app.get("/internal/vulnerabilities/{vuln_id}")
+async def internal_get_vulnerability(vuln_id: str, claims: dict = Depends(require_service_token), db: AsyncSession = Depends(get_db)):
+    vuln = await services.get_vulnerability(db, vuln_id, org_id_from_claims(claims))
+    if vuln is None:
+        raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
+    return {"id": vuln.id, "title": vuln.title, "severity": vuln.severity.value, "status": vuln.status.value,
+            "cve_id": vuln.cve_id or "", "asset_id": vuln.asset_id or ""}
+
+
+@app.post("/internal/vulnerabilities/{vuln_id}/risk-acceptance")
+async def internal_risk_acceptance(
+    vuln_id: str, payload: RiskAcceptanceRequest, claims: dict = Depends(require_service_token),
+    db: AsyncSession = Depends(get_db),
+):
+    """accept: open/confirmed -> accepted_risk. reopen: accepted_risk -> open (vencio o se revoco la excepcion)."""
+    vuln = await services.get_vulnerability(db, vuln_id, org_id_from_claims(claims))
+    if vuln is None:
+        raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
+    current = vuln.status.value
+    if payload.action == "accept":
+        if current not in ("open", "confirmed"):
+            raise HTTPException(status_code=409, detail=f"La vulnerabilidad esta en estado {current}: solo se acepta una abierta o confirmada")
+        target = VulnStatus.accepted_risk
+    else:
+        if current != "accepted_risk":
+            raise HTTPException(status_code=409, detail=f"La vulnerabilidad esta en estado {current}, no hay riesgo aceptado que reabrir")
+        target = VulnStatus.open
+    vuln = await services.triage_vulnerability(db, vuln, TriageRequest(status=target, note=payload.note),
+                                               payload.actor or claims.get("sub", ""))
+    await db.commit()
+    vulns_triaged_total.labels(new_status=target.value).inc()
+    return {"id": vuln.id, "status": vuln.status.value}

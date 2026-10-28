@@ -29,6 +29,9 @@ from app import compliance_models  # noqa: F401 -- registra las tablas de cumpli
 from app.compliance_routes import router as compliance_router
 from app import vendor_models  # noqa: F401 -- registra las tablas de proveedores
 from app.vendor_routes import router as vendor_router, public_router as vendor_public_router
+from app import exception_models  # noqa: F401 -- registra la tabla de excepciones de riesgo
+from app.exception_routes import router as exception_router
+from app import exception_service
 from backend.shared import egress
 
 logger = configure_logging("case-service")
@@ -72,10 +75,12 @@ async def lifespan(app: FastAPI):
         ))
     sync_task = asyncio.create_task(_soar_sync_loop())
     snapshot_task = asyncio.create_task(compliance_service.snapshot_loop(SessionLocal, services.list_organization_ids))
+    exception_task = asyncio.create_task(exception_service.loop(SessionLocal))
     logger.info("case-service iniciado")
     yield
     sync_task.cancel()
     snapshot_task.cancel()
+    exception_task.cancel()
 
 
 app = FastAPI(title="TERO Security Case Service", version="0.1.0", lifespan=lifespan)
@@ -96,6 +101,7 @@ app.include_router(drill_router)
 app.include_router(compliance_router)
 app.include_router(vendor_router)
 app.include_router(vendor_public_router)
+app.include_router(exception_router)
 
 
 @app.get("/health")

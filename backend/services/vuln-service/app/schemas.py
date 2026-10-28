@@ -1,5 +1,6 @@
 """Pydantic schemas for vuln-service."""
 from datetime import datetime
+from typing import Literal
 from pydantic import BaseModel, Field
 from app.models import VulnSeverity, VulnStatus
 
@@ -42,6 +43,13 @@ class IngestResponse(BaseModel):
 class TriageRequest(BaseModel):
     status: VulnStatus
     note: str = ""
+
+
+class RiskAcceptanceRequest(BaseModel):
+    """Lo usa case-service (flujo de excepciones de riesgo aprobadas) para aceptar o reabrir una vulnerabilidad."""
+    action: Literal["accept", "reopen"]
+    note: str = Field(default="", max_length=1000)
+    actor: str = Field(default="", max_length=255)
 
 
 class VulnerabilityOut(BaseModel):
