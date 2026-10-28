@@ -56,3 +56,33 @@ Sin SMTP la app funciona, pero "Olvide mi contrasena" no envia correos.
   `ACCESS_TOKEN_EXPIRE_MINUTES`).
 - 14 de los 28 controles de cumplimiento son manuales por diseno (requieren evidencia humana).
 - `infra/terraform` e `infra/k8s` son plantillas: revisar hallazgos de seguridad antes de usarlas.
+
+## 8. Rutas publicas (cuestionario de proveedores y webhook de tickets)
+Dos funciones reciben llamadas de afuera, sin sesion de TERO. Si las vas a usar, expone **solo estas rutas**
+por HTTPS (no el resto de las APIs):
+
+| Para que | Servicio (puerto) | Ruta publica |
+|---|---|---|
+| El proveedor abre y responde el cuestionario | `case-service` (8007) | `/public/vendor-assessments/*` |
+| Jira / ServiceNow avisa que un ticket cambio | `integration-service` (8011) | `/public/ticket-webhooks/*` |
+
+Ejemplo con Caddy (sin abrir el resto de las rutas de esos servicios):
+
+```
+api.tudominio.com {
+    @cuestionario path /public/vendor-assessments/*
+    handle @cuestionario { reverse_proxy 127.0.0.1:8007 }
+    @webhook path /public/ticket-webhooks/*
+    handle @webhook { reverse_proxy 127.0.0.1:8011 }
+    respond 404
+}
+```
+
+La pagina del cuestionario (`/proveedor/<token>`) la sirve el mismo frontend; arma las llamadas con
+`VITE_CASE_API_BASE_URL`, que tiene que apuntar a esa direccion publica (por ejemplo `https://api.tudominio.com`) y
+agregarse a `connect-src` en `frontend/nginx.conf` y a `CORS_ALLOWED_ORIGINS`, y reconstruir el frontend. Ambas rutas
+tienen limite de frecuencia y responden igual ante un link o secreto inexistente.
+
+Para tickets y avisos reales: `INTEGRATION_DRY_RUN=false` y `NOTIFICATION_DRY_RUN=false` en `.env`.
+Para la consola multicliente: un administrador de plataforma habilita a la organizacion como partner (ver
+`docs/confianza-y-evidencia.md`, seccion 10).
