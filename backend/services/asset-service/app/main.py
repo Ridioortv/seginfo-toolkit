@@ -36,6 +36,7 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             "ALTER TABLE asset_groups ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"
         ))
+        await conn.execute(text("ALTER TABLE assets ADD COLUMN IF NOT EXISTS business_unit VARCHAR(100) DEFAULT ''"))
         await conn.execute(text(
             f"UPDATE assets SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
         ))

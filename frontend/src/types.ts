@@ -11,6 +11,7 @@ export interface AssetOut {
   environment: string;
   criticality: string;
   owner: string;
+  business_unit?: string;
   tags: string[];
   is_active: boolean;
   notes: string;

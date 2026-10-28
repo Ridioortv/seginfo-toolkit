@@ -28,6 +28,7 @@ class AssetCreate(BaseModel):
     environment: AssetEnvironment = AssetEnvironment.production
     criticality: AssetCriticality = AssetCriticality.medium
     owner: str = ""
+    business_unit: str = Field(default="", max_length=100)
     tags: list[str] = Field(default_factory=list)
     notes: str = ""
 
@@ -57,6 +58,7 @@ class AssetUpdate(BaseModel):
     environment: AssetEnvironment | None = None
     criticality: AssetCriticality | None = None
     owner: str | None = None
+    business_unit: str | None = Field(default=None, max_length=100)
     tags: list[str] | None = None
     notes: str | None = None
     is_active: bool | None = None
@@ -77,6 +79,7 @@ class AssetOut(BaseModel):
     environment: AssetEnvironment
     criticality: AssetCriticality
     owner: str
+    business_unit: str = ""
     tags: list[str]
     is_active: bool
     notes: str

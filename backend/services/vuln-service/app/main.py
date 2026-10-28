@@ -134,6 +134,12 @@ async def posture(claims: dict = Depends(get_current_claims), db: AsyncSession =
     return await services.get_posture(db, org_id_from_claims(claims))
 
 
+@app.get("/vulnerabilities/executive")
+async def executive(days: int = 30, claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
+    """Abiertas hoy, flujo del periodo vs el anterior y exposicion por activo (lo usa el tablero ejecutivo)."""
+    return await services.get_executive(db, org_id_from_claims(claims), days)
+
+
 @app.get("/vulnerabilities/closure/stats")
 async def closure_stats(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
     """Cierres verificados vs declarados y MTTR real (hasta el cierre verificado) vs declarado."""

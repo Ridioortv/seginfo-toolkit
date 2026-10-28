@@ -2,7 +2,7 @@
 enriquecimiento (CVSS/EPSS/KEV), calculo de prioridad y workflow de triage
 (confirmar / falso positivo / riesgo aceptado / remediado)."""
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import httpx
 from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -331,3 +331,60 @@ async def get_posture(db: AsyncSession, organization_id: str) -> dict:
             oldest[key] = max(oldest[key], round((now - c).total_seconds() / 86400, 1))
     return {"open_total": len(rows), "open_by_severity": by_sev, "open_kev": kev_open,
             "oldest_open_days": oldest}
+
+
+EXPOSURE_WEIGHTS = {"critical": 10.0, "high": 5.0, "medium": 2.0, "low": 0.5, "info": 0.0}
+
+
+def _aware(dt: datetime | None) -> datetime | None:
+    return dt.replace(tzinfo=timezone.utc) if dt is not None and dt.tzinfo is None else dt
+
+
+async def get_executive(db: AsyncSession, organization_id: str, days: int = 30, now: datetime | None = None) -> dict:
+    """Numeros para el tablero ejecutivo: lo abierto hoy, el flujo del periodo (nuevas y remediadas) contra el periodo
+    anterior de la misma duracion, y la exposicion por activo. Todo sale de las marcas de tiempo reales de cada
+    vulnerabilidad (created_at / remediated_at); no hay estimaciones."""
+    now = now or datetime.now(timezone.utc)
+    days = max(7, min(int(days), 365))
+    cur_start, prev_start = now - timedelta(days=days), now - timedelta(days=2 * days)
+    rows = (await db.execute(select(Vulnerability).where(Vulnerability.organization_id == organization_id))).scalars().all()
+
+    def sev(v) -> str:
+        return getattr(v.severity, "value", v.severity)
+
+    def stat(v) -> str:
+        return getattr(v.status, "value", v.status)
+
+    open_rows = [v for v in rows if stat(v) in ("open", "confirmed")]
+    by_sev: dict[str, int] = {}
+    for v in open_rows:
+        by_sev[sev(v)] = by_sev.get(sev(v), 0) + 1
+
+    def window(lo: datetime, hi: datetime) -> dict:
+        created = [v for v in rows if (c := _aware(v.created_at)) and lo <= c < hi]
+        fixed = [v for v in rows if stat(v) == "remediated" and (r := _aware(v.remediated_at)) and lo <= r < hi]
+        ch = ("critical", "high")
+        return {"created": len(created), "remediated": len(fixed),
+                "created_critical_high": sum(1 for v in created if sev(v) in ch),
+                "remediated_critical_high": sum(1 for v in fixed if sev(v) in ch)}
+
+    assets: dict[str, dict] = {}
+    for v in open_rows:
+        key = v.asset_id or ""
+        a = assets.setdefault(key, {"asset_id": key, "critical": 0, "high": 0, "medium": 0, "low": 0, "kev": 0, "score": 0.0})
+        if sev(v) in a:
+            a[sev(v)] += 1
+        a["kev"] += 1 if v.is_kev else 0
+        a["score"] += EXPOSURE_WEIGHTS.get(sev(v), 0.0) * (1.5 if v.is_kev else 1.0)
+    top = sorted(assets.values(), key=lambda a: -a["score"])[:200]
+    for a in top:
+        a["score"] = round(a["score"], 1)
+    oldest = max(((now - c).days for v in open_rows if sev(v) in ("critical", "high") and (c := _aware(v.created_at))), default=0)
+    return {
+        "days": days, "generated_at": now.isoformat(),
+        "open": {"total": len(open_rows), "by_severity": by_sev, "kev": sum(1 for v in open_rows if v.is_kev),
+                 "critical_high": by_sev.get("critical", 0) + by_sev.get("high", 0), "oldest_critical_high_days": oldest,
+                 "accepted_risk": sum(1 for v in rows if stat(v) == "accepted_risk")},
+        "period": window(cur_start, now), "previous": window(prev_start, cur_start),
+        "exposure_weights": EXPOSURE_WEIGHTS, "by_asset": top,
+    }

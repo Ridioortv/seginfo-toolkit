@@ -861,6 +861,19 @@ async def internal_list_organizations(
     return [{"id": org.id} for org in orgs]
 
 
+@app.get("/internal/organizations/{org_id}")
+async def internal_get_organization(
+    org_id: str,
+    claims: dict = Depends(require_service_token),
+    db: AsyncSession = Depends(get_db),
+):
+    """Datos publicos de una organizacion para otros servicios (nombre para los informes). Servicio a servicio."""
+    org = await services.get_organization_by_id(db, org_id)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organizacion no encontrada")
+    return {"id": org.id, "name": org.name, "slug": org.slug}
+
+
 @app.get("/auth/organizations/{org_id}/sso", response_model=SsoConfigOut | None)
 async def get_sso_config(
     org_id: str,
