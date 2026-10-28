@@ -5,9 +5,10 @@ import Sovereignty from "./trust/Sovereignty";
 import Closure from "./trust/Closure";
 import Compliance from "./trust/Compliance";
 import Drills from "./trust/Drills";
+import Vendors from "./trust/Vendors";
 import { useAuthStore } from "../store/auth";
 
-type Tab = "custody" | "sovereignty" | "closure" | "compliance" | "drills";
+type Tab = "custody" | "sovereignty" | "closure" | "compliance" | "drills" | "vendors";
 
 const TABS: { key: Tab; label: string; roles?: string[] }[] = [
   { key: "custody", label: "Cadena de custodia" },
@@ -15,6 +16,7 @@ const TABS: { key: Tab; label: string; roles?: string[] }[] = [
   { key: "closure", label: "Cierre verificado" },
   { key: "compliance", label: "Cumplimiento", roles: ["admin", "soc_manager", "analyst"] },
   { key: "drills", label: "Simulacros" },
+  { key: "vendors", label: "Proveedores", roles: ["admin", "soc_manager", "analyst"] },
 ];
 
 // Confianza y evidencia: lo que TERO puede demostrarle a un tercero (auditor, cliente, juez) sin pedirle que confie.
@@ -40,6 +42,7 @@ export default function Trust() {
       {tab === "closure" && <Closure />}
       {tab === "compliance" && <Compliance />}
       {tab === "drills" && <Drills />}
+      {tab === "vendors" && <Vendors />}
     </div>
   );
 }

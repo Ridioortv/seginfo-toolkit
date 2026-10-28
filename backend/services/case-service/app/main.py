@@ -27,6 +27,8 @@ from app.closure_routes import router as closure_router
 from app.drill_routes import router as drill_router
 from app import compliance_models  # noqa: F401 -- registra las tablas de cumplimiento
 from app.compliance_routes import router as compliance_router
+from app import vendor_models  # noqa: F401 -- registra las tablas de proveedores
+from app.vendor_routes import router as vendor_router, public_router as vendor_public_router
 from backend.shared import egress
 
 logger = configure_logging("case-service")
@@ -92,6 +94,8 @@ app.include_router(egress_router)
 app.include_router(closure_router)
 app.include_router(drill_router)
 app.include_router(compliance_router)
+app.include_router(vendor_router)
+app.include_router(vendor_public_router)
 
 
 @app.get("/health")

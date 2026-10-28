@@ -177,7 +177,7 @@ def _broken(rows: list[dict], seq: int, reason: str) -> dict:
 # puede verificar sin TERO con verificar_evidencia.py.
 
 ATTESTATION_VERSION = 1
-ATTESTATION_KINDS = ("sovereignty", "compliance", "drill", "closure")
+ATTESTATION_KINDS = ("sovereignty", "compliance", "drill", "closure", "vendor", "risk_exception", "executive", "partner")
 
 
 def attestation_message(kind: str, org: str | None, generated_at: str, body: dict) -> bytes:

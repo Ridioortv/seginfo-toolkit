@@ -27,6 +27,7 @@ import Security from "./pages/Security";
 import Billing from "./pages/Billing";
 import Users from "./pages/Users";
 import SsoCallback from "./pages/SsoCallback";
+import VendorQuestionnaire from "./pages/VendorQuestionnaire";
 import { useLangStore } from "./i18n";
 
 export default function App() {
@@ -45,6 +46,8 @@ export default function App() {
             tokens todavia -- los guarda ella misma antes de redirigir
             adentro de la app. Ver app/main.py::oidc_callback. */}
         <Route path="/sso/callback" element={<SsoCallback />} />
+        {/* Publica: el proveedor responde el cuestionario de seguridad desde el link que recibio. */}
+        <Route path="/proveedor/:token" element={<VendorQuestionnaire />} />
         <Route element={<ProtectedRoute />}>
           <Route element={<Layout />}>
             <Route path="/" element={<Dashboard />} />
