@@ -10,6 +10,8 @@ import app.main as m
 
 class _Org:
     id = "org-1"
+    is_active = True
+    parent_org_id = None
 
 
 class _Db:

@@ -17,7 +17,7 @@ VERIFIER_PATH = Path(__file__).resolve().parent / "assets" / "verificar_evidenci
 
 # Eventos que solo puede escribir case-service (los de otros servicios llegan por /internal/custody/events).
 RESERVED_PREFIXES = ("case.", "evidence.")
-EXTERNAL_PREFIXES = ("alert.", "soar.", "vuln.", "scan.", "asset.", "sovereignty.", "drill.", "compliance.", "gov.", "ticket.")
+EXTERNAL_PREFIXES = ("alert.", "soar.", "vuln.", "scan.", "asset.", "sovereignty.", "drill.", "compliance.", "gov.", "ticket.", "partner.")
 
 
 class CustodyError(Exception):

@@ -2,7 +2,7 @@
 roles, SSO config, audit log."""
 import uuid
 from datetime import datetime, timedelta, timezone
-from sqlalchemy import String, Boolean, DateTime, ForeignKey
+from sqlalchemy import String, Boolean, DateTime, ForeignKey, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 from backend.shared.database import Base
 
@@ -61,6 +61,18 @@ class Organization(Base):
     # cierra el hueco de "cortar la salida a internet para siempre y
     # congelar el ultimo estado 'valido' cacheado".
     license_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # --- Consola multicliente (MSSP / partner) ---
+    # Un "partner" es una organizacion que administra a otras (sus clientes). Los clientes son organizaciones
+    # comunes con parent_org_id apuntando al partner: un solo nivel (un cliente no puede ser a la vez partner), asi
+    # el aislamiento entre tenants sigue siendo el mismo de siempre. Ver app/partner.py.
+    parent_org_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("organizations.id"), nullable=True, index=True)
+    is_partner: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, server_default="false")
+    # Marca propia (white label) que se ve en la interfaz y en los informes: nombre, color #RRGGBB y logo PNG/JPEG
+    # en data URI (validados al guardar). Vacio = la de TERO. Un cliente sin marca propia usa la de su partner.
+    brand_name: Mapped[str] = mapped_column(String(60), default="", nullable=False, server_default="")
+    brand_color: Mapped[str] = mapped_column(String(7), default="", nullable=False, server_default="")
+    brand_logo: Mapped[str] = mapped_column(Text, default="", nullable=False, server_default="")
 
     users: Mapped[list["User"]] = relationship(back_populates="organization")
     sso_config: Mapped["SsoConfig | None"] = relationship(back_populates="organization", uselist=False)

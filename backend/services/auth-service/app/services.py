@@ -91,12 +91,27 @@ def is_org_active(org: Organization) -> bool:
     agregar una verificacion cruzada contra auth-service en cada request
     de los otros 10 microservicios."""
     now = datetime.now(timezone.utc)
-    if org.subscription_expires_at <= now:
+    expires = org.subscription_expires_at
+    if expires.tzinfo is None:  # SQLite (tests) devuelve fechas sin zona; Postgres las devuelve con zona
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires <= now:
         return False
     if license_check.is_configured() and org.license_last_checked_at is not None:
-        if now - org.license_last_checked_at > timedelta(days=LICENSE_GRACE_DAYS):
+        checked = org.license_last_checked_at
+        if checked.tzinfo is None:
+            checked = checked.replace(tzinfo=timezone.utc)
+        if now - checked > timedelta(days=LICENSE_GRACE_DAYS):
             return False
     return True
+
+
+async def org_active(db: AsyncSession, org: Organization) -> bool:
+    """Un cliente de un partner esta activo mientras lo este su partner (la suscripcion se paga una sola vez); el resto, segun la suya."""
+    if org.parent_org_id:
+        parent = await get_organization_by_id(db, org.parent_org_id)
+        if parent is not None:
+            return is_org_active(parent)
+    return is_org_active(org)
 
 
 async def extend_subscription(db: AsyncSession, organization_id: str, days: int) -> Organization | None:

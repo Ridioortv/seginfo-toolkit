@@ -69,7 +69,10 @@ function makeClient(baseURL: string): AxiosInstance {
           // no existe -- no hay como recuperar la sesion sin volver a
           // loguearse. logout() limpia el store; ProtectedRoute (que lee
           // accessToken de forma reactiva) redirige solo a /login.
-          useAuthStore.getState().logout();
+          // Si estaba dentro de un cliente (token corto sin refresh), se vuelve a la consola del partner en vez de cerrar sesion.
+          const st = useAuthStore.getState();
+          if (st.partnerSession) st.leaveClient();
+          else st.logout();
         }
       }
       return Promise.reject(error);

@@ -35,6 +35,7 @@ from app import exception_service
 from app import executive_service
 from app import executive_models  # noqa: F401  (registra la tabla)
 from app.executive_routes import router as executive_router
+from app.partner_routes import router as partner_router
 from backend.shared import egress
 
 logger = configure_logging("case-service")
@@ -108,6 +109,7 @@ app.include_router(vendor_router)
 app.include_router(vendor_public_router)
 app.include_router(exception_router)
 app.include_router(executive_router)
+app.include_router(partner_router)
 
 
 @app.get("/health")

@@ -332,6 +332,8 @@ export interface OrganizationOut {
   // el listado de GET /auth/organizations no los necesita.
   subscription_expires_at?: string;
   license_last_checked_at?: string | null;
+  is_partner?: boolean;
+  parent_org_id?: string | null;
 }
 
 export interface SubscriptionCancelOut {

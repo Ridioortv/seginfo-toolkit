@@ -15,6 +15,7 @@ import Cloud from "./pages/Cloud";
 import CodeRepos from "./pages/CodeRepos";
 import Trust from "./pages/Trust";
 import Executive from "./pages/Executive";
+import Partner from "./pages/Partner";
 import Governance from "./pages/Governance";
 import Soar from "./pages/Soar";
 import Cases from "./pages/Cases";
@@ -62,6 +63,7 @@ export default function App() {
             <Route path="/code-repos" element={<CodeRepos />} />
             <Route path="/ai-governance" element={<Governance />} />
             <Route path="/executive" element={<Executive />} />
+            <Route path="/partner" element={<Partner />} />
             <Route path="/trust" element={<Trust />} />
             <Route path="/soar" element={<Soar />} />
             <Route path="/cases" element={<Cases />} />

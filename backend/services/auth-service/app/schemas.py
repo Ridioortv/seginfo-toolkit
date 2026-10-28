@@ -45,6 +45,8 @@ class OrganizationOut(BaseModel):
     is_active: bool
     subscription_expires_at: datetime
     license_last_checked_at: datetime | None = None
+    is_partner: bool = False
+    parent_org_id: str | None = None
 
     class Config:
         from_attributes = True

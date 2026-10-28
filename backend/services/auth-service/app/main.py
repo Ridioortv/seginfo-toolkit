@@ -66,6 +66,7 @@ from app.dependencies import (
     require_service_token,
 )
 from app import services, oidc, password_reset
+from app.partner import router as partner_router
 from backend.shared.security import hash_password, verify_password
 
 logger = configure_logging("auth-service")
@@ -113,7 +114,12 @@ async def _reject_if_org_inactive(db: AsyncSession, org, actor_email: str) -> No
     las pasarelas disponibles y un pay_token, para que el frontend muestre los
     botones "Pagar con ..." -- ver Login.tsx. El link se genera recien al hacer
     clic (POST /auth/payment-link), no aca."""
-    if services.is_org_active(org):
+    if not org.is_active:
+        # cliente suspendido por su partner
+        await services.record_audit_event(db, actor_email, "auth.login.blocked_suspended", org.id)
+        await db.commit()
+        raise HTTPException(status_code=403, detail="Esta organizacion esta suspendida. Contacta a tu proveedor.")
+    if await services.org_active(db, org):
         return
     # Antes de bloquear, volver a consultar al servidor central: si el cliente
     # acaba de pagar (desde este mismo 402 o desde la pasarela), el webhook ya
@@ -126,7 +132,7 @@ async def _reject_if_org_inactive(db: AsyncSession, org, actor_email: str) -> No
         await services.refresh_license_from_central_server(db, org.id)
         await db.commit()
         await db.refresh(org)
-        if services.is_org_active(org):
+        if await services.org_active(db, org):
             return
     login_attempts_total.labels(outcome="failure").inc()
     await services.record_audit_event(db, actor_email, "auth.login.blocked_subscription", org.id)
@@ -233,6 +239,16 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS license_last_checked_at TIMESTAMPTZ"
         ))
+        # Consola multicliente (partner) y marca propia -- ver app/partner.py
+        for ddl in (
+            "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS parent_org_id VARCHAR(36) REFERENCES organizations(id)",
+            "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS is_partner BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS brand_name VARCHAR(60) NOT NULL DEFAULT ''",
+            "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS brand_color VARCHAR(7) NOT NULL DEFAULT ''",
+            "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS brand_logo TEXT NOT NULL DEFAULT ''",
+            "CREATE INDEX IF NOT EXISTS ix_organizations_parent_org_id ON organizations (parent_org_id)",
+        ):
+            await conn.execute(text(ddl))
     async with SessionLocal() as session:
         await services.promote_first_user_to_admin_if_needed(session)
         await services.backfill_users_without_organization(session)
@@ -244,6 +260,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="TERO Security Auth Service", version="0.1.0", lifespan=lifespan)
+app.include_router(partner_router)
 egress.install("auth-service", app)
 app.add_middleware(
     CORSMiddleware,
@@ -871,7 +888,7 @@ async def internal_get_organization(
     org = await services.get_organization_by_id(db, org_id)
     if org is None:
         raise HTTPException(status_code=404, detail="Organizacion no encontrada")
-    return {"id": org.id, "name": org.name, "slug": org.slug}
+    return {"id": org.id, "name": org.name, "slug": org.slug, "is_partner": org.is_partner, "parent_org_id": org.parent_org_id}
 
 
 @app.get("/auth/organizations/{org_id}/sso", response_model=SsoConfigOut | None)

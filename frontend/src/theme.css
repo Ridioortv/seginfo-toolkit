@@ -1071,3 +1071,24 @@ td.panel { border: none; border-bottom: 1px solid var(--border); margin: 0; }
 .gov-form-grid input, .gov-form-grid select, .gov-form-grid textarea { width: 100%; }
 .gov-pager { display: flex; gap: 10px; align-items: center; justify-content: flex-end; margin-top: 12px; font-size: 0.85rem; color: var(--text-secondary); }
 .gov-hash { font-family: var(--font-mono, monospace); font-size: 0.76rem; }
+
+
+/* ----- Marca propia (white label): el partner / cliente reemplaza el color de acento ----- */
+:root[data-brand] {
+  --btn-from: var(--brand);
+  --btn-to: color-mix(in srgb, var(--brand), black 22%);
+  --btn-text: var(--brand-text);
+  --accent: color-mix(in srgb, var(--brand), white 30%);
+  --accent-text: color-mix(in srgb, var(--brand), white 45%);
+  --accent-soft: color-mix(in srgb, var(--brand) 16%, transparent);
+}
+:root[data-brand][data-theme="light"] {
+  --accent: color-mix(in srgb, var(--brand), black 12%);
+  --accent-text: color-mix(in srgb, var(--brand), black 25%);
+}
+.brand-logo { height: 34px; max-width: 120px; width: auto; object-fit: contain; border-radius: 6px; flex-shrink: 0; }
+.acting-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 8px 20px; font-size: 0.85rem; font-weight: 600;
+  background: var(--warning-soft); color: var(--text-primary); border-bottom: 2px solid var(--warning);
+}
