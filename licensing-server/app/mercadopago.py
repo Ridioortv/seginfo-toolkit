@@ -228,6 +228,18 @@ async def create_subscription_approval_link(license_key: str, payer_email: str |
                 )
             resp = retry
         _raise_for_mp_status(resp, "crear la suscripcion")
+        if resp.status_code == 400 and "real or test" in resp.text and "payer_email" in payload:
+            # Cobrador y pagador de distinto tipo (tipicamente credenciales de PRUEBA
+            # con el email REAL del cliente, o un MP_TEST_PAYER_EMAIL mal cargado).
+            # En vez de bloquear el pago, se reintenta UNA vez sin pagador: el
+            # comprador inicia sesion con su cuenta en el checkout. Si tampoco
+            # alcanza, se informa el diagnostico completo de abajo.
+            origin = "MP_TEST_PAYER_EMAIL" if MP_TEST_PAYER_EMAIL else "el email del modal"
+            logger.warning("Mercado Pago: el pagador %s (de %s) no es del mismo tipo que el cobrador; se reintenta sin pagador", payer_email, origin)
+            retry_payload = {k: v for k, v in payload.items() if k != "payer_email"}
+            retry = await client.post(f"{_API}/preapproval", headers=_headers(), json=retry_payload)
+            if retry.status_code < 400:
+                resp = retry
         if resp.status_code == 400 and "real or test" in resp.text:
             origin = "MP_TEST_PAYER_EMAIL" if MP_TEST_PAYER_EMAIL else "el email del modal"
             sent = f"{payer_email} (de {origin})" if payer_email else "ninguno"

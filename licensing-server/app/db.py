@@ -137,6 +137,13 @@ def init_db() -> None:
             "PRIMARY KEY (gateway, external_id))"
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_subscriptions_license ON subscriptions (license_key)")
+        # Valores chicos que el propio servidor necesita recordar entre reinicios
+        # (por ejemplo, el plan de PayPal que creo solo cuando el configurado no
+        # existia). En Render el disco es descartable: tiene que vivir en la base.
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS app_settings ("
+            "name TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
         # Bases anteriores a esta tabla: se registran las suscripciones que ya
         # figuraban en `clients` (como pending; el estado real se consulta a la
         # pasarela cuando hace falta).
@@ -343,4 +350,22 @@ def append_note(license_key: str, line: str) -> None:
         cur.execute(
             _adapt("UPDATE clients SET notes = ? WHERE license_key = ?"),
             ("\n".join(lines), license_key),
+        )
+
+
+def get_setting(name: str) -> str | None:
+    with get_cursor() as cur:
+        cur.execute(_adapt("SELECT value FROM app_settings WHERE name = ?"), (name,))
+        row = cur.fetchone()
+        return row["value"] if row else None
+
+
+def set_setting(name: str, value: str) -> None:
+    with get_cursor() as cur:
+        cur.execute(
+            _adapt(
+                "INSERT INTO app_settings (name, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at"
+            ),
+            (name, value, _now_iso()),
         )
