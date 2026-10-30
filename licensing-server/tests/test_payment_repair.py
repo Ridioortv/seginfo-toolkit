@@ -373,3 +373,134 @@ def test_health_reports_the_payments_revision_so_a_deploy_can_be_verified():
     with TestClient(main.app) as c:
         body = c.get("/health").json()
     assert body["status"] == "ok" and body["payments_revision"] == main.PAYMENTS_REVISION
+
+
+# --------------------------------------------- el boton no se queda cargando
+def test_paypal_token_is_reused_between_calls(pp):
+    tokens = []
+
+    def handler(request):
+        if request.url.path == "/v1/oauth2/token":
+            tokens.append(1)
+            return httpx.Response(200, json={"access_token": "tok", "expires_in": 32400})
+        return httpx.Response(200, json={"status": "ACTIVE"})
+
+    _patch_http(pp, paypal, handler)
+
+    async def three():
+        return [await paypal.get_subscription_status(f"I-{i}") for i in range(3)]
+
+    assert asyncio.run(three()) == ["ACTIVE"] * 3
+    assert len(tokens) == 1
+
+
+def test_paypal_token_without_expiry_is_not_cached(pp):
+    tokens = []
+
+    def handler(request):
+        if request.url.path == "/v1/oauth2/token":
+            tokens.append(1)
+            return httpx.Response(200, json={"access_token": "tok"})
+        return httpx.Response(200, json={"status": "ACTIVE"})
+
+    _patch_http(pp, paypal, handler)
+
+    async def two():
+        await paypal.get_subscription_status("I-1")
+        await paypal.get_subscription_status("I-2")
+
+    asyncio.run(two())
+    assert len(tokens) == 2
+
+
+def test_many_old_links_do_not_serialize_the_gateway_checks(pp):
+    """Cada link viejo suma una consulta a PayPal; si fueran una tras otra (0.2 s
+    cada una) 12 links tardarian > 2.4 s. En paralelo tardan ~una consulta."""
+    import time
+
+    db.init_db()
+    key = "k-many-old"
+    with TestClient(main.app) as c:
+        assert c.post("/admin/clients", headers=ADMIN, json={"org_name": "A", "license_key": key}).status_code == 201
+        for i in range(12):
+            db.add_subscription(key, "paypal", f"I-OLD-{i}", "pending")
+
+        async def slow_status(gateway, external_id):
+            await asyncio.sleep(0.2)
+            return "CANCELLED"
+
+        pp.setattr(main, "_gateway_status", slow_status)
+        pp.setattr(paypal, "create_subscription_approval_link", _fake_link("I-REPAIR-NEW1"))
+        t0 = time.monotonic()
+        r = c.post(f"/license/{key}/paypal/subscription-link", json={})
+        elapsed = time.monotonic() - t0
+    assert r.status_code == 200, r.text
+    assert elapsed < 1.5, f"el chequeo de links viejos tardo {elapsed:.1f}s"
+
+
+def _fake_link(sub_id):
+    async def fake(license_key, plan_id=None, payer_email=None):
+        return sub_id, "https://paypal.test/approve"
+
+    return fake
+
+
+def test_old_pending_links_are_still_cancelled_but_after_the_response(pp):
+    db.init_db()
+    key = "k-bg-cancel"
+    cancelled = []
+    with TestClient(main.app) as c:
+        assert c.post("/admin/clients", headers=ADMIN, json={"org_name": "A", "license_key": key}).status_code == 201
+        db.add_subscription(key, "paypal", "I-OLD-PENDING", "pending")
+
+        async def status(gateway, external_id):
+            return "APPROVAL_PENDING"
+
+        async def cancel(gateway, external_id):
+            cancelled.append(external_id)
+
+        pp.setattr(main, "_gateway_status", status)
+        pp.setattr(main, "_gateway_cancel", cancel)
+        pp.setattr(paypal, "create_subscription_approval_link", _fake_link("I-REPAIR-NEW2"))
+        r = c.post(f"/license/{key}/paypal/subscription-link", json={})
+    assert r.status_code in (200, 409), r.text
+    if r.status_code == 200:
+        assert cancelled == ["I-OLD-PENDING"]
+
+
+def test_live_link_check_failure_of_the_requested_gateway_is_still_a_502(pp):
+    db.init_db()
+    key = "k-502-check"
+    with TestClient(main.app) as c:
+        assert c.post("/admin/clients", headers=ADMIN, json={"org_name": "A", "license_key": key}).status_code == 201
+        db.add_subscription(key, "paypal", "I-BROKEN", "pending")
+
+        async def boom(gateway, external_id):
+            raise paypal.PayPalError("PayPal caido")
+
+        pp.setattr(main, "_gateway_status", boom)
+        r = c.post(f"/license/{key}/paypal/subscription-link", json={})
+    assert r.status_code == 502 and "PayPal caido" in r.json()["detail"]
+
+
+def test_mp_retry_failure_with_another_reason_is_reported_briefly(mpx):
+    calls = []
+
+    def handler(request):
+        if "dolarapi" in str(request.url):
+            return httpx.Response(200, json={"venta": 1400})
+        if request.url.path == "/users/me":
+            return httpx.Response(200, json={"email": "test_user_698@testuser.com", "tags": ["test_user"]})
+        body = json.loads(request.content)
+        calls.append(body)
+        if "payer_email" in body:
+            return httpx.Response(400, json=MP_REAL_OR_TEST)
+        return httpx.Response(400, json={"message": "payer_email is required", "status": 400})
+
+    _patch_http(mpx, mp, handler)
+    with pytest.raises(mp.MercadoPagoError) as exc:
+        _mp_create("manuelangiulli11@gmail.com")
+    msg = str(exc.value)
+    assert "Sin pagador: HTTP 400" in msg and "payer_email is required" in msg
+    assert "MP_TEST_PAYER_EMAIL" in msg and len(calls) == 2
+

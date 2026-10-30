@@ -20,14 +20,16 @@ instalacion on-prem necesita poder consultarlo sin credenciales previas
 mas que su propia license_key, y la respuesta viene firmada (nunca
 autenticada por sesion) para que ningun intermediario pueda alterarla
 sin que el cliente lo detecte."""
+import asyncio
 import logging
 import os
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -81,7 +83,7 @@ def require_admin(authorization: str = Header(default="")) -> None:
 # Identifica que version de la logica de cobro esta corriendo: abrir /health en el
 # navegador despues de un deploy confirma si Render tomo el codigo nuevo (un
 # servidor viejo no trae esta clave). No es un secreto ni cambia con la config.
-PAYMENTS_REVISION = "2026-10-29-paypal-autoplan-mp-retry"
+PAYMENTS_REVISION = "2026-10-29b-fast-links"
 
 
 @app.get("/health")
@@ -240,17 +242,27 @@ async def _refuse_if_subscription_already_active(row, requested: str = "") -> No
     con un aviso en el log: un PayPal roto no debe impedir pagar con Mercado Pago
     (y al reves). Si falla la consulta de la MISMA pasarela, se corta con 502:
     el link tampoco se podria crear."""
-    for sub in db.list_subscriptions(row["license_key"], statuses=("pending", "active")):
+    # Las consultas a las pasarelas salen EN PARALELO: una licencia con muchos links
+    # viejos (cada prueba deja uno) hacia una cola de consultas una tras otra y el
+    # boton de pago se quedaba cargando.
+    started = time.monotonic()
+    subs = [
+        sub for sub in db.list_subscriptions(row["license_key"], statuses=("pending", "active"))
+        if _gateway_configured(sub["gateway"])
+    ]
+    results = await asyncio.gather(
+        *(_gateway_status(sub["gateway"], sub["external_id"]) for sub in subs), return_exceptions=True
+    )
+    logger.info("chequeo de suscripciones previas: %d consultadas en %.1fs", len(subs), time.monotonic() - started)
+    for sub, state in zip(subs, results):
         gateway, external_id = sub["gateway"], sub["external_id"]
-        if not _gateway_configured(gateway):
-            continue
-        try:
-            state = await _gateway_status(gateway, external_id)
-        except _gateway_errors() as exc:
+        if isinstance(state, _gateway_errors()):
             if requested == gateway:
-                raise HTTPException(status_code=502, detail=str(exc)) from exc
-            logger.warning("no se pudo verificar la suscripcion de %s (se omite el chequeo): %s", _GATEWAY_NAMES[gateway], exc)
+                raise HTTPException(status_code=502, detail=str(state)) from state
+            logger.warning("no se pudo verificar la suscripcion de %s (se omite el chequeo): %s", _GATEWAY_NAMES[gateway], state)
             continue
+        if isinstance(state, BaseException):
+            raise state
         if state in _LIVE_STATES[gateway]:
             raise HTTPException(
                 status_code=409,
@@ -497,7 +509,7 @@ def license_history(license_key: str):
 
 
 @app.post("/license/{license_key}/paypal/subscription-link", response_model=PaypalLinkOut)
-async def paypal_public_subscription_link(license_key: str, payload: PaypalPublicLinkRequest):
+async def paypal_public_subscription_link(license_key: str, payload: PaypalPublicLinkRequest, background: BackgroundTasks):
     """Autoservicio (publico a proposito, igual que el resto de
     /license/{license_key}/...: se autentica solo con conocer la license_key).
     Lo llama la instalacion on-prem cuando el login queda bloqueado por falta
@@ -516,7 +528,9 @@ async def paypal_public_subscription_link(license_key: str, payload: PaypalPubli
     except paypal.PayPalError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     db.set_paypal_subscription_id(license_key, subscription_id)
-    await _cancel_previous_pending(license_key, "paypal", subscription_id)
+    # Cancelar los links viejos es "mejor esfuerzo": se hace DESPUES de responder, el
+    # cliente no tiene por que esperar N viajes a la pasarela para recibir su link.
+    background.add_task(_cancel_previous_pending, license_key, "paypal", subscription_id)
     logger.info("link de pago de PayPal generado (autoservicio)", extra={"license_key": license_key})
     return PaypalLinkOut(subscription_id=subscription_id, approval_url=approval_url)
 
@@ -560,7 +574,7 @@ async def paypal_cancel_subscription(license_key: str):
 
 
 @app.post("/license/{license_key}/mercadopago/subscription-link", response_model=MercadoPagoLinkOut)
-async def mercadopago_public_subscription_link(license_key: str, payload: MercadoPagoLinkRequest):
+async def mercadopago_public_subscription_link(license_key: str, payload: MercadoPagoLinkRequest, background: BackgroundTasks):
     """Autoservicio (publico a proposito, igual que el de PayPal: se
     autentica solo con conocer la license_key). Genera el link de la
     suscripcion de Mercado Pago (debito cada 30 dias, en pesos: USD 250
@@ -578,7 +592,7 @@ async def mercadopago_public_subscription_link(license_key: str, payload: Mercad
     except mercadopago.MercadoPagoError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     db.set_mp_preapproval_id(license_key, preapproval_id)
-    await _cancel_previous_pending(license_key, "mercadopago", preapproval_id)
+    background.add_task(_cancel_previous_pending, license_key, "mercadopago", preapproval_id)
     logger.info("link de pago de Mercado Pago generado (autoservicio)", extra={"license_key": license_key})
     return MercadoPagoLinkOut(subscription_id=preapproval_id, approval_url=init_point, amount_ars=amount)
 

@@ -20,6 +20,7 @@ import base64
 import hashlib
 import logging
 import os
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -57,6 +58,11 @@ except ValueError:
     PAYPAL_PERIOD_DAYS = 30
 _known_missing_plans: set[str] = set()
 _plan_lock: tuple | None = None
+# Token de acceso en memoria, MUY corto: antes cada llamada a PayPal pedia uno nuevo
+# (un viaje extra por cada consulta), y con varios links viejos eso eran decenas de
+# segundos. 5 minutos como maximo para que un secret rotado deje de servir pronto.
+_TOKEN_TTL_MAX = 300
+_token_cache: dict = {}
 
 # Eventos de PayPal que representan un pago efectivamente recibido --
 # unicos que disparan una extension de la licencia. Todo lo demas
@@ -199,6 +205,10 @@ async def _provision_plan(client: httpx.AsyncClient, token: str, stale: str | No
 
 
 async def _get_access_token(client: httpx.AsyncClient) -> str:
+    cache_key = (_base_url(), PAYPAL_CLIENT_ID, hashlib.sha256(PAYPAL_CLIENT_SECRET.encode()).hexdigest()[:12])
+    cached = _token_cache.get(cache_key)
+    if cached and cached[1] > time.monotonic():
+        return cached[0]
     basic = base64.b64encode(f"{PAYPAL_CLIENT_ID}:{PAYPAL_CLIENT_SECRET}".encode()).decode()
     resp = await client.post(
         f"{_base_url()}/v1/oauth2/token",
@@ -216,7 +226,14 @@ async def _get_access_token(client: httpx.AsyncClient) -> str:
         )
     if resp.status_code >= 400:
         raise PayPalError(f"PayPal no entrego el token de acceso: HTTP {resp.status_code}")
-    return resp.json()["access_token"]
+    body = resp.json()
+    try:
+        ttl = min(float(body.get("expires_in", 0)) - 60, _TOKEN_TTL_MAX)
+    except (TypeError, ValueError):
+        ttl = 0.0
+    if ttl > 0:
+        _token_cache[cache_key] = (body["access_token"], time.monotonic() + ttl)
+    return body["access_token"]
 
 
 async def create_subscription_approval_link(
