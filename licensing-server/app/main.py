@@ -83,7 +83,7 @@ def require_admin(authorization: str = Header(default="")) -> None:
 # Identifica que version de la logica de cobro esta corriendo: abrir /health en el
 # navegador despues de un deploy confirma si Render tomo el codigo nuevo (un
 # servidor viejo no trae esta clave). No es un secreto ni cambia con la config.
-PAYMENTS_REVISION = "2026-10-29b-fast-links"
+PAYMENTS_REVISION = "2026-10-30-quiet-cancel"
 
 
 @app.get("/health")
@@ -273,6 +273,61 @@ async def _refuse_if_subscription_already_active(row, requested: str = "") -> No
             db.set_subscription_status(gateway, external_id, "cancelled")
 
 
+# Un link viejo que no se puede consultar ni cancelar despues de este tiempo se da de
+# baja localmente ("stale"): ya no se reintenta en cada clic (cada reintento era un viaje
+# a la pasarela y una linea mas en el historial).
+STALE_LINK_AFTER = timedelta(hours=24)
+CANCEL_CONCURRENCY = 5
+
+
+def _is_old(created_at: str | None, age: timedelta) -> bool:
+    try:
+        created = datetime.fromisoformat(str(created_at))
+    except ValueError:
+        return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - created > age
+
+
+def _note_once(license_key: str, external_id: str, line: str) -> None:
+    """El historial guarda solo las ultimas 50 lineas: repetir el mismo fallo en cada
+    clic desplazaba los pagos reales. Un fallo por link, una sola vez."""
+    row = db.get_client(license_key)
+    for existing in (row["notes"] or "").split("\n") if row else []:
+        if external_id in existing and "no se pudo" in existing:
+            return
+    db.append_note(license_key, line)
+
+
+async def _cancel_one_previous(license_key: str, sub) -> None:
+    gateway, external_id = sub["gateway"], sub["external_id"]
+    name = _GATEWAY_NAMES[gateway]
+    try:
+        state = await _gateway_status(gateway, external_id)
+        if state in _PENDING_STATES[gateway]:
+            await _gateway_cancel(gateway, external_id)
+            db.append_note(
+                license_key,
+                f"{name}: link de pago anterior ({external_id}) cancelado porque se genero uno nuevo",
+            )
+            db.set_subscription_status(gateway, external_id, "cancelled")
+        elif state not in _LIVE_STATES[gateway]:
+            db.set_subscription_status(gateway, external_id, "cancelled")
+    except _gateway_errors() as exc:
+        reason = str(exc)[:160]
+        logger.warning("no se pudo cancelar el link anterior %s de %s: %s", external_id, name, reason)
+        if _is_old(sub["created_at"], STALE_LINK_AFTER):
+            db.set_subscription_status(gateway, external_id, "stale")
+            tail = "se deja de reintentar; si se paga, la repetida se cancela sola"
+        else:
+            tail = "si se paga, la repetida se cancela sola"
+        _note_once(
+            license_key, external_id,
+            f"{name}: no se pudo cancelar el link de pago anterior ({external_id}): {reason}; {tail}",
+        )
+
+
 async def _cancel_previous_pending(license_key: str, keep_gateway: str, keep_id: str) -> None:
     """Al generar un link nuevo, cancela los links ANTERIORES de esa licencia que
     el cliente todavia no aprobo: si no, siguen siendo pagables y se puede pagar
@@ -280,27 +335,17 @@ async def _cancel_previous_pending(license_key: str, keep_gateway: str, keep_id:
     pasarela falla no se frena el link nuevo, solo queda en el log y en el
     historial; y si algun link viejo igual se paga, la regla de "una sola
     suscripcion activa" (ver _claim_active_slot) cancela la repetida."""
-    for sub in db.list_subscriptions(license_key, statuses=("pending",)):
-        gateway, external_id = sub["gateway"], sub["external_id"]
-        if (gateway, external_id) == (keep_gateway, keep_id) or not _gateway_configured(gateway):
-            continue
-        try:
-            state = await _gateway_status(gateway, external_id)
-            if state in _PENDING_STATES[gateway]:
-                await _gateway_cancel(gateway, external_id)
-                db.append_note(
-                    license_key,
-                    f"{_GATEWAY_NAMES[gateway]}: link de pago anterior ({external_id}) cancelado porque se genero uno nuevo",
-                )
-                db.set_subscription_status(gateway, external_id, "cancelled")
-            elif state not in _LIVE_STATES[gateway]:
-                db.set_subscription_status(gateway, external_id, "cancelled")
-        except _gateway_errors() as exc:
-            logger.warning("no se pudo cancelar el link anterior %s de %s: %s", external_id, _GATEWAY_NAMES[gateway], exc)
-            db.append_note(
-                license_key,
-                f"{_GATEWAY_NAMES[gateway]}: no se pudo cancelar el link de pago anterior ({external_id}); si se paga, la repetida se cancela sola",
-            )
+    subs = [
+        sub for sub in db.list_subscriptions(license_key, statuses=("pending",))
+        if (sub["gateway"], sub["external_id"]) != (keep_gateway, keep_id) and _gateway_configured(sub["gateway"])
+    ]
+    gate = asyncio.Semaphore(CANCEL_CONCURRENCY)
+
+    async def _guarded(sub):
+        async with gate:
+            await _cancel_one_previous(license_key, sub)
+
+    await asyncio.gather(*(_guarded(sub) for sub in subs))
 
 
 async def _claim_active_slot(license_key: str, gateway: str, external_id: str) -> bool:

@@ -504,3 +504,79 @@ def test_mp_retry_failure_with_another_reason_is_reported_briefly(mpx):
     assert "Sin pagador: HTTP 400" in msg and "payer_email is required" in msg
     assert "MP_TEST_PAYER_EMAIL" in msg and len(calls) == 2
 
+
+# ------------------------------------------- links viejos que no se pueden cancelar
+def _old_failing_setup(pp, key, ids, hours_old):
+    from datetime import datetime, timedelta, timezone
+
+    db.init_db()
+    for i in ids:
+        db.add_subscription(key, "paypal", i, "pending")
+        old = (datetime.now(timezone.utc) - timedelta(hours=hours_old)).isoformat()
+        with db.get_cursor() as cur:
+            cur.execute(db._adapt("UPDATE subscriptions SET created_at = ? WHERE external_id = ?"), (old, i))
+    calls = []
+
+    async def status(gateway, external_id):
+        calls.append(external_id)
+        return "APPROVAL_PENDING"
+
+    async def cancel(gateway, external_id):
+        raise paypal.PayPalError("PayPal rechazo la cancelacion: 400 INVALID")
+
+    pp.setattr(main, "_gateway_status", status)
+    pp.setattr(main, "_gateway_cancel", cancel)
+    pp.setattr(paypal, "create_subscription_approval_link", _fake_link(f"I-QC-{key}"))
+    return calls
+
+
+def _click(c, key):
+    return c.post(f"/license/{key}/paypal/subscription-link", json={})
+
+
+def test_failed_old_link_note_has_the_reason_and_is_written_once(pp):
+    key = "k-quiet1"
+    calls = _old_failing_setup(pp, key, ["I-QC-OLD1"], hours_old=1)
+    with TestClient(main.app) as c:
+        assert c.post("/admin/clients", headers=ADMIN, json={"org_name": "A", "license_key": key}).status_code == 201
+        # el cliente ya existe: la sub vieja se inserto antes, igual la lista por license_key
+        assert _click(c, key).status_code == 200
+        pp.setattr(paypal, "create_subscription_approval_link", _fake_link("I-QC-quiet1-b"))
+        assert _click(c, key).status_code == 200
+    notes = db.get_client(key)["notes"]
+    lines = [ln for ln in notes.split("\n") if "I-QC-OLD1" in ln]
+    assert len(lines) == 1, notes
+    assert "PayPal rechazo la cancelacion: 400 INVALID" in lines[0]
+    assert db.list_subscriptions(key, statuses=("pending",), gateway="paypal")  # reciente: sigue pendiente
+
+
+def test_old_link_that_keeps_failing_is_dropped_after_24_hours(pp):
+    key = "k-quiet2"
+    calls = _old_failing_setup(pp, key, ["I-QC-OLD2"], hours_old=48)
+    with TestClient(main.app) as c:
+        assert c.post("/admin/clients", headers=ADMIN, json={"org_name": "A", "license_key": key}).status_code == 201
+        assert _click(c, key).status_code == 200
+        first = len(calls)
+        pp.setattr(paypal, "create_subscription_approval_link", _fake_link("I-QC-quiet2-b"))
+        assert _click(c, key).status_code == 200
+    assert db.get_subscription("paypal", "I-QC-OLD2")["status"] == "stale"
+    assert "I-QC-OLD2" not in calls[first:]  # el segundo clic ni lo consulta
+    assert "se deja de reintentar" in db.get_client(key)["notes"]
+
+
+def test_cancelling_many_old_links_runs_in_parallel(pp):
+    import time
+
+    key = "k-quiet3"
+    ids = [f"I-QC-P{i}" for i in range(10)]
+    _old_failing_setup(pp, key, ids, hours_old=1)
+
+    async def slow_cancel(gateway, external_id):
+        await asyncio.sleep(0.2)
+
+    pp.setattr(main, "_gateway_cancel", slow_cancel)
+    t0 = time.monotonic()
+    asyncio.run(main._cancel_previous_pending(key, "paypal", "I-KEEP"))
+    # 10 x 0.2 s en serie = 2 s; con 5 en paralelo ~0.4 s
+    assert time.monotonic() - t0 < 1.2
+
