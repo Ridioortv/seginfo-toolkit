@@ -550,7 +550,7 @@ def test_failed_old_link_note_has_the_reason_and_is_written_once(pp):
     assert db.list_subscriptions(key, statuses=("pending",), gateway="paypal")  # reciente: sigue pendiente
 
 
-def test_old_link_that_keeps_failing_is_dropped_after_24_hours(pp):
+def test_old_link_that_keeps_failing_is_dropped_after_2_hours(pp):
     key = "k-quiet2"
     calls = _old_failing_setup(pp, key, ["I-QC-OLD2"], hours_old=48)
     with TestClient(main.app) as c:

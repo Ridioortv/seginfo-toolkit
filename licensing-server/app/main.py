@@ -83,7 +83,7 @@ def require_admin(authorization: str = Header(default="")) -> None:
 # Identifica que version de la logica de cobro esta corriendo: abrir /health en el
 # navegador despues de un deploy confirma si Render tomo el codigo nuevo (un
 # servidor viejo no trae esta clave). No es un secreto ni cambia con la config.
-PAYMENTS_REVISION = "2026-10-30-quiet-cancel"
+PAYMENTS_REVISION = "2026-10-30b-stale-2h"
 
 
 @app.get("/health")
@@ -273,10 +273,10 @@ async def _refuse_if_subscription_already_active(row, requested: str = "") -> No
             db.set_subscription_status(gateway, external_id, "cancelled")
 
 
-# Un link viejo que no se puede consultar ni cancelar despues de este tiempo se da de
+# Un link viejo (mas de 2 h) que no se puede consultar ni cancelar se da de
 # baja localmente ("stale"): ya no se reintenta en cada clic (cada reintento era un viaje
 # a la pasarela y una linea mas en el historial).
-STALE_LINK_AFTER = timedelta(hours=24)
+STALE_LINK_AFTER = timedelta(hours=2)
 CANCEL_CONCURRENCY = 5
 
 
