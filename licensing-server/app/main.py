@@ -78,9 +78,15 @@ def require_admin(authorization: str = Header(default="")) -> None:
         raise HTTPException(status_code=401, detail="Token de administrador invalido")
 
 
+# Identifica que version de la logica de cobro esta corriendo: abrir /health en el
+# navegador despues de un deploy confirma si Render tomo el codigo nuevo (un
+# servidor viejo no trae esta clave). No es un secreto ni cambia con la config.
+PAYMENTS_REVISION = "2026-10-29-paypal-autoplan-mp-retry"
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "licensing-server"}
+    return {"status": "ok", "service": "licensing-server", "payments_revision": PAYMENTS_REVISION}
 
 
 class ClientCreate(BaseModel):

@@ -367,3 +367,9 @@ def test_endpoint_returns_200_for_the_real_email_with_test_credentials(mpx):
         r = c.post("/license/k-mp-fix/mercadopago/subscription-link", json={"payer_email": "manuelangiulli11@gmail.com"})
     assert r.status_code == 200, r.text
     assert r.json()["approval_url"] == "https://mp.test/go" and r.json()["amount_ars"] == 350000
+
+
+def test_health_reports_the_payments_revision_so_a_deploy_can_be_verified():
+    with TestClient(main.app) as c:
+        body = c.get("/health").json()
+    assert body["status"] == "ok" and body["payments_revision"] == main.PAYMENTS_REVISION
