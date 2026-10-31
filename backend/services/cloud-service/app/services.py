@@ -22,6 +22,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.shared import egress
 from backend.shared.crypto import decrypt_secret, encrypt_secret
 from backend.shared.ingest_auth import ingest_headers
 from backend.shared.logging import configure_logging
@@ -217,6 +218,7 @@ def _severity_value(severity) -> str:
 def _get_boto3_session(account: CloudAccount):
     import boto3
 
+    egress.guard("amazonaws.com", "aws", "Leer la configuracion de la cuenta de AWS")
     access_key_id = decrypt_secret(account.access_key_id_encrypted)
     secret_access_key = decrypt_secret(account.secret_access_key_encrypted)
     return boto3.Session(

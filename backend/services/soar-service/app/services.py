@@ -6,6 +6,7 @@ ruta de codigo aca que ejecute algo contra un objetivo real."""
 from datetime import datetime, timezone
 from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
+from backend.shared import custody
 from backend.shared.logging import configure_logging
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
 from app.models import Playbook, PlaybookRun, PendingCase, RunStatus
@@ -71,7 +72,32 @@ async def _run_steps(db: AsyncSession, playbook: Playbook, context: dict, trigge
     run.finished_at = _now()
     await db.flush()
     await db.refresh(run)
+    refs = [f"run:{run.id}"] + ([f"alert:{run.alert_id}"] if run.alert_id else [])
+    await custody.record_event(
+        "soar.playbook_run", service="soar-service", organization_id=run.organization_id, actor=triggered_by,
+        subject_type="playbook_run", subject_id=run.id, refs=refs,
+        payload={
+            "playbook": playbook.name, "playbook_id": playbook.id, "status": run.status.value,
+            "triggered_by": triggered_by,
+            "steps": [{"action": s.get("action"), "success": s.get("success"), "simulated": s.get("simulated"),
+                       "message": str(s.get("message", ""))[:300]} for s in steps_log],
+        },
+    )
     return run
+
+
+def tags_match(playbook_tags: list[str] | None, alert_tags: list[str] | None) -> bool:
+    """Un playbook sin rule_tags aplica a cualquier alerta (comportamiento de
+    los playbooks incluidos). Con rule_tags, solo corre si la regla que
+    disparo comparte al menos un tag (sin distinguir mayusculas). Antes
+    rule_tags se guardaba pero nunca se usaba: un playbook de "fuerza bruta"
+    corria tambien sobre alertas de PowerShell."""
+    if not playbook_tags:
+        return True
+    wanted = {t.strip().lower() for t in playbook_tags if t and t.strip()}
+    if not wanted:
+        return True
+    return bool(wanted & {t.strip().lower() for t in (alert_tags or []) if t})
 
 
 async def trigger_playbooks(db: AsyncSession, payload) -> tuple[int, list[PlaybookRun]]:
@@ -87,7 +113,10 @@ async def trigger_playbooks(db: AsyncSession, payload) -> tuple[int, list[Playbo
         )
     )
     playbooks = list(result.scalars().all())
-    matched = [p for p in playbooks if _severity_meets_minimum(payload.severity, p.min_severity)]
+    matched = [
+        p for p in playbooks
+        if _severity_meets_minimum(payload.severity, p.min_severity) and tags_match(p.rule_tags, payload.rule_tags)
+    ]
 
     context_base = {
         "event": payload.event,
@@ -108,7 +137,13 @@ async def trigger_playbooks(db: AsyncSession, payload) -> tuple[int, list[Playbo
 async def run_playbook_manually(db: AsyncSession, playbook: Playbook, payload, organization_id: str) -> PlaybookRun:
     context = {
         "event": payload.event,
-        "alert": {"id": payload.alert_id, "severity": payload.event.get("severity", "medium"), "rule_name": ""},
+        "alert": {
+            "id": payload.alert_id,
+            "severity": payload.event.get("severity", "medium"),
+            # Sin esto, los casos/tickets/avisos de una corrida manual quedaban
+            # titulados "Alerta medium: " (nombre de regla vacio).
+            "rule_name": payload.event.get("rule_name") or f"ejecucion manual de {playbook.name}",
+        },
         "db": db,
         "organization_id": organization_id,
     }

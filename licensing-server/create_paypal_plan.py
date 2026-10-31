@@ -53,37 +53,11 @@ async def main(price: str, days: int) -> int:
         return 1
     async with httpx.AsyncClient(timeout=20) as client:
         token = await paypal._get_access_token(client)
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        base = paypal._base_url()
-
-        r = await client.post(
-            f"{base}/v1/catalogs/products", headers=headers,
-            json={"name": "TERO Security", "type": "SERVICE", "category": "SOFTWARE"},
-        )
-        if r.status_code >= 400:
-            print("PayPal rechazo la creacion del producto:", r.status_code, r.text[:400])
+        try:
+            plan_id = await paypal.create_plan(client, token, price, days)
+        except paypal.PayPalError as exc:
+            print(exc)
             return 1
-        product_id = r.json()["id"]
-
-        r = await client.post(
-            f"{base}/v1/billing/plans", headers=headers,
-            json={
-                "product_id": product_id,
-                "name": f"TERO Security USD {price} cada {days} dias",
-                "billing_cycles": [{
-                    "frequency": {"interval_unit": "DAY", "interval_count": days},
-                    "tenure_type": "REGULAR",
-                    "sequence": 1,
-                    "total_cycles": 0,
-                    "pricing_scheme": {"fixed_price": {"value": price, "currency_code": "USD"}},
-                }],
-                "payment_preferences": {"auto_bill_outstanding": True, "payment_failure_threshold": 3},
-            },
-        )
-        if r.status_code >= 400:
-            print("PayPal rechazo la creacion del plan:", r.status_code, r.text[:400])
-            return 1
-        plan_id = r.json()["id"]
     print(f"Plan creado en PayPal ({paypal.PAYPAL_ENV}): USD {price} cada {days} dias")
     print(f"PAYPAL_PLAN_ID={plan_id}")
     if _write_env_value(".env", "PAYPAL_PLAN_ID", plan_id):

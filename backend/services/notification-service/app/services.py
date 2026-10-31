@@ -15,6 +15,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.shared.logging import configure_logging
+from backend.shared import egress
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
 from backend.shared.ssrf_guard import validate_outbound_url, UnsafeUrlError
 from app.models import NotificationChannel, NotificationLog
@@ -125,6 +126,7 @@ async def _send_email(
         msg["Subject"] = subject
         msg["From"] = os.getenv("SMTP_FROM", "sentinelops@localhost")
         msg["To"] = to_addr
+        egress.guard(smtp_host, "smtp", "Envio de avisos por correo")
         with smtplib.SMTP(smtp_host, int(os.getenv("SMTP_PORT", "587")), timeout=10) as server:
             if os.getenv("SMTP_USER"):
                 server.starttls()
@@ -133,6 +135,19 @@ async def _send_email(
         return "sent", ""
     except Exception as exc:  # noqa: BLE001 -- reportamos cualquier fallo de envio, no lo escondemos
         return "failed", str(exc)
+
+
+_TEAMS_COLOR = {"critical": "Attention", "high": "Warning", "medium": "Accent", "low": "Good", "info": "Default"}
+
+
+def teams_payload(subject: str, body: str, severity: str) -> dict:
+    """Mensaje para Microsoft Teams (webhook de Workflows / Power Automate o conector clasico): una tarjeta adaptable simple."""
+    return {"type": "message", "attachments": [{
+        "contentType": "application/vnd.microsoft.card.adaptive", "contentUrl": None,
+        "content": {"$schema": "http://adaptivecards.io/schemas/adaptive-card.json", "type": "AdaptiveCard", "version": "1.4",
+                    "body": [{"type": "TextBlock", "text": f"[{(severity or 'info').upper()}] {subject}"[:300], "weight": "Bolder", "size": "Medium",
+                              "wrap": True, "color": _TEAMS_COLOR.get((severity or "info").lower(), "Default")},
+                             {"type": "TextBlock", "text": body[:3000], "wrap": True}]}}]}
 
 
 async def _send_webhook(channel: NotificationChannel, subject: str, body: str, severity: str) -> tuple[str, str]:
@@ -152,6 +167,8 @@ async def _send_webhook(channel: NotificationChannel, subject: str, body: str, s
     payload = {"subject": subject, "body": body, "severity": severity, "source": "sentinelops"}
     if channel.channel_type == "slack_webhook":
         payload = {"text": f"*[{severity.upper()}] {subject}*\n{body}"}
+    elif channel.channel_type == "teams_webhook":
+        payload = teams_payload(subject, body, severity)
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(url, json=payload)
@@ -187,9 +204,9 @@ async def send_notification(
         organization_id=channel.organization_id,
         channel_id=channel.id,
         channel_type=channel.channel_type,
-        subject=subject,
+        subject=subject[:500],  # columna String(500): un asunto mas largo daba 500 en Postgres
         body=body,
-        severity=severity,
+        severity=(severity or "info")[:20],
         status=status_,
         error=error,
     )

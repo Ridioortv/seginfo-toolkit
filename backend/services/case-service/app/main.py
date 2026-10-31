@@ -9,14 +9,34 @@ from prometheus_client import Counter, make_asgi_app
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.shared.database import get_db, engine, Base, SessionLocal
+from backend.shared.database import get_db, engine, Base, SessionLocal, wait_for_database
 from backend.shared.logging import configure_logging
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
+from backend.shared.db_errors import install_db_error_handlers
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import CaseCreate, CaseUpdate, CaseOut, TimelineEntryCreate, ImportResult
 from app.dependencies import get_current_claims, require_role
 from app import services
+from app import compliance_service
+from app import custody_models  # noqa: F401 -- registra la tabla de custodia
+from app.custody_routes import router as custody_router
+from app import egress_models  # noqa: F401 -- registra las tablas de la prueba de soberania
+from app.egress_routes import router as egress_router
+from app.closure_routes import router as closure_router
+from app.drill_routes import router as drill_router
+from app import compliance_models  # noqa: F401 -- registra las tablas de cumplimiento
+from app.compliance_routes import router as compliance_router
+from app import vendor_models  # noqa: F401 -- registra las tablas de proveedores
+from app.vendor_routes import router as vendor_router, public_router as vendor_public_router
+from app import exception_models  # noqa: F401 -- registra la tabla de excepciones de riesgo
+from app.exception_routes import router as exception_router
+from app import exception_service
+from app import executive_service
+from app import executive_models  # noqa: F401  (registra la tabla)
+from app.executive_routes import router as executive_router
+from app.partner_routes import router as partner_router
+from backend.shared import egress
 
 logger = configure_logging("case-service")
 cases_created_total = Counter("case_created_total", "Casos creados", ["priority", "source"])
@@ -50,6 +70,7 @@ async def _soar_sync_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await wait_for_database()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(text("ALTER TABLE cases ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"))
@@ -57,12 +78,19 @@ async def lifespan(app: FastAPI):
             f"UPDATE cases SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
         ))
     sync_task = asyncio.create_task(_soar_sync_loop())
+    snapshot_task = asyncio.create_task(compliance_service.snapshot_loop(SessionLocal, services.list_organization_ids))
+    exception_task = asyncio.create_task(exception_service.loop(SessionLocal))
+    executive_task = asyncio.create_task(executive_service.loop(SessionLocal, services.list_organization_ids))
     logger.info("case-service iniciado")
     yield
     sync_task.cancel()
+    snapshot_task.cancel()
+    exception_task.cancel()
+    executive_task.cancel()
 
 
 app = FastAPI(title="TERO Security Case Service", version="0.1.0", lifespan=lifespan)
+egress.install("case-service", app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -70,7 +98,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
+install_db_error_handlers(app)  # 409/422 claros en vez de 500 ante datos que la base rechaza
 app.mount("/metrics", make_asgi_app())
+app.include_router(custody_router)
+app.include_router(egress_router)
+app.include_router(closure_router)
+app.include_router(drill_router)
+app.include_router(compliance_router)
+app.include_router(vendor_router)
+app.include_router(vendor_public_router)
+app.include_router(exception_router)
+app.include_router(executive_router)
+app.include_router(partner_router)
 
 
 @app.get("/health")
@@ -101,7 +140,7 @@ async def create_case(
     para cualquier respuesta que no sea 2xx, que case-service importa
     despues por el camino service-to-service autenticado (ver
     services.import_pending_cases_from_soar, que SI emite su propio JWT)."""
-    case = await services.create_case(db, payload, org_id_from_claims(claims), claims.get("sub", ""))
+    case = await services.create_case(db, payload, org_id_from_claims(claims), (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     cases_created_total.labels(
         priority=payload.priority.value,
@@ -146,7 +185,7 @@ async def update_case(
             status_code=409,
             detail=f"Transicion de estado invalida: {case.status.value} -> {changes['status'].value}",
         )
-    case = await services.update_case(db, case, payload, claims.get("sub", ""))
+    case = await services.update_case(db, case, payload, (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     return case
 
@@ -161,7 +200,7 @@ async def add_timeline_entry(
     case = await services.get_case(db, case_id, org_id_from_claims(claims))
     if case is None:
         raise HTTPException(status_code=404, detail="Caso no encontrado")
-    case = await services.add_timeline_entry(db, case, payload, claims.get("sub", ""))
+    case = await services.add_timeline_entry(db, case, payload, (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     return case
 

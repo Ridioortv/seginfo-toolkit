@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { login, loginWithGoogle, mfaStatus, register } from "../services/api";
+import {
+  confirmRegistrationMfa, login, loginWithGoogle, mfaStatus, register, requestBlockedPaymentLink, type MfaEnrollOut,
+} from "../services/api";
+import MfaSetupCard from "../components/MfaSetupCard";
 import { useAuthStore } from "../store/auth";
-import { parseLoginError } from "../utils/loginError";
-import { PAYMENT_PROVIDERS, type PaymentProvider } from "../utils/payment";
+import { NO_PAYMENT_OFFER, parseLoginError, parsePaymentOffer } from "../utils/loginError";
+import { PAYMENT_PROVIDERS, isHttpUrl, type PaymentProvider } from "../utils/payment";
 import { generateClientState, storeClientState } from "../utils/ssoState";
 import Icon, { BrandMark } from "../components/Icon";
 import { LanguageSwitcher, useLangStore, type Lang } from "../i18n";
@@ -42,8 +45,15 @@ export default function Login() {
   const [totpCode, setTotpCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [paymentUrls, setPaymentUrls] = useState<Partial<Record<PaymentProvider, string>>>({});
+  // Oferta de pago del 402: pasarelas + pay_token. El link se pide al hacer clic.
+  const [payOffer, setPayOffer] = useState(NO_PAYMENT_OFFER);
+  const [payingWith, setPayingWith] = useState<PaymentProvider | null>(null);
+  const [payError, setPayError] = useState<string | null>(null);
+  const [openedPayUrl, setOpenedPayUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [orgSlug, setOrgSlug] = useState("");
+  // Despues de crear la cuenta: QR del MFA para vincularla (ver MfaSetupCard).
+  const [mfaSetup, setMfaSetup] = useState<{ enrollment: MfaEnrollOut; token: string } | null>(null);
   const setTokens = useAuthStore((s) => s.setTokens);
   const navigate = useNavigate();
   const googleButtonRef = useRef<HTMLDivElement>(null);
@@ -65,6 +75,35 @@ export default function Login() {
     const { message, paymentUrls: urls } = parseLoginError(err, fallback);
     setError(message);
     setPaymentUrls(urls);
+    setPayOffer(parsePaymentOffer(err));
+    setPayError(null);
+    setOpenedPayUrl(null);
+  }
+
+  function clearPayment() {
+    setPaymentUrls({});
+    setPayOffer(NO_PAYMENT_OFFER);
+    setPayError(null);
+    setOpenedPayUrl(null);
+  }
+
+  // Genera el link RECIEN ahora, solo de la pasarela elegida (no al fallar el
+  // login): asi no quedan links viejos pagables que puedan cobrar dos veces.
+  async function handlePay(provider: PaymentProvider) {
+    if (!payOffer.payToken || payingWith) return;
+    setPayingWith(provider);
+    setPayError(null);
+    try {
+      const url = await requestBlockedPaymentLink(payOffer.payToken, provider);
+      if (!isHttpUrl(url)) throw new Error("link invalido");
+      setOpenedPayUrl(url);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      setPayError(typeof detail === "string" && detail ? detail : "No se pudo generar el link de pago. Intenta de nuevo en un momento.");
+    } finally {
+      setPayingWith(null);
+    }
   }
 
   function handleSsoLogin(e: React.FormEvent) {
@@ -88,7 +127,7 @@ export default function Login() {
     async function handleGoogleCredential(response: { credential: string }) {
       setLoading(true);
       setError(null);
-      setPaymentUrls({});
+      clearPayment();
       try {
         const tokens = await loginWithGoogle(response.credential);
         setTokens(tokens.access_token, tokens.refresh_token);
@@ -128,7 +167,7 @@ export default function Login() {
     e.preventDefault();
     setLoading(true);
     setError(null);
-    setPaymentUrls({});
+    clearPayment();
     try {
       const tokens = await login(email, password, totpCode || undefined);
       setTokens(tokens.access_token, tokens.refresh_token);
@@ -157,7 +196,7 @@ export default function Login() {
     e.preventDefault();
     setLoading(true);
     setError(null);
-    setPaymentUrls({});
+    clearPayment();
     // BUG (corregido aca): antes esto envolvia register() Y el login()
     // posterior en el mismo try/catch, asi que si la cuenta se creaba bien
     // pero el login automatico fallaba (ej. 402 porque la organizacion
@@ -169,7 +208,10 @@ export default function Login() {
     // logica de 402 que el login normal) para el login automatico que le
     // sigue.
     try {
-      await register(email, password, fullName);
+      const created = await register(email, password, fullName);
+      // El QR se muestra YA, en esta misma pantalla, sin depender de que el login funcione
+      // (si la suscripcion esta vencida el login da 402 y el MFA igual queda vinculado).
+      setMfaSetup({ enrollment: created.mfa_setup, token: created.mfa_setup_token });
     } catch (err) {
       const axiosErr = err as { response?: { data?: { detail?: unknown } } };
       const detail = axiosErr?.response?.data?.detail;
@@ -178,27 +220,41 @@ export default function Login() {
           ? detail
           : "No se pudo crear la cuenta. Revisa que el email no este ya registrado y que la contrasena tenga al menos 12 caracteres.",
       );
-      setLoading(false);
-      return;
-    }
-    try {
-      const tokens = await login(email, password);
-      setTokens(tokens.access_token, tokens.refresh_token);
-      navigate("/");
-    } catch (err) {
-      // La cuenta ya se creo con exito en este punto -- este error es del
-      // login automatico que le sigue (ej. 402 de organizacion sin
-      // suscripcion al dia), no del registro.
-      applyLoginError(err, "La cuenta se creo, pero no se pudo iniciar sesion automaticamente. Ingresa con tu email y contrasena.");
     } finally {
       setLoading(false);
     }
   }
 
+  // Entra con las credenciales recien creadas. Si falla (ej. 402 por suscripcion vencida) vuelve
+  // al formulario de login mostrando el motivo y el boton de pago; la cuenta y el MFA ya existen.
+  async function enterAfterRegister(totp: string | undefined, next: () => void) {
+    try {
+      const tokens = await login(email, password, totp);
+      setTokens(tokens.access_token, tokens.refresh_token);
+      next();
+    } catch (err) {
+      setMfaSetup(null);
+      setMode("login");
+      setPassword("");
+      setTotpCode("");
+      applyLoginError(err, "La cuenta se creo, pero no se pudo iniciar sesion automaticamente. Ingresa con tu email y contrasena.");
+    }
+  }
+
+  async function handleMfaConfirm(code: string) {
+    if (!mfaSetup) return;
+    await confirmRegistrationMfa(mfaSetup.token, code); // si el codigo es invalido lanza y la tarjeta lo muestra
+    await enterAfterRegister(code, () => navigate("/"));
+  }
+
+  async function handleMfaSkip() {
+    await enterAfterRegister(undefined, () => navigate("/security", { state: { firstLogin: true } }));
+  }
+
   function toggleMode() {
     setMode((m) => (m === "login" ? "register" : "login"));
     setError(null);
-    setPaymentUrls({});
+    clearPayment();
   }
 
   return (
@@ -229,6 +285,13 @@ export default function Login() {
         <span className="login-copy">TERO Security</span>
       </section>
       <div className="login-side">
+      {mfaSetup ? (
+        <MfaSetupCard
+          enrollment={mfaSetup.enrollment}
+          onConfirm={handleMfaConfirm}
+          onSkip={handleMfaSkip}
+        />
+      ) : (
       <form className="login-card" onSubmit={mode === "login" ? handleSubmit : handleRegisterSubmit}>
         <h1>{mode === "login" ? "Bienvenido" : "Crea tu cuenta"}</h1>
         <p>{mode === "login" ? "Ingresa a la plataforma de seguridad de TERO Security" : "Crear una cuenta nueva en TERO Security"}</p>
@@ -258,6 +321,18 @@ export default function Login() {
         </div>
 
         {mode === "login" && (
+          <p className="empty-hint" style={{ margin: "-4px 0 12px", textAlign: "right" }}>
+            <button
+              type="button"
+              className="btn-link"
+              onClick={() => navigate("/olvide-mi-contrasena", { state: { email: email.trim() } })}
+            >
+              ¿Olvidaste tu contrasena?
+            </button>
+          </p>
+        )}
+
+        {mode === "login" && (
           <div className="field">
             <label htmlFor="totp">Codigo MFA de 6 digitos (si lo activaste)</label>
             <input id="totp" type="text" inputMode="numeric" autoComplete="one-time-code" value={totpCode} onChange={(e) => setTotpCode(e.target.value)} placeholder="123456" />
@@ -273,6 +348,41 @@ export default function Login() {
         </button>
 
         {error && <p className="error-text">{error}</p>}
+
+        {payOffer.payToken && payOffer.providers.length > 0 && (
+          <>
+            {PAYMENT_PROVIDERS.filter((p) => payOffer.providers.includes(p.id)).map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className="btn-primary"
+                disabled={payingWith !== null}
+                onClick={() => handlePay(p.id)}
+                style={{ marginTop: 8 }}
+              >
+                {payingWith === p.id
+                  ? "Generando link..."
+                  : payOffer.providers.length > 1
+                    ? `Pagar con ${p.label}`
+                    : "Pagar membresia"}
+              </button>
+            ))}
+            {payError && <p className="error-text">{payError}</p>}
+            {openedPayUrl && (
+              <p className="empty-hint" style={{ marginTop: 8 }}>
+                Si no se abrio la pagina de pago,{" "}
+                <a href={openedPayUrl} target="_blank" rel="noopener noreferrer">
+                  abrila desde aca
+                </a>
+                .
+              </p>
+            )}
+            <p className="empty-hint" style={{ marginTop: 8 }}>
+              Se abre la pagina de pago en una pestana nueva. Despues de pagar, esperá un minuto y volvé a
+              intentar ingresar -- el acceso se reactiva solo, no hace falta avisarle a nadie.
+            </p>
+          </>
+        )}
 
         {Object.keys(paymentUrls).length > 0 && (
           <>
@@ -327,6 +437,7 @@ export default function Login() {
           </>
         )}
       </form>
+      )}
       </div>
     </div>
   );

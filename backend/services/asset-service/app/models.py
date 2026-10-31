@@ -50,6 +50,7 @@ class Asset(Base):
         SAEnum(AssetCriticality, native_enum=False), default=AssetCriticality.medium
     )
     owner: Mapped[str] = mapped_column(String(255), default="")
+    business_unit: Mapped[str] = mapped_column(String(100), default="")
     tags: Mapped[list] = mapped_column(JSON, default=list)
     is_active: Mapped[bool] = mapped_column(default=True)
     notes: Mapped[str] = mapped_column(String(2000), default="")

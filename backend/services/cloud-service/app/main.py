@@ -16,10 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from backend.shared.database import get_db, engine, Base, SessionLocal
+from backend.shared.database import get_db, engine, Base, SessionLocal, wait_for_database
 from backend.shared.logging import configure_logging
+from backend.shared import egress
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
+from backend.shared.db_errors import install_db_error_handlers
 from backend.shared.tenancy import org_id_from_claims
 from app.models import CloudResourceType
 from app.schemas import CloudAccountCreate, CloudAccountOut, CloudFindingOut, CloudFindingUpdate, CloudResourceOut
@@ -38,6 +40,7 @@ scheduler = AsyncIOScheduler(timezone=_SCHEDULER_TZ)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await wait_for_database()
     async with engine.begin() as conn:
         # Tablas 100% nuevas (no ALTER de una tabla existente) -- create_all
         # alcanza, no hace falta ningun ALTER TABLE/backfill como en los
@@ -64,6 +67,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="TERO Security Cloud Service", version="0.1.0", lifespan=lifespan)
+egress.install("cloud-service", app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -71,6 +75,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
+install_db_error_handlers(app)  # 409/422 claros en vez de 500 ante datos que la base rechaza
 app.mount("/metrics", make_asgi_app())
 
 
@@ -108,7 +113,7 @@ async def create_account(
     claims: dict = Depends(require_role("admin", "soc_manager")),
     db: AsyncSession = Depends(get_db),
 ):
-    account = await services.create_account(db, payload, org_id_from_claims(claims), claims.get("sub", ""))
+    account = await services.create_account(db, payload, org_id_from_claims(claims), (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     logger.info("cuenta de AWS agregada", extra={"cloud_account_id": account.id, "actor": claims.get("sub")})
     return _account_out(account)
@@ -186,6 +191,6 @@ async def update_finding(
     finding = await services.get_finding(db, finding_id, org_id_from_claims(claims))
     if finding is None:
         raise HTTPException(status_code=404, detail="Hallazgo no encontrado")
-    finding = await services.acknowledge_finding(db, finding, payload.is_acknowledged, claims.get("sub", ""))
+    finding = await services.acknowledge_finding(db, finding, payload.is_acknowledged, (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     return finding

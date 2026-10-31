@@ -62,7 +62,7 @@ jobs:
         # asi que ya no hay avisos aceptados.
         run: |
           status=0
-          for f in backend/services/*/requirements*.txt licensing-server/requirements.txt remote-agent/requirements.txt; do
+          for f in backend/requirements-base.txt backend/services/*/requirements*.txt licensing-server/requirements.txt remote-agent/requirements.txt; do
             [ -f "$f" ] || continue
             echo "== $f =="
             pip-audit -r "$f" --progress-spinner off || status=1

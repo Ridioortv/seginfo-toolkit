@@ -18,10 +18,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from backend.shared.database import get_db, engine, Base, SessionLocal
+from backend.shared.database import get_db, engine, Base, SessionLocal, wait_for_database
 from backend.shared.logging import configure_logging
+from backend.shared import egress
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
+from backend.shared.db_errors import install_db_error_handlers
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import MonitoredDomainCreate, MonitoredDomainOut, DiscoveredAssetOut, SurfaceAlertOut
 from app.dependencies import get_current_claims, require_role
@@ -39,6 +41,7 @@ scheduler = AsyncIOScheduler(timezone=_SCHEDULER_TZ)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await wait_for_database()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # Migracion para instalaciones existentes, mismo patron que
@@ -82,6 +85,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="TERO Security ASM Service", version="0.1.0", lifespan=lifespan)
+egress.install("asm-service", app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -89,6 +93,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
+install_db_error_handlers(app)  # 409/422 claros en vez de 500 ante datos que la base rechaza
 app.mount("/metrics", make_asgi_app())
 
 
@@ -112,7 +117,7 @@ async def create_domain(
     if await services.domain_exists(db, org_id, normalized):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ese dominio ya esta siendo monitoreado")
 
-    domain = await services.create_domain(db, normalized, org_id, claims.get("sub", ""))
+    domain = await services.create_domain(db, normalized, org_id, (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     logger.info("dominio agregado a monitoreo", extra={"domain_id": domain.id, "domain": domain.domain})
     return domain
@@ -188,6 +193,6 @@ async def acknowledge_alert(
     alert = await services.get_alert(db, alert_id, org_id_from_claims(claims))
     if alert is None:
         raise HTTPException(status_code=404, detail="Alerta no encontrada")
-    alert = await services.acknowledge_alert(db, alert, claims.get("sub", ""))
+    alert = await services.acknowledge_alert(db, alert, (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     return alert

@@ -204,7 +204,7 @@ def test_admin_links_mfa_qr_for_another_account_and_confirms(env):
     client, Session, org, other, admin_id, token = env
     h = token(admin_id, "admin", org)
     uid = client.post(f"/auth/organizations/{org}/users", headers=h,
-                      json={"email": "ana@acme.com", "role": "analyst", "password": "p" * 12}).json()["id"]
+                      json={"email": "ana@acme.com", "role": "analyst", "password": "Clave-de-prueba-77"}).json()["id"]
     r = client.post(f"/auth/organizations/{org}/users/{uid}/mfa", headers=h)
     assert r.status_code == 200
     body = r.json()
@@ -219,8 +219,8 @@ def test_admin_links_mfa_qr_for_another_account_and_confirms(env):
     # y ahora el login exige el codigo
     async def check():
         async with Session() as db:
-            assert await services.authenticate(db, "ana@acme.com", "p" * 12, None) is None
-            assert await services.authenticate(db, "ana@acme.com", "p" * 12, pyotp.TOTP(body["secret"]).now()) is not None
+            assert await services.authenticate(db, "ana@acme.com", "Clave-de-prueba-77", None) is None
+            assert await services.authenticate(db, "ana@acme.com", "Clave-de-prueba-77", pyotp.TOTP(body["secret"]).now()) is not None
     asyncio.run(check())
 
 

@@ -21,7 +21,32 @@ export interface LoginErrorResult {
   paymentUrls: Partial<Record<PaymentProvider, string>>;
 }
 
-import { isHttpUrl, pickPaymentUrls, type PaymentProvider } from "./payment";
+import { ALL_PROVIDER_IDS, isHttpUrl, pickPaymentUrls, type PaymentProvider } from "./payment";
+
+/**
+ * Lo que el 402 ofrece para pagar: las pasarelas disponibles y un pay_token.
+ * El 402 YA NO trae links de pago (cada login bloqueado creaba una suscripcion
+ * nueva en cada pasarela y quedaban todas pagables, con riesgo de doble cobro):
+ * el link se pide recien cuando la persona elige "Pagar con ..." (ver
+ * requestBlockedPaymentLink en services/api.ts). Sin pay_token no hay oferta.
+ */
+export interface PaymentOffer {
+  providers: PaymentProvider[];
+  payToken: string | null;
+}
+
+export const NO_PAYMENT_OFFER: PaymentOffer = { providers: [], payToken: null };
+
+export function parsePaymentOffer(err: unknown): PaymentOffer {
+  const axiosErr = err as { response?: { status?: number; data?: { detail?: unknown } } };
+  const detail = axiosErr?.response?.data?.detail;
+  if (axiosErr?.response?.status !== 402 || !detail || typeof detail !== "object") return NO_PAYMENT_OFFER;
+  const d = detail as { payment_providers?: unknown; pay_token?: unknown };
+  const payToken = typeof d.pay_token === "string" && d.pay_token ? d.pay_token : null;
+  const raw = Array.isArray(d.payment_providers) ? d.payment_providers : [];
+  const providers = ALL_PROVIDER_IDS.filter((id) => raw.includes(id));
+  return payToken && providers.length ? { providers, payToken } : NO_PAYMENT_OFFER;
+}
 
 export function parseLoginError(err: unknown, fallback: string): LoginErrorResult {
   const axiosErr = err as { response?: { status?: number; data?: { detail?: unknown } } };
@@ -44,6 +69,19 @@ export function parseLoginError(err: unknown, fallback: string): LoginErrorResul
     if (typeof detail === "string") {
       return { message: detail, paymentUrl: null, paymentUrls: {} };
     }
+  }
+
+  // 429: demasiados intentos. Sin esto se mostraba "Credenciales invalidas",
+  // y la persona seguia probando claves que en realidad estaban bien.
+  if (axiosErr?.response?.status === 429) {
+    return {
+      message:
+        typeof detail === "string" && detail
+          ? detail
+          : "Demasiados intentos. Espera unos minutos antes de volver a intentar.",
+      paymentUrl: null,
+      paymentUrls: {},
+    };
   }
 
   return { message: fallback, paymentUrl: null, paymentUrls: {} };

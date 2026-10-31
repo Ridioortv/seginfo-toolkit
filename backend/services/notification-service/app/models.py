@@ -17,7 +17,7 @@ class NotificationChannel(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     organization_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    channel_type: Mapped[str] = mapped_column(String(50), nullable=False)  # email | slack_webhook | generic_webhook
+    channel_type: Mapped[str] = mapped_column(String(50), nullable=False)  # email | slack_webhook | teams_webhook | generic_webhook
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

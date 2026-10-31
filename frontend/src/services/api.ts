@@ -69,7 +69,10 @@ function makeClient(baseURL: string): AxiosInstance {
           // no existe -- no hay como recuperar la sesion sin volver a
           // loguearse. logout() limpia el store; ProtectedRoute (que lee
           // accessToken de forma reactiva) redirige solo a /login.
-          useAuthStore.getState().logout();
+          // Si estaba dentro de un cliente (token corto sin refresh), se vuelve a la consola del partner en vez de cerrar sesion.
+          const st = useAuthStore.getState();
+          if (st.partnerSession) st.leaveClient();
+          else st.logout();
         }
       }
       return Promise.reject(error);
@@ -120,18 +123,43 @@ export async function login(email: string, password: string, totpCode?: string):
   return data;
 }
 
+// Link de pago desde el login bloqueado por falta de pago (402): se genera
+// recien al elegir la pasarela, con el pay_token que entrego el 402 (ver
+// POST /auth/payment-link en auth-service). La license_key la resuelve el
+// servidor, nunca el navegador.
+export async function requestBlockedPaymentLink(payToken: string, provider: "paypal" | "mercadopago"): Promise<string> {
+  const { data } = await authApi.post<{ payment_url: string }>("/auth/payment-link", {
+    pay_token: payToken,
+    provider,
+  });
+  return data.payment_url;
+}
+
 // Auto-registro publico (ver POST /auth/register en auth-service): siempre
 // crea al usuario como "analyst" en la organizacion "default" -- el primer
 // usuario que exista en toda la base queda como admin automaticamente. No
 // devuelve tokens (a diferencia de login/loginWithGoogle): Login.tsx llama
-// a login() con las mismas credenciales justo despues, para no duplicar la
-// logica de "que hacer con el TokenPair" en dos lugares.
-export async function register(email: string, password: string, fullName: string): Promise<void> {
-  await authApi.post("/auth/register", {
+// a login() con las mismas credenciales justo despues. SI devuelve el QR del
+// MFA (mfa_setup) y un token de 30 min (mfa_setup_token) para vincularlo con
+// confirmRegistrationMfa() sin necesidad de haber iniciado sesion -- asi el
+// QR se ve en "Crear cuenta" aunque el login falle (ej. 402 por suscripcion).
+export interface RegisterOut {
+  mfa_setup: MfaEnrollOut;
+  mfa_setup_token: string;
+}
+
+export async function register(email: string, password: string, fullName: string): Promise<RegisterOut> {
+  const { data } = await authApi.post<RegisterOut>("/auth/register", {
     email,
     password,
     full_name: fullName,
   });
+  return data;
+}
+
+// Confirma el MFA de la cuenta recien creada con el codigo de 6 digitos de la app.
+export async function confirmRegistrationMfa(setupToken: string, totpCode: string): Promise<void> {
+  await authApi.post("/auth/register/mfa/confirm", { setup_token: setupToken, totp_code: totpCode });
 }
 
 export interface MfaEnrollOut {
@@ -154,4 +182,32 @@ export async function mfaEnroll(currentTotpCode?: string): Promise<MfaEnrollOut>
 
 export async function mfaConfirm(totpCode: string): Promise<void> {
   await authApi.post("/auth/mfa/confirm", { totp_code: totpCode });
+}
+
+// --- Contrasena: "Olvide mi contrasena", cambio estando adentro y link del admin ---
+
+// Siempre responde igual exista o no el email (el servidor no revela quien tiene cuenta).
+export async function forgotPassword(email: string): Promise<void> {
+  await authApi.post("/auth/password/forgot", { email });
+}
+
+export async function resetPassword(token: string, newPassword: string): Promise<void> {
+  await authApi.post("/auth/password/reset", { token, new_password: newPassword });
+}
+
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  await authApi.post("/auth/password/change", { current_password: currentPassword, new_password: newPassword });
+}
+
+export interface PasswordResetLinkOut {
+  reset_url: string;
+  expires_minutes: number;
+  email_sent: boolean;
+}
+
+export async function createPasswordResetLink(orgId: string, userId: string): Promise<PasswordResetLinkOut> {
+  const { data } = await authApi.post<PasswordResetLinkOut>(
+    `/auth/organizations/${orgId}/users/${userId}/password-reset-link`,
+  );
+  return data;
 }

@@ -1,16 +1,28 @@
 """Pydantic schemas for case-service."""
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from app.models import CasePriority, CaseStatus
 
 
+def _title(v: str | None) -> str | None:
+    """Un caso sin titulo (o solo espacios) aparecia como fila vacia en la cola
+    de SOC: la API lo aceptaba aunque la pantalla lo frena."""
+    if v is None:
+        return None
+    v = v.strip()
+    if not v:
+        raise ValueError("El titulo del caso no puede estar vacio")
+    return v
+
+
 class CaseCreate(BaseModel):
-    title: str
+    title: str = Field(..., max_length=500)
+
     description: str = ""
     priority: CasePriority = CasePriority.medium
-    assignee: str = ""
-    alert_id: str | None = None
-    source: str = "manual"
+    assignee: str = Field("", max_length=255)
+    alert_id: str | None = Field(None, max_length=36)
+    source: str = Field("manual", max_length=50)
     # BUG DE SEGURIDAD (corregido aca): este campo existia antes y el
     # endpoint (POST /cases) confiaba en el organization_id que mandaba el
     # propio caller, sin exigir ningun JWT -- cualquiera en internet podia
@@ -27,13 +39,24 @@ class CaseCreate(BaseModel):
     # como PendingCase, que se importa despues por el camino
     # service-to-service autenticado (ver import_pending_cases_from_soar).
 
+    @field_validator("title")
+    @classmethod
+    def _v_title(cls, v):
+        return _title(v)
+
 
 class CaseUpdate(BaseModel):
-    title: str | None = None
+    title: str | None = Field(None, max_length=500)
+
+    @field_validator("title")
+    @classmethod
+    def _v_title(cls, v):
+        return _title(v)
+
     description: str | None = None
     priority: CasePriority | None = None
     status: CaseStatus | None = None
-    assignee: str | None = None
+    assignee: str | None = Field(None, max_length=255)
 
 
 class TimelineEntryOut(BaseModel):
@@ -67,8 +90,16 @@ class CaseOut(BaseModel):
 
 
 class TimelineEntryCreate(BaseModel):
-    action: str
+    action: str = Field(..., max_length=100)
     notes: str = ""
+
+    @field_validator("action")
+    @classmethod
+    def _v_action(cls, v):
+        v = v.strip()
+        if not v:
+            raise ValueError("La accion de la entrada no puede estar vacia")
+        return v
 
 
 class ImportResult(BaseModel):

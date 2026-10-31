@@ -6,6 +6,7 @@ import type { AssetOut, ScanJobOut } from "../types";
 import PageHeader from "../components/PageHeader";
 import { SeverityBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
+import { t } from "../i18n";
 
 type Environment = "production" | "staging" | "development" | "other";
 type Criticality = "low" | "medium" | "high" | "critical";
@@ -80,6 +81,36 @@ function AssetScanStatus({ jobId }: { jobId: string }) {
   );
 }
 
+// Unidad de negocio de un activo: se ve en el tablero ejecutivo para saber quien es responsable de cada exposicion.
+function BusinessUnitCell({ asset, units, onSaved }: { asset: AssetOut; units: string[]; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(asset.business_unit ?? "");
+  const save = useMutation({
+    mutationFn: async () => (await assetApi.patch<AssetOut>(`/assets/${asset.id}`, { business_unit: value.trim() })).data,
+    onSuccess: () => { setEditing(false); onSaved(); },
+  });
+  if (!editing) {
+    return (
+      <>
+        {asset.business_unit || <span className="empty-hint">-</span>}{" "}
+        <button className="btn-link" onClick={() => { setValue(asset.business_unit ?? ""); setEditing(true); }}>
+          {asset.business_unit ? t("Cambiar") : t("Asignar")}
+        </button>
+      </>
+    );
+  }
+  return (
+    <span className="inline-form" style={{ margin: 0 }}>
+      <input value={value} maxLength={100} list={`bu-${asset.id}`} autoFocus aria-label={t("Unidad de negocio")}
+        onChange={(e) => setValue(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") save.mutate(); if (e.key === "Escape") setEditing(false); }} />
+      <datalist id={`bu-${asset.id}`}>{units.map((u) => <option key={u} value={u} />)}</datalist>
+      <button className="btn-link" disabled={save.isPending} onClick={() => save.mutate()}>{t("Guardar")}</button>
+      <button className="btn-link" onClick={() => setEditing(false)}>{t("Cancelar")}</button>
+      {save.isError && <span className="error-text"><span className="error-detail">{connectionErrorDetail(save.error)}</span></span>}
+    </span>
+  );
+}
+
 export default function Assets() {
   const queryClient = useQueryClient();
 
@@ -89,6 +120,7 @@ export default function Assets() {
   const [environment, setEnvironment] = useState<Environment>("production");
   const [criticality, setCriticality] = useState<Criticality>("medium");
   const [owner, setOwner] = useState("");
+  const [businessUnit, setBusinessUnit] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
 
   const [scanFeedback, setScanFeedback] = useState<{ assetId: string; ok: boolean; message: string } | null>(null);
@@ -100,6 +132,8 @@ export default function Assets() {
     queryFn: async () => (await assetApi.get<AssetOut[]>("/assets")).data,
   });
 
+  const units = Array.from(new Set((assets.data ?? []).map((a) => (a.business_unit ?? "").trim()).filter(Boolean))).sort();
+
   const createAsset = useMutation({
     mutationFn: async () =>
       (
@@ -110,6 +144,7 @@ export default function Assets() {
           environment,
           criticality,
           owner,
+          business_unit: businessUnit.trim(),
         })
       ).data,
     onSuccess: () => {
@@ -117,11 +152,14 @@ export default function Assets() {
       setIpAddress("");
       setOsName("");
       setOwner("");
+      setBusinessUnit("");
       setFormError(null);
       queryClient.invalidateQueries({ queryKey: ["assets"] });
     },
-    onError: (err: unknown) => {
-      setFormError(err instanceof Error ? err.message : "No se pudo agregar el activo.");
+    onError: () => {
+      // El motivo real (IP invalida, nombre repetido...) lo muestra el bloque createAsset.isError de abajo;
+      // antes se pisaba con "Request failed with status code 422".
+      setFormError(null);
     },
   });
 
@@ -198,6 +236,9 @@ export default function Assets() {
             ))}
           </select>
           <input placeholder="Owner / responsable (opcional)" value={owner} onChange={(e) => setOwner(e.target.value)} />
+          <input placeholder={t("Unidad de negocio (opcional)")} value={businessUnit} maxLength={100} list="business-units"
+            onChange={(e) => setBusinessUnit(e.target.value)} aria-label={t("Unidad de negocio")} />
+          <datalist id="business-units">{units.map((u) => <option key={u} value={u} />)}</datalist>
           <button
             className="btn-primary"
             onClick={onCreateAsset}
@@ -233,6 +274,7 @@ export default function Assets() {
                 <th>Entorno</th>
                 <th>Criticidad</th>
                 <th>Owner</th>
+                <th>Unidad de negocio</th>
                 <th>Activo</th>
                 <th></th>
               </tr>
@@ -246,6 +288,7 @@ export default function Assets() {
                   <td>{a.environment}</td>
                   <td><SeverityBadge value={a.criticality} /></td>
                   <td>{a.owner}</td>
+                  <td><BusinessUnitCell asset={a} units={units} onSaved={() => queryClient.invalidateQueries({ queryKey: ["assets"] })} /></td>
                   <td>{a.is_active ? "si" : "no"}</td>
                   <td>
                     <button
@@ -265,7 +308,7 @@ export default function Assets() {
                 </tr>
               ))}
               {assets.data.length === 0 && (
-                <tr><td colSpan={8} className="empty-hint">Sin activos registrados todavia. Agrega uno arriba.</td></tr>
+                <tr><td colSpan={9} className="empty-hint">Sin activos registrados todavia. Agrega uno arriba.</td></tr>
               )}
             </tbody>
           </table>

@@ -4,7 +4,20 @@ from typing import Literal
 import re
 from pydantic import BaseModel, Field, field_validator
 
-ChannelType = Literal["email", "slack_webhook", "generic_webhook"]
+ChannelType = Literal["email", "slack_webhook", "teams_webhook", "generic_webhook"]
+
+
+def _channel_name(v: str | None) -> str | None:
+    """Nombre obligatorio y que entre en la columna (255): antes se aceptaba
+    vacio y uno largo terminaba en error 500."""
+    if v is None:
+        return None
+    v = v.strip()
+    if not v:
+        raise ValueError("El nombre del canal no puede estar vacio")
+    if len(v) > 255:
+        raise ValueError("El nombre del canal admite hasta 255 caracteres")
+    return v
 
 
 class ChannelCreate(BaseModel):
@@ -13,11 +26,21 @@ class ChannelCreate(BaseModel):
     config: dict = Field(default_factory=dict, description="ej. {'webhook_url': ...} o {'smtp_to': ...}")
     enabled: bool = True
 
+    @field_validator("name")
+    @classmethod
+    def _v_name(cls, v):
+        return _channel_name(v)
+
 
 class ChannelUpdate(BaseModel):
     name: str | None = None
     config: dict | None = None
     enabled: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _v_name(cls, v):
+        return _channel_name(v)
 
 
 class ChannelOut(BaseModel):

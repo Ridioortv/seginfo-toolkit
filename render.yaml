@@ -27,7 +27,10 @@ services:
     runtime: docker
     dockerfilePath: ./licensing-server/Dockerfile
     dockerContext: ./licensing-server
-    plan: free
+    # starter (USD 7/mes): instancia siempre encendida. En free el servicio se
+    # duerme a los 15 min sin trafico y el primer pago despues de dormir tarda
+    # ~1 min (los botones de PayPal/Mercado Pago parecian caidos).
+    plan: starter
     healthCheckPath: /health
     autoDeployTrigger: commit
     envVars:

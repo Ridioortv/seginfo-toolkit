@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuthStore } from "../store/auth";
 import Icon, { BrandMark, type IconName } from "./Icon";
 import { currentTheme, toggleTheme, type Theme } from "../utils/theme";
-import { LanguageSwitcher } from "../i18n";
+import { LanguageSwitcher, t } from "../i18n";
+import { authApi } from "../services/api";
+import { applyBrandColor, minutesLeft, type Brand } from "../utils/brand";
 
 type NavItem = { to: string; label: string; icon: IconName };
 type NavGroup = { label: string; items: NavItem[] };
@@ -11,7 +14,10 @@ type NavGroup = { label: string; items: NavItem[] };
 const NAV_GROUPS: NavGroup[] = [
   {
     label: "Resumen",
-    items: [{ to: "/", label: "Dashboard", icon: "dashboard" }],
+    items: [
+      { to: "/", label: "Dashboard", icon: "dashboard" },
+      { to: "/executive", label: "Tablero ejecutivo", icon: "ledger" },
+    ],
   },
   {
     label: "Inventario y exposicion",
@@ -22,6 +28,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/surface", label: "Superficie Externa", icon: "surface" },
       { to: "/cloud", label: "Integraciones Cloud", icon: "cloud" },
       { to: "/code-repos", label: "Código y Repositorios", icon: "code" },
+      { to: "/ai-governance", label: "Gobernanza de IA", icon: "ledger" },
     ],
   },
   {
@@ -31,6 +38,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/siem", label: "SIEM", icon: "activity" },
       { to: "/soar", label: "SOAR", icon: "zap" },
       { to: "/cases", label: "Casos", icon: "briefcase" },
+      { to: "/trust", label: "Confianza y evidencia", icon: "seal" },
       { to: "/purple-team", label: "Purple Team", icon: "target" },
     ],
   },
@@ -80,16 +88,49 @@ function initials(name: string | undefined): string {
   return ((parts[0][0] ?? "") + (parts[1]?.[0] ?? parts[0][1] ?? "")).toUpperCase();
 }
 
+const PARTNER_GROUP: NavGroup = {
+  label: "Clientes",
+  items: [{ to: "/partner", label: "Consola de clientes", icon: "building" }],
+};
+
 export default function Layout() {
   const claims = useAuthStore((s) => s.claims);
   const logout = useAuthStore((s) => s.logout);
+  const leaveClient = useAuthStore((s) => s.leaveClient);
+  const queryClient = useQueryClient();
   const navigate = useNavigate();
+  // Marca propia (nombre, logo, color) de la organizacion actual o de su partner. Si falla, se ve la de TERO.
+  const brandQuery = useQuery({
+    queryKey: ["brand", claims?.sub ?? "", typeof claims?.org_id === "string" ? claims.org_id : ""],
+    queryFn: async () => (await authApi.get<Brand>("/auth/brand")).data,
+    staleTime: 5 * 60_000, retry: false,
+  });
+  const brand = brandQuery.data;
+  const acting = typeof claims?.partner_org_id === "string";
+  useEffect(() => {
+    applyBrandColor(brand?.color);
+    const base = brand?.name || "TERO Security";
+    document.title = base;
+    return () => applyBrandColor(null);
+  }, [brand?.color, brand?.name]);
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!acting) return;
+    const id = setInterval(() => setTick((n) => n + 1), 30_000);
+    return () => clearInterval(id);
+  }, [acting]);
+  function backToConsole() {
+    leaveClient();
+    queryClient.clear();
+    navigate("/partner");
+  }
   const location = useLocation();
   const [navOpen, setNavOpen] = useState(false);
   const [theme, setTheme] = useState<Theme>(() => currentTheme());
 
   const canManageOrganizations = claims?.role === "admin" || claims?.platform_admin === true;
-  const groups = canManageOrganizations ? [...NAV_GROUPS, ADMIN_GROUP] : NAV_GROUPS;
+  const base = canManageOrganizations ? [...NAV_GROUPS, ADMIN_GROUP] : NAV_GROUPS;
+  const groups = brand?.is_partner ? [PARTNER_GROUP, ...base] : base;
 
   // El drawer movil se cierra solo al navegar y con Escape.
   useEffect(() => {
@@ -110,16 +151,16 @@ export default function Layout() {
     navigate("/login");
   }
 
-  const username = claims?.sub ?? "usuario";
+  const username = claims?.email ?? claims?.sub ?? "usuario";
 
   return (
     <div className={"layout" + (navOpen ? " layout-nav-open" : "")}>
       <aside className="sidebar" id="main-nav" aria-label="Navegacion principal">
         <div className="sidebar-brand">
-          <BrandMark />
+          {brand?.logo ? <img className="brand-logo" src={brand.logo} alt="" /> : <BrandMark />}
           <span className="brand-name">
-            TERO Security
-            <small>Defensive platform</small>
+            {brand?.name || "TERO Security"}
+            <small>{brand?.name ? t("Con tecnologia TERO") : "Defensive platform"}</small>
           </span>
         </div>
         <nav>
@@ -147,6 +188,14 @@ export default function Layout() {
       </aside>
       <div className="sidebar-backdrop" onClick={() => setNavOpen(false)} aria-hidden="true" />
       <div className="layout-main">
+        {acting && (
+          <div className="acting-banner" role="status">
+            <span>
+              {t("Estas trabajando dentro de {0} como {1}. El acceso dura {2} minutos mas.", brand?.organization_name || "-", String(claims?.email ?? claims?.sub ?? ""), minutesLeft(claims?.exp))}
+            </span>
+            <button type="button" className="btn-secondary" onClick={backToConsole}>{t("Volver a mi consola")}</button>
+          </div>
+        )}
         <header className="topbar">
           <button
             type="button"
@@ -171,7 +220,7 @@ export default function Layout() {
             <Icon name={theme === "dark" ? "sun" : "moon"} />
           </button>
           <div className="topbar-user">
-            <span className="avatar" aria-hidden="true">{initials(claims?.sub)}</span>
+            <span className="avatar" aria-hidden="true">{initials(claims?.email ?? claims?.sub)}</span>
             <span className="topbar-user-text">
               <span className="topbar-user-name">{username}</span>
               <span className="topbar-user-role">{claims?.role ?? "sin rol"}</span>

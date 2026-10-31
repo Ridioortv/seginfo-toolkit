@@ -7,7 +7,7 @@ import re
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from urllib.parse import urlencode
-from fastapi import FastAPI, Depends, HTTPException, Request, status
+from fastapi import BackgroundTasks, FastAPI, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
@@ -17,11 +17,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, make_asgi_app
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.shared.database import get_db, engine, Base, SessionLocal
+from backend.shared.database import get_db, engine, Base, SessionLocal, wait_for_database
 from backend.shared.logging import configure_logging
+from backend.shared import egress
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
-from backend.shared.rate_limit import check_rate_limit
+from backend.shared.db_errors import install_db_error_handlers
+from backend.shared.rate_limit import (
+    check_rate_limit, clear_failures, register_failure, too_many_failures,
+)
 from backend.shared.security import decode_token, create_token
 from backend.shared import license_check
 from app.schemas import (
@@ -48,12 +52,22 @@ from app.schemas import (
     PaymentProvidersOut,
     SubscriptionPayLinkRequest,
     SubscriptionHistoryOut,
+    BlockedPaymentLinkRequest,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
+    ChangePasswordRequest,
+    MessageOut,
+    PasswordResetLinkOut,
+    RegisterResponse,
+    RegisterMfaConfirmRequest,
 )
 from app.dependencies import (
     get_current_claims, require_role, require_platform_admin, require_org_admin_or_platform_admin,
     require_service_token,
 )
-from app import services, oidc
+from app import services, oidc, password_reset
+from app.partner import router as partner_router
+from backend.shared.security import hash_password, verify_password
 
 logger = configure_logging("auth-service")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
@@ -64,10 +78,26 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 login_attempts_total = Counter("auth_login_attempts_total", "Login attempts", ["outcome"])
 LICENSE_CHECK_INTERVAL_HOURS = float(os.getenv("LICENSE_CHECK_INTERVAL_HOURS", "6"))
+# Login: fallos tolerados por ventana (solo cuentan los fallidos).
+LOGIN_MAX_FAILURES_IP = 20
+LOGIN_MAX_FAILURES_EMAIL = 10
+LOGIN_FAILURE_WINDOW_SECONDS = 300
+# Vigencia del pay_token que entrega el 402 para pedir el link de pago.
+PAY_TOKEN_MINUTES = 15
 
 
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
+
+
+async def _license_recheck_allowed(org_id: str) -> bool:
+    """Como mucho un re-chequeo de licencia por organizacion cada 20 segundos
+    desde el login bloqueado (el rate limit falla abierto si Redis no esta)."""
+    try:
+        await _enforce_rate_limit(f"license_recheck:{org_id}", limit=1, window_seconds=20)
+    except HTTPException:
+        return False
+    return True
 
 
 async def _reject_if_org_inactive(db: AsyncSession, org, actor_email: str) -> None:
@@ -80,34 +110,58 @@ async def _reject_if_org_inactive(db: AsyncSession, org, actor_email: str) -> No
     A quien llega hasta aca ya se le verificaron sus credenciales (esta
     funcion se llama DESPUES de authenticate()/Google/SSO, nunca
     antes) -- por eso alcanza esa confianza para, ademas de bloquearlo,
-    ofrecerle de una un link de pago (PayPal y/o Mercado Pago) generado al vuelo
-    contra el servidor central de licencias, con actor_email como
-    payer_email. El campo "detail" del 402 pasa a ser un objeto (no un
-    string plano) para que el frontend pueda mostrar un boton "Pagar
-    membresia" en vez de solo un cartel de error -- ver Login.tsx."""
-    if services.is_org_active(org):
+    ofrecerle pagar: el "detail" del 402 es un objeto (no un string plano) con
+    las pasarelas disponibles y un pay_token, para que el frontend muestre los
+    botones "Pagar con ..." -- ver Login.tsx. El link se genera recien al hacer
+    clic (POST /auth/payment-link), no aca."""
+    if not org.is_active:
+        # cliente suspendido por su partner
+        await services.record_audit_event(db, actor_email, "auth.login.blocked_suspended", org.id)
+        await db.commit()
+        raise HTTPException(status_code=403, detail="Esta organizacion esta suspendida. Contacta a tu proveedor.")
+    if await services.org_active(db, org):
         return
+    # Antes de bloquear, volver a consultar al servidor central: si el cliente
+    # acaba de pagar (desde este mismo 402 o desde la pasarela), el webhook ya
+    # extendio la licencia alla pero esta instalacion todavia no se entero
+    # (el chequeo periodico corre cada LICENSE_CHECK_INTERVAL_HOURS). Sin esto
+    # quedaba bloqueado varias horas despues de pagar, sin forma de refrescar
+    # (el boton "Actualizar estado" exige estar logueado). Limitado por
+    # organizacion para que un login repetido no golpee al servidor central.
+    if license_check.is_configured() and await _license_recheck_allowed(org.id):
+        await services.refresh_license_from_central_server(db, org.id)
+        await db.commit()
+        await db.refresh(org)
+        if await services.org_active(db, org):
+            return
     login_attempts_total.labels(outcome="failure").inc()
     await services.record_audit_event(db, actor_email, "auth.login.blocked_subscription", org.id)
     await db.commit()
 
-    # Un link por pasarela disponible (PayPal y/o Mercado Pago): el cliente
-    # elige. payment_url (el de PayPal si hay, si no el primero) se mantiene
-    # por compatibilidad con frontends anteriores.
-    payment_urls: dict[str, str] = {}
-    if license_check.is_configured():
-        payment_urls = await license_check.get_payment_links(actor_email)
-    payment_url = payment_urls.get("paypal") or next(iter(payment_urls.values()), None)
+    # NO se crea ninguna suscripcion aca. Antes cada login bloqueado generaba un
+    # link nuevo en PayPal y otro en Mercado Pago, todos pagables: pagar dos (dos
+    # pestanas, un link viejo) dejaba varias suscripciones cobrando todos los
+    # meses. Ahora el 402 solo informa que pasarelas hay; el link se genera
+    # cuando la persona hace clic en "Pagar con ..." (POST /auth/payment-link),
+    # con el pay_token de abajo, que prueba que acaba de autenticarse.
+    providers = license_check.enabled_providers() if license_check.is_configured() else []
+    pay_token = None
+    if providers:
+        pay_token = create_token(
+            actor_email,
+            timedelta(minutes=PAY_TOKEN_MINUTES),
+            {"type": "payment_link", "org_id": org.id},
+        )
 
     message = "La suscripcion de esta organizacion no esta al dia."
-    if payment_url:
+    if providers:
         message += " Paga la membresia para recuperar el acceso."
     else:
         message += " Contacta al administrador de la plataforma para renovarla."
 
     raise HTTPException(
         status_code=status.HTTP_402_PAYMENT_REQUIRED,
-        detail={"message": message, "payment_url": payment_url, "payment_urls": payment_urls},
+        detail={"message": message, "payment_providers": providers, "pay_token": pay_token},
     )
 
 
@@ -146,6 +200,7 @@ async def _enforce_rate_limit(key: str, limit: int, window_seconds: int = 300) -
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await wait_for_database()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # Migracion liviana para bases ya existentes (creadas antes de que
@@ -184,6 +239,16 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS license_last_checked_at TIMESTAMPTZ"
         ))
+        # Consola multicliente (partner) y marca propia -- ver app/partner.py
+        for ddl in (
+            "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS parent_org_id VARCHAR(36) REFERENCES organizations(id)",
+            "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS is_partner BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS brand_name VARCHAR(60) NOT NULL DEFAULT ''",
+            "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS brand_color VARCHAR(7) NOT NULL DEFAULT ''",
+            "ALTER TABLE organizations ADD COLUMN IF NOT EXISTS brand_logo TEXT NOT NULL DEFAULT ''",
+            "CREATE INDEX IF NOT EXISTS ix_organizations_parent_org_id ON organizations (parent_org_id)",
+        ):
+            await conn.execute(text(ddl))
     async with SessionLocal() as session:
         await services.promote_first_user_to_admin_if_needed(session)
         await services.backfill_users_without_organization(session)
@@ -195,6 +260,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="TERO Security Auth Service", version="0.1.0", lifespan=lifespan)
+app.include_router(partner_router)
+egress.install("auth-service", app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -202,6 +269,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
+install_db_error_handlers(app)  # 409/422 claros en vez de 500 ante datos que la base rechaza
 app.mount("/metrics", make_asgi_app())
 
 
@@ -210,7 +278,7 @@ async def health():
     return {"status": "ok", "service": "auth-service"}
 
 
-@app.post("/auth/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+@app.post("/auth/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
     """Auto-registro publico: siempre crea el usuario como "analyst" en la
     organizacion "default" (el auto-registro abierto no tiene forma segura
@@ -242,11 +310,60 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
     # y promote_first_user_to_admin_if_needed puede haberlo cambiado).
     user = await services.get_user_by_email(db, payload.email)
     role_name = user.role.name if user.role else services.SELF_SERVICE_ROLE
-    return UserOut(
+    # QR del MFA para vincular la cuenta en la misma pantalla de "Crear cuenta". Se entrega aca
+    # (y se confirma con REGISTER_MFA_CONFIRM, con un token de 30 min atado a esta cuenta) para
+    # no depender de iniciar sesion: si la suscripcion de la organizacion esta vencida el login
+    # da 402 y antes el QR nunca llegaba a verse.
+    secret, otpauth_url = await services.enroll_mfa(db, user)
+    await db.commit()
+    return RegisterResponse(
         id=user.id, email=user.email, full_name=user.full_name,
         role_name=role_name, is_active=user.is_active, mfa_enabled=user.mfa_enabled,
         organization_id=user.organization_id,
+        mfa_setup=MfaEnrollResponse(
+            secret=secret, otpauth_url=otpauth_url, qr_code_data_uri=services.mfa_qr_data_uri(otpauth_url),
+        ),
+        mfa_setup_token=mfa_setup_token_for(user.id, secret),
     )
+
+
+MFA_SETUP_TOKEN_MINUTES = 30
+
+
+def mfa_setup_token_for(user_id: str, secret: str) -> str:
+    """Token de "vincular MFA al registrarse": atado al usuario y a ESTE secreto (si se vuelve
+    a enrolar, el anterior deja de servir)."""
+    return create_token(
+        user_id, timedelta(minutes=MFA_SETUP_TOKEN_MINUTES),
+        {"type": "mfa_setup", "msf": password_reset.fingerprint(secret)},
+    )
+
+
+@app.post("/auth/register/mfa/confirm", response_model=MessageOut)
+async def register_mfa_confirm(
+    payload: RegisterMfaConfirmRequest, request: Request, db: AsyncSession = Depends(get_db),
+):
+    """Confirma el MFA de una cuenta recien creada con el codigo de 6 digitos de la app."""
+    await _enforce_rate_limit(f"register_mfa:ip:{_client_ip(request)}", limit=30)
+    invalid = HTTPException(status_code=400, detail="El paso para vincular el MFA vencio. Inicia sesion y activalo en Seguridad de la cuenta.")
+    try:
+        claims = decode_token(payload.setup_token)
+    except JWTError:
+        raise invalid
+    if claims.get("type") != "mfa_setup" or not claims.get("sub"):
+        raise invalid
+    await _enforce_rate_limit(f"register_mfa:user:{claims['sub']}", limit=10)
+    user = await services.get_user_by_id(db, claims["sub"])
+    if (
+        user is None or user.mfa_enabled or not user.is_active or not user.mfa_secret
+        or claims.get("msf") != password_reset.fingerprint(user.mfa_secret)
+    ):
+        raise invalid
+    if not await services.confirm_mfa(db, user, payload.totp_code.replace(" ", "")):
+        raise HTTPException(status_code=400, detail="Codigo TOTP invalido")
+    await services.record_audit_event(db, user.email, "auth.mfa.enabled_at_registration")
+    await db.commit()
+    return MessageOut(message="MFA vinculado.")
 
 
 @app.post("/auth/login", response_model=TokenPair)
@@ -254,14 +371,27 @@ async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depe
     # Dos limites en paralelo: por IP (frena a un atacante probando muchas
     # cuentas, o muchas passwords contra una) y por email (frena fuerza
     # bruta distribuida en varias IPs contra UNA cuenta puntual).
-    await _enforce_rate_limit(f"login:ip:{_client_ip(request)}", limit=20)
-    await _enforce_rate_limit(f"login:email:{payload.email.lower()}", limit=10)
+    # Solo cuentan los intentos FALLIDOS (un login correcto no consume cupo y
+    # borra los fallos de esa cuenta): antes acertar la contrasena despues de
+    # varios intentos podia dar "Demasiados intentos".
+    ip_key = f"login:ip:{_client_ip(request)}"
+    email_key = f"login:email:{payload.email.lower()}"
+    if await too_many_failures(ip_key, LOGIN_MAX_FAILURES_IP) or await too_many_failures(
+        email_key, LOGIN_MAX_FAILURES_EMAIL
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiados intentos. Espera unos minutos antes de volver a intentar.",
+        )
     user = await services.authenticate(db, payload.email, payload.password, payload.totp_code)
     if user is None:
+        await register_failure(ip_key, LOGIN_FAILURE_WINDOW_SECONDS)
+        await register_failure(email_key, LOGIN_FAILURE_WINDOW_SECONDS)
         login_attempts_total.labels(outcome="failure").inc()
         await services.record_audit_event(db, payload.email, "auth.login.failure")
         await db.commit()
         raise HTTPException(status_code=401, detail="Credenciales invalidas o MFA requerido")
+    await clear_failures(email_key)
     org = await services.get_organization_by_id(db, user.organization_id) if user.organization_id else None
     if org is not None:
         await _reject_if_org_inactive(db, org, payload.email)
@@ -271,6 +401,89 @@ async def login(payload: LoginRequest, request: Request, db: AsyncSession = Depe
     await services.record_audit_event(db, payload.email, "auth.login.success")
     await db.commit()
     return TokenPair(access_token=access, refresh_token=refresh)
+
+
+# --- "Olvide mi contrasena" / cambio de contrasena ---------------------------
+# Respuesta SIEMPRE igual exista o no el email (no se puede usar para averiguar
+# quien tiene cuenta). Ver app/password_reset.py para el diseno del token.
+FORGOT_PASSWORD_MESSAGE = (
+    "Si el email corresponde a una cuenta, te enviamos un link para restablecer la contrasena. "
+    "Revisa tambien la carpeta de spam."
+)
+RESET_LINK_INVALID = "El link no es valido o ya vencio. Pedi uno nuevo desde \"Olvide mi contrasena\"."
+
+
+async def _email_reset_link(user_email: str, user_id: str) -> None:
+    """Segundo plano: arma el token con los datos vigentes y manda el mail (nunca levanta)."""
+    try:
+        async with SessionLocal() as session:
+            user = await services.get_user_by_id(session, user_id)
+            if user is None or not user.is_active or user.hashed_password is None:
+                return
+            url = password_reset.reset_url(password_reset.create_reset_token(user))
+        await asyncio.to_thread(password_reset.send_reset_email, user_email, url)
+    except Exception:
+        logger.exception("no se pudo enviar el mail de restablecer contrasena")
+
+
+@app.post("/auth/password/forgot", response_model=MessageOut)
+async def forgot_password(
+    payload: ForgotPasswordRequest, request: Request, background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    await _enforce_rate_limit(f"forgot:ip:{_client_ip(request)}", limit=10, window_seconds=900)
+    # Por cuenta: 3 mails cada 15 min. Pasado el tope no se avisa nada distinto (misma respuesta).
+    allowed = await check_rate_limit(f"forgot:email:{payload.email.lower()}", 3, 900)
+    user = await services.get_user_by_email(db, payload.email)
+    if allowed and user is not None and user.is_active and user.hashed_password is not None:
+        await services.record_audit_event(db, user.email, "auth.password.forgot_requested")
+        await db.commit()
+        background_tasks.add_task(_email_reset_link, user.email, user.id)
+    return MessageOut(message=FORGOT_PASSWORD_MESSAGE)
+
+
+@app.post("/auth/password/reset", response_model=MessageOut)
+async def reset_password(payload: ResetPasswordRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    await _enforce_rate_limit(f"reset:ip:{_client_ip(request)}", limit=20)
+    claims = password_reset.read_reset_token(payload.token)
+    user = await services.get_user_by_id(db, claims["sub"]) if claims else None
+    if claims is None or not password_reset.token_matches_user(claims, user):
+        raise HTTPException(status_code=400, detail=RESET_LINK_INVALID)
+    if verify_password(payload.new_password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="La contrasena nueva tiene que ser distinta de la actual.")
+    user.hashed_password = hash_password(payload.new_password)
+    await services.record_audit_event(db, user.email, "auth.password.reset")
+    await db.commit()
+    # Los intentos fallidos previos dejan de contar: la persona recupero su cuenta.
+    await clear_failures(f"login:email:{user.email.lower()}")
+    return MessageOut(message="Contrasena actualizada. Ya podes ingresar con la nueva.")
+
+
+@app.post("/auth/password/change", response_model=MessageOut)
+async def change_password(
+    payload: ChangePasswordRequest,
+    claims: dict = Depends(get_current_claims),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cambiar la contrasena estando adentro: pide la actual (con tope de fallos por cuenta)."""
+    fail_key = f"change_password:user:{claims.get('sub')}"
+    if await too_many_failures(fail_key, 5):
+        raise HTTPException(status_code=429, detail="Demasiados intentos. Espera unos minutos antes de volver a intentar.")
+    user = await services.get_user_by_id(db, claims.get("sub", ""))
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=401, detail="Sesion invalida")
+    if user.hashed_password is None:
+        raise HTTPException(status_code=400, detail="Tu cuenta entra con Google/SSO: no tiene contrasena propia para cambiar.")
+    if not verify_password(payload.current_password, user.hashed_password):
+        await register_failure(fail_key, LOGIN_FAILURE_WINDOW_SECONDS)
+        raise HTTPException(status_code=400, detail="La contrasena actual no es correcta.")
+    if payload.new_password == payload.current_password:
+        raise HTTPException(status_code=400, detail="La contrasena nueva tiene que ser distinta de la actual.")
+    user.hashed_password = hash_password(payload.new_password)
+    await services.record_audit_event(db, user.email, "auth.password.change")
+    await db.commit()
+    await clear_failures(fail_key)
+    return MessageOut(message="Contrasena actualizada.")
 
 
 @app.post("/auth/google", response_model=TokenPair)
@@ -283,6 +496,10 @@ async def google_login(payload: GoogleAuthRequest, request: Request, db: AsyncSe
     await _enforce_rate_limit(f"google_login:ip:{_client_ip(request)}", limit=20)
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=503, detail="Login con Google no esta configurado en este servidor (falta GOOGLE_CLIENT_ID)")
+    try:
+        egress.guard("www.googleapis.com", "http", "Validar el inicio de sesion con Google")
+    except egress.EgressBlocked:
+        raise HTTPException(status_code=503, detail="Login con Google no disponible: este servidor esta en modo aislado")
     try:
         claims = google_id_token.verify_oauth2_token(payload.credential, google_requests.Request(), GOOGLE_CLIENT_ID)
     except ValueError:
@@ -529,6 +746,39 @@ async def update_org_user(
     return _user_admin_out(user)
 
 
+@app.post(
+    "/auth/organizations/{org_id}/users/{user_id}/password-reset-link", response_model=PasswordResetLinkOut,
+)
+async def create_password_reset_link(
+    org_id: str,
+    user_id: str,
+    background_tasks: BackgroundTasks,
+    claims: dict = Depends(require_org_admin_or_platform_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """El admin genera el link de restablecimiento de una cuenta (para pasarselo a la
+    persona cuando no hay mail configurado, o si no le llega). Si hay SMTP, tambien se
+    lo manda por mail. El link vale 30 min y se usa una sola vez."""
+    user = await services.get_user_in_org(db, org_id, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en esta organizacion")
+    if user.is_platform_admin and not claims.get("platform_admin"):
+        raise HTTPException(status_code=403, detail="No podes administrar una cuenta de administrador de plataforma")
+    if user.hashed_password is None:
+        raise HTTPException(status_code=400, detail="Esa cuenta entra con Google/SSO: no tiene contrasena para restablecer.")
+    url = password_reset.reset_url(password_reset.create_reset_token(user))
+    email_sent = password_reset.smtp_configured()
+    if email_sent:
+        background_tasks.add_task(_email_reset_link, user.email, user.id)
+    await services.record_audit_event(
+        db, claims.get("sub", ""), "user.password_reset_link_by_admin", user.email
+    )
+    await db.commit()
+    return PasswordResetLinkOut(
+        reset_url=url, expires_minutes=password_reset.RESET_TOKEN_MINUTES, email_sent=email_sent,
+    )
+
+
 @app.post("/auth/organizations/{org_id}/users/{user_id}/mfa", response_model=MfaEnrollResponse)
 async def admin_mfa_enroll_user(
     org_id: str,
@@ -628,6 +878,19 @@ async def internal_list_organizations(
     return [{"id": org.id} for org in orgs]
 
 
+@app.get("/internal/organizations/{org_id}")
+async def internal_get_organization(
+    org_id: str,
+    claims: dict = Depends(require_service_token),
+    db: AsyncSession = Depends(get_db),
+):
+    """Datos publicos de una organizacion para otros servicios (nombre para los informes). Servicio a servicio."""
+    org = await services.get_organization_by_id(db, org_id)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organizacion no encontrada")
+    return {"id": org.id, "name": org.name, "slug": org.slug, "is_partner": org.is_partner, "parent_org_id": org.parent_org_id}
+
+
 @app.get("/auth/organizations/{org_id}/sso", response_model=SsoConfigOut | None)
 async def get_sso_config(
     org_id: str,
@@ -697,9 +960,12 @@ async def refresh_subscription(
     org = await services.get_organization_by_id(db, org_id)
     if org is None:
         raise HTTPException(status_code=404, detail="Organizacion no encontrada")
-    await _enforce_rate_limit(f"sub_refresh:{claims.get('sub')}", limit=30)
-    await services.refresh_license_from_central_server(db, org_id)
-    await db.commit()
+    # Pasado el tope (30 cada 5 min por usuario) NO se devuelve 429: eso dejaba el
+    # boton "Actualizar estado" sin responder. Se devuelve el estado guardado, sin
+    # volver a molestar al servidor central (el tope existe para protegerlo a el).
+    if await check_rate_limit(f"sub_refresh:{claims.get('sub')}", 30, 300):
+        await services.refresh_license_from_central_server(db, org_id)
+        await db.commit()
     await db.refresh(org)
     return org
 
@@ -762,6 +1028,50 @@ async def cancel_subscription_payment(
     )
     await db.commit()
     return SubscriptionCancelOut(cancelled=True, valid_until=org.subscription_expires_at)
+
+
+@app.post("/auth/payment-link", response_model=SubscriptionPayLinkOut)
+async def blocked_login_payment_link(
+    payload: BlockedPaymentLinkRequest, request: Request, db: AsyncSession = Depends(get_db)
+):
+    """Link de pago para quien quedo bloqueado por falta de pago (402): se genera
+    recien cuando elige la pasarela. Sin sesion (esta bloqueado), pero NO es
+    publico: exige el pay_token que entrego el 402, que dura pocos minutos, solo
+    sirve para esto (type distinto de access/refresh) y lleva el email y la
+    organizacion de quien acaba de autenticarse. La license_key la resuelve el
+    servidor (license_check), nunca el navegador."""
+    await _enforce_rate_limit(f"payment_link:ip:{_client_ip(request)}", limit=20)
+    try:
+        claims = decode_token(payload.pay_token)
+    except JWTError:
+        raise HTTPException(status_code=401, detail="El pedido de pago vencio -- volve a ingresar para generar un link nuevo.")
+    if claims.get("type") != "payment_link":
+        raise HTTPException(status_code=401, detail="Tipo de token incorrecto")
+    await _enforce_rate_limit(f"payment_link:org:{claims.get('org_id', '')}", limit=10)
+    if not license_check.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Esta instalacion no tiene un servidor central de licencias configurado -- "
+            "para pagar o renovar, contacta al operador.",
+        )
+    if payload.provider not in license_check.enabled_providers():
+        raise HTTPException(
+            status_code=400,
+            detail=f"{license_check.provider_label(payload.provider)} no esta habilitado en esta instalacion.",
+        )
+    email = str(claims.get("sub", ""))
+    try:
+        payment_url = await license_check.get_payment_link(email, payload.provider)
+    except license_check.LicenseCheckError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not payment_url:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{license_check.provider_label(payload.provider)} no esta configurado del lado del servidor central de licencias.",
+        )
+    await services.record_audit_event(db, email, "auth.login.payment_link", claims.get("org_id") or "")
+    await db.commit()
+    return SubscriptionPayLinkOut(payment_url=payment_url)
 
 
 @app.post("/auth/organizations/{org_id}/subscription/pay-link", response_model=SubscriptionPayLinkOut)

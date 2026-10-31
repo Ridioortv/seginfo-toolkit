@@ -108,6 +108,53 @@ docs/                # arquitectura, modelo de amenazas y runbook
   sintaxis del backend, build+typecheck del frontend, validacion de
   `docker-compose.yml` y build (sin push todavia) de cada imagen Docker.
 
+## Gobernanza de IA en el codigo
+
+Menu **Gobernanza de IA** (`/ai-governance`, servicio `coderepo-service`). Al escanear un repositorio conectado
+en **Codigo y Repositorios**, TERO lee su historial de git y arma, por commit: quien lo escribio, si fue una
+persona, una IA o ambas (por las marcas del commit o por declaracion manual), cuantas lineas toco y que
+hallazgos tiene (secretos y patrones inseguros). Sobre eso:
+
+- **Compuerta de seguridad** antes de integrar cambios (tambien consultable desde GitHub Actions).
+- **Politicas por equipo o zona** del codigo (IA permitida / con revision / prohibida, aprobaciones, umbral de
+  severidad), en modo *Observar* (solo mide) o *Exigir* (bloquea).
+- **Registro auditable**: encadenado y firmado, exportable (JSON verificable / CSV) y con ancla externa.
+- **Tablero para direccion**: porcentaje de codigo con IA, cobertura de revision, hallazgos cada 1000 lineas.
+
+Guia completa, variables y limites en [`docs/gobernanza-ia.md`](./docs/gobernanza-ia.md).
+
+## Confianza y evidencia
+
+Menu **Confianza y evidencia** (`/trust`). Lo que TERO puede *demostrar* a un auditor, un cliente o un juez sin
+pedirle que confie en nosotros:
+
+- **Cadena de custodia digital**: alertas, respuestas, cambios de estado, escaneos y cierres quedan en una
+  cadena firmada (Ed25519). Se exporta un paquete de evidencia por caso (`.zip`) con un verificador
+  independiente que corre sin acceso a TERO.
+- **Prueba de soberania**: auditor de salidas a internet (que servicio habla con que destino, para que y que
+  datos viajan), modo aislado (`docker-compose.aislado.yml`), prueba de red y atestado firmado.
+- **Cierre verificado**: al marcar una vulnerabilidad como remediada, TERO repite el escaneo que la encontro y
+  solo la da por cerrada si ya no aparece (si sigue, la reabre sola). Mide el tiempo de cierre real y entrega
+  una prueba firmada.
+- **Cumplimiento con evidencia viva**: Ley 25.326 y medidas recomendadas por la Res. AAIP 47/2018. 14 controles
+  se comprueban solos con datos reales de TERO; el resto los declara una persona (con nota, fecha y vencimiento).
+  Autocompleta un cuestionario de ciberseguro y entrega un atestado firmado.
+- **Simulacros medibles**: pone en el SIEM un evento de ejemplo (rotulado, sin ataque ni respuestas reales) y mide
+  cuanto tarda el equipo en reconocer y cerrar la alerta. Da un puntaje de preparacion y una prueba firmada.
+
+Guia completa, configuracion y limites en [`docs/confianza-y-evidencia.md`](./docs/confianza-y-evidencia.md).
+
+- **AntiEstafa AR**: las estafas que revisan los empleados (WhatsApp falso del gerente, audio del banco, links y QR)
+  llegan al SIEM, abren una alerta, avisan al equipo y abren un caso; detecta campanas repetidas y cubre T1566.
+  Guia en [`docs/integracion-antiestafa.md`](./docs/integracion-antiestafa.md).
+
+## Olvide mi contrasena
+
+En la pantalla de entrada: **¿Olvidaste tu contrasena?** -> email -> link de un solo uso (30 min). Requiere
+`SMTP_HOST` en `.env`; sin mail, un administrador genera el link en **Usuarios y roles -> Restablecer
+contrasena**. Ya adentro: **Seguridad de la cuenta -> Cambiar contrasena**. Detalle y topes en
+`backend/services/auth-service/app/password_reset.py`.
+
 ## Operacion
 
 Ver [`docs/runbook.md`](./docs/runbook.md) para procedimientos operativos

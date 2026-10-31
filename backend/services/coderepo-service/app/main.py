@@ -17,15 +17,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
-from backend.shared.database import get_db, engine, Base, SessionLocal
+from backend.shared.database import get_db, engine, Base, SessionLocal, wait_for_database
 from backend.shared.logging import configure_logging
+from backend.shared import egress
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
+from backend.shared.db_errors import install_db_error_handlers
 from backend.shared.tenancy import org_id_from_claims
 from app.models import RepoTarget
 from app.schemas import RepoTargetCreate, RepoTargetOut, SecretFindingOut, SecretFindingUpdate
 from app.dependencies import get_current_claims, require_role
-from app import services
+from app import services, ledger
+from app import gov_models  # noqa: F401 -- registra las tablas de gobernanza en Base.metadata
+from app.gov_routes import router as governance_router
 
 logger = configure_logging("coderepo-service")
 
@@ -39,6 +43,7 @@ scheduler = AsyncIOScheduler(timezone=_SCHEDULER_TZ)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await wait_for_database()
     async with engine.begin() as conn:
         # Tablas 100% nuevas -- create_all alcanza, no hace falta ningun
         # ALTER TABLE/backfill.
@@ -88,6 +93,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="TERO Security Code Repository Scan Service", version="0.1.0", lifespan=lifespan)
+egress.install("coderepo-service", app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -95,7 +101,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
+install_db_error_handlers(app)  # 409/422 claros en vez de 500 ante datos que la base rechaza
 app.mount("/metrics", make_asgi_app())
+app.include_router(governance_router)
 
 
 def _target_out(target: RepoTarget) -> RepoTargetOut:
@@ -143,7 +151,9 @@ async def create_repo(
     unsafe = services.repo_url_safety_error(payload.repo_url)
     if unsafe:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"repo_url no permitido: {unsafe}")
-    target = await services.create_target(db, payload, org_id_from_claims(claims), claims.get("sub", ""))
+    target = await services.create_target(db, payload, org_id_from_claims(claims), (claims.get("email") or claims.get("sub", "")))
+    await ledger.append_entry(db, target.organization_id, "repo.connected", (claims.get("email") or claims.get("sub", "")),
+                              target.id, {"name": target.name, "repo_url": services.strip_repo_url_userinfo(target.repo_url), "branch": target.branch})
     await db.commit()
     logger.info("repositorio agregado", extra={"repo_target_id": target.id, "actor": claims.get("sub")})
     return _target_out(target)
@@ -164,6 +174,8 @@ async def delete_repo(
     target = await services.get_target(db, repo_id, org_id_from_claims(claims))
     if target is None:
         raise HTTPException(status_code=404, detail="Repositorio no encontrado")
+    await ledger.append_entry(db, target.organization_id, "repo.deleted", (claims.get("email") or claims.get("sub", "")),
+                              target.id, {"name": target.name})
     await services.delete_target(db, target)
     await db.commit()
     logger.info("repositorio borrado", extra={"repo_target_id": repo_id, "actor": claims.get("sub")})
@@ -214,6 +226,6 @@ async def update_secret(
     finding = await services.get_secret(db, finding_id, org_id_from_claims(claims))
     if finding is None:
         raise HTTPException(status_code=404, detail="Hallazgo no encontrado")
-    finding = await services.acknowledge_secret(db, finding, payload.is_acknowledged, claims.get("sub", ""))
+    finding = await services.acknowledge_secret(db, finding, payload.is_acknowledged, (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     return finding

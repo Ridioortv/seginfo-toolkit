@@ -19,7 +19,7 @@ class CreateCaseAction(ActionExecutor):
 
     async def execute(self, params: dict, context: dict) -> ActionResult:
         alert = context.get("alert", {})
-        title = params.get("title") or f"Alerta {alert.get('severity', 'desconocida')}: {alert.get('rule_name', '')}"
+        title = (params.get("title") or f"Alerta {alert.get('severity', 'desconocida')}: {alert.get('rule_name', '')}")[:500]
         description = params.get("description") or f"Generado automaticamente por playbook a partir de la alerta {alert.get('id', '')}"
         priority = params.get("priority") or alert.get("severity", "medium")
 
@@ -33,6 +33,8 @@ class CreateCaseAction(ActionExecutor):
                         json={
                             "title": title, "description": description, "priority": priority,
                             "alert_id": alert.get("id"),
+                            # origen real del caso (si no, figuraba como "manual")
+                            "source": "soar",
                         },
                         headers=service_auth_headers(organization_id),
                     )

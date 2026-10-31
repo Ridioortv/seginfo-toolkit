@@ -1,3 +1,11 @@
+# --- Compose de USO: solo imagenes prearmadas -------------------------------------------------
+# Cada servicio usa `image: ghcr.io/.../tero-<servicio>:${TERO_VERSION}` (registro privado de GHCR):
+# `docker compose pull` + `docker compose up -d`, sin compilar nada en la PC.
+# Para COMPILAR las imagenes (desarrollo, o sin acceso al registro) se suma docker-compose.dev.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml build
+# TERO_VERSION: los lanzadores (.exe / tero-iniciar.sh) la toman del archivo VERSION.
+# Ver docs/IMAGENES-GHCR.md.
+
 # --- Endurecimiento comun (YAML anchors) -----------------------------------
 # no-new-privileges: un proceso dentro del contenedor no puede ganar privilegios
 #   via setuid/setcap aunque encuentre un binario con esos bits.
@@ -15,7 +23,7 @@ x-api-hardening: &api-hardening
 # BIND_ADDR controla en que interfaz se publican los puertos de las APIs y el
 # frontend. Default 127.0.0.1 = solo esta PC. Para exponerlo en la LAN poneme
 # BIND_ADDR=0.0.0.0 en .env (y pone un firewall / reverse proxy con TLS delante).
-# Postgres, Redis y OpenSearch NUNCA se publican fuera de 127.0.0.1.
+# Postgres, Redis y OpenSearch no se publican en la PC: los servicios los usan por la red interna de Docker.
 
 services:
   postgres:
@@ -29,8 +37,13 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:5432:5432"
+    # SIN `ports`: los servicios llegan a Postgres por la red interna de Docker
+    # (host "postgres", puerto 5432), asi que no hace falta publicarlo en la PC.
+    # Publicarlo en 127.0.0.1:5432 hacia que `docker compose up` fallara con
+    # "failed to bind host port 127.0.0.1:5432: address already in use" en
+    # cualquier PC que ya tuviera un PostgreSQL instalado. Si algun dia hace
+    # falta entrar con un cliente SQL desde la PC: `docker compose exec postgres
+    # psql -U $POSTGRES_USER $POSTGRES_DB` (no necesita puerto publicado).
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
@@ -46,8 +59,9 @@ services:
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?Falta REDIS_PASSWORD en .env (ver .env.example)}
     command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
-    ports:
-      - "127.0.0.1:6379:6379"
+    # Sin `ports`: los servicios llegan a Redis por la red interna de Docker. Publicarlo en
+    # 127.0.0.1:6379 chocaba ("port is already allocated") en PCs que ya usaban ese puerto
+    # (un Redis propio, o un TERO anterior con otro nombre de proyecto).
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
       interval: 5s
@@ -65,8 +79,7 @@ services:
       # (mayuscula, minuscula, numero y simbolo) o se niega a arrancar.
       - "OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_ADMIN_PASSWORD:?Falta OPENSEARCH_ADMIN_PASSWORD en .env (ver .env.example)}"
       - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
-    ports:
-      - "127.0.0.1:9200:9200"
+    # Sin `ports`: los servicios llegan a OpenSearch por la red interna de Docker (puerto 9200).
     healthcheck:
       test: ["CMD-SHELL", "curl -sfk -u \"admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD\" https://localhost:9200/_cluster/health || exit 1"]
       interval: 10s
@@ -77,9 +90,7 @@ services:
   auth-service:
     <<: *api-hardening
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/auth-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-auth-service:${TERO_VERSION:-local}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -95,9 +106,7 @@ services:
   asset-service:
     <<: *api-hardening
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/asset-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-asset-service:${TERO_VERSION:-local}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -119,9 +128,7 @@ services:
     # (zeek fallaba con "pcap_activate: Operation not permitted"). El resto del
     # endurecimiento (usuario no-root, puertos solo en 127.0.0.1) se mantiene.
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/scan-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-scan-service:${TERO_VERSION:-local}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -178,9 +185,7 @@ services:
     # (zeek fallaba con "pcap_activate: Operation not permitted"). El resto del
     # endurecimiento (usuario no-root, puertos solo en 127.0.0.1) se mantiene.
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/scan-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-scan-service:${TERO_VERSION:-local}
     command: ["python", "/agent.py"]
     environment:
       SCAN_SERVICE_URL: http://scan-service:8000
@@ -223,11 +228,16 @@ services:
       - SYS_RESOURCE
       - BPF
       - PERFMON
-    # No es un servidor web (corre agent.py, no uvicorn), asi que el
-    # healthcheck de la imagen no aplica -> lo desactivamos para que no
-    # figure "unhealthy".
+    # No es un servidor web (corre agent.py, no uvicorn), asi que el healthcheck de la
+    # imagen (HTTP) no aplica. Este revisa el "latido" del agente: lo actualiza cada vez que
+    # le logra preguntar jobs a scan-service (ver agent.py::_touch_heartbeat), asi que figura
+    # "healthy" solo si esta funcionando de verdad (scan-service alcanzable y api key valida).
     healthcheck:
-      disable: true
+      test: ["CMD", "python", "/agent.py", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     volumes:
       - ./remote-agent/agent.py:/agent.py:ro
     depends_on:
@@ -246,9 +256,7 @@ services:
   remote-agent-wan:
     <<: *hardening
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/scan-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-scan-service:${TERO_VERSION:-local}
     command: ["python", "/agent.py"]
     environment:
       SCAN_SERVICE_URL: http://scan-service:8000
@@ -260,7 +268,11 @@ services:
       SENTINELOPS_YARA_RULES_FILE: /opt/sentinelops-yara-rules/sentinelops.yar
       SENTINELOPS_ZAP_HOME_DIR: /home/sentinelops/.ZAP
     healthcheck:
-      disable: true
+      test: ["CMD", "python", "/agent.py", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     volumes:
       - ./remote-agent/agent.py:/agent.py:ro
     depends_on:
@@ -270,9 +282,7 @@ services:
   vuln-service:
     <<: *api-hardening
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/vuln-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-vuln-service:${TERO_VERSION:-local}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -288,9 +298,7 @@ services:
   siem-service:
     <<: *api-hardening
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/siem-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-siem-service:${TERO_VERSION:-local}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -319,9 +327,7 @@ services:
   soar-service:
     <<: *api-hardening
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/soar-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-soar-service:${TERO_VERSION:-local}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -343,9 +349,7 @@ services:
   case-service:
     <<: *api-hardening
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/case-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-case-service:${TERO_VERSION:-local}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -362,14 +366,14 @@ services:
   purple-service:
     <<: *api-hardening
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/purple-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-purple-service:${TERO_VERSION:-local}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
       SIEM_SERVICE_URL: http://siem-service:8000
+      CASE_SERVICE_URL: http://case-service:8000
+      SOAR_SERVICE_URL: http://soar-service:8000
     depends_on:
       postgres:
         condition: service_healthy
@@ -381,9 +385,7 @@ services:
   report-service:
     <<: *api-hardening
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/report-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-report-service:${TERO_VERSION:-local}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -406,9 +408,7 @@ services:
   notification-service:
     <<: *api-hardening
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/notification-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-notification-service:${TERO_VERSION:-local}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -425,9 +425,7 @@ services:
   integration-service:
     <<: *api-hardening
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/integration-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-integration-service:${TERO_VERSION:-local}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -444,9 +442,7 @@ services:
   threatintel-service:
     <<: *api-hardening
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/threatintel-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-threatintel-service:${TERO_VERSION:-local}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -462,9 +458,7 @@ services:
   asm-service:
     <<: *api-hardening
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/asm-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-asm-service:${TERO_VERSION:-local}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -480,9 +474,7 @@ services:
   cloud-service:
     <<: *api-hardening
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/cloud-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-cloud-service:${TERO_VERSION:-local}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -498,9 +490,7 @@ services:
   coderepo-service:
     <<: *hardening
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: backend/services/coderepo-service/Dockerfile
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-coderepo-service:${TERO_VERSION:-local}
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -522,27 +512,7 @@ services:
   frontend:
     <<: *hardening
     restart: unless-stopped
-    build:
-      context: ./frontend
-      # Las URLs/ID de Google se hornean en el bundle al construir (Vite). Los
-      # defaults del Dockerfile son el stack local; .env los sobreescribe.
-      args:
-        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8001}
-        VITE_ASSET_API_BASE_URL: ${VITE_ASSET_API_BASE_URL:-http://localhost:8002}
-        VITE_SCAN_API_BASE_URL: ${VITE_SCAN_API_BASE_URL:-http://localhost:8003}
-        VITE_VULN_API_BASE_URL: ${VITE_VULN_API_BASE_URL:-http://localhost:8004}
-        VITE_SIEM_API_BASE_URL: ${VITE_SIEM_API_BASE_URL:-http://localhost:8005}
-        VITE_SOAR_API_BASE_URL: ${VITE_SOAR_API_BASE_URL:-http://localhost:8006}
-        VITE_CASE_API_BASE_URL: ${VITE_CASE_API_BASE_URL:-http://localhost:8007}
-        VITE_PURPLE_API_BASE_URL: ${VITE_PURPLE_API_BASE_URL:-http://localhost:8008}
-        VITE_REPORT_API_BASE_URL: ${VITE_REPORT_API_BASE_URL:-http://localhost:8009}
-        VITE_NOTIFICATION_API_BASE_URL: ${VITE_NOTIFICATION_API_BASE_URL:-http://localhost:8010}
-        VITE_INTEGRATION_API_BASE_URL: ${VITE_INTEGRATION_API_BASE_URL:-http://localhost:8011}
-        VITE_THREATINTEL_API_BASE_URL: ${VITE_THREATINTEL_API_BASE_URL:-http://localhost:8012}
-        VITE_ASM_API_BASE_URL: ${VITE_ASM_API_BASE_URL:-http://localhost:8013}
-        VITE_CLOUD_API_BASE_URL: ${VITE_CLOUD_API_BASE_URL:-http://localhost:8014}
-        VITE_CODEREPO_API_BASE_URL: ${VITE_CODEREPO_API_BASE_URL:-http://localhost:8015}
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-frontend:${TERO_VERSION:-local}
     # Sin env_file: el contenedor estatico no necesita ningun secreto (antes
     # recibia JWT_SECRET_KEY, claves de agentes, etc. en su entorno).
     depends_on:

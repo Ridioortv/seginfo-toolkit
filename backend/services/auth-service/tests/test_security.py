@@ -98,3 +98,16 @@ class TestRefreshToken:
         access = security.decode_token(security.create_access_token(subject="u", role="analyst"))
         refresh = security.decode_token(security.create_refresh_token(subject="u"))
         assert refresh["exp"] > access["exp"]
+
+
+class TestAccessTokenEmailClaim:
+    """El frontend saluda con el email del claim; sin el, mostraba el UUID (sub)."""
+
+    def test_email_claim_present_when_given(self):
+        payload = security.decode_token(security.create_access_token(subject="u", role="admin", email="ana@empresa.com"))
+        assert payload["email"] == "ana@empresa.com"
+        assert payload["sub"] == "u"
+
+    def test_service_tokens_have_no_email_claim(self):
+        payload = security.decode_token(security.create_access_token(subject="system:x", role="admin"))
+        assert "email" not in payload

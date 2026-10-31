@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { useLocation } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { mfaConfirm, mfaEnroll, mfaStatus, type MfaEnrollOut } from "../services/api";
+import { changePassword, forgotPassword, mfaConfirm, mfaEnroll, mfaStatus, type MfaEnrollOut } from "../services/api";
+import { useAuthStore } from "../store/auth";
+import { passwordProblem } from "../utils/password";
 import PageHeader from "../components/PageHeader";
 
 // Seguridad de la cuenta: activar (o reemplazar) el segundo factor (MFA/TOTP).
@@ -28,6 +30,51 @@ export default function Security() {
   const [done, setDone] = useState(false);
 
   const enabled = status.data === true;
+
+  // --- Contrasena: cambiarla estando adentro, o pedir el link por email si no te acordas de la actual ---
+  const myEmail = useAuthStore((s) => s.claims?.email) ?? "";
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [repeatPassword, setRepeatPassword] = useState("");
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordDone, setPasswordDone] = useState<string | null>(null);
+
+  const changePw = useMutation({
+    mutationFn: async () => changePassword(currentPassword, newPassword),
+    onSuccess: () => {
+      setPasswordError(null);
+      setPasswordDone("Listo: tu contrasena se actualizo.");
+      setCurrentPassword("");
+      setNewPassword("");
+      setRepeatPassword("");
+    },
+    onError: (e: unknown) => {
+      setPasswordDone(null);
+      setPasswordError(detailOf(e, "No se pudo cambiar la contrasena. Intenta de nuevo."));
+    },
+  });
+
+  const emailLink = useMutation({
+    mutationFn: async () => forgotPassword(myEmail),
+    onSuccess: () => {
+      setPasswordError(null);
+      setPasswordDone(`Si tu cuenta tiene mail configurado, te enviamos el link a ${myEmail}. Vale 30 minutos.`);
+    },
+    onError: (e: unknown) => {
+      setPasswordDone(null);
+      setPasswordError(detailOf(e, "No se pudo pedir el link. Intenta de nuevo."));
+    },
+  });
+
+  function submitPasswordChange() {
+    const problem = passwordProblem(newPassword, repeatPassword);
+    if (problem) {
+      setPasswordDone(null);
+      setPasswordError(problem);
+      return;
+    }
+    changePw.mutate();
+  }
 
   const enroll = useMutation({
     mutationFn: async () => mfaEnroll(enabled ? currentCode.trim() : undefined),
@@ -58,7 +105,7 @@ export default function Security() {
     <div>
       <PageHeader
         title="Seguridad de la cuenta"
-        subtitle="Verificacion en dos pasos (MFA) con una app de autenticacion."
+        subtitle="Contrasena y verificacion en dos pasos (MFA)."
       />
 
       {justLoggedIn && status.data === false && (
@@ -69,6 +116,58 @@ export default function Security() {
           </p>
         </div>
       )}
+
+      <div className="panel">
+        <h2>Cambiar contrasena</h2>
+        <p className="empty-hint">Escribi tu contrasena actual y elegi una nueva de al menos 12 caracteres.</p>
+        <div className="field">
+          <label htmlFor="current-password">Contrasena actual</label>
+          <input
+            id="current-password"
+            type="password"
+            autoComplete="current-password"
+            value={currentPassword}
+            onChange={(e) => setCurrentPassword(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="change-new-password">Contrasena nueva (minimo 12 caracteres)</label>
+          <input
+            id="change-new-password"
+            type="password"
+            autoComplete="new-password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+          />
+        </div>
+        <div className="field">
+          <label htmlFor="change-repeat-password">Repetir la contrasena nueva</label>
+          <input
+            id="change-repeat-password"
+            type="password"
+            autoComplete="new-password"
+            value={repeatPassword}
+            onChange={(e) => setRepeatPassword(e.target.value)}
+          />
+        </div>
+        <button
+          className="btn-primary"
+          onClick={submitPasswordChange}
+          disabled={changePw.isPending || !currentPassword || !newPassword || !repeatPassword}
+        >
+          {changePw.isPending ? "Guardando..." : "Cambiar contrasena"}
+        </button>
+        {myEmail && (
+          <p className="empty-hint" style={{ marginTop: 12 }}>
+            ¿No te acordas de la actual?{" "}
+            <button type="button" className="btn-link" disabled={emailLink.isPending} onClick={() => emailLink.mutate()}>
+              {emailLink.isPending ? "Enviando..." : "Enviarme un link por email"}
+            </button>
+          </p>
+        )}
+        {passwordDone && <p>{passwordDone}</p>}
+        {passwordError && <p className="error-text">{passwordError}</p>}
+      </div>
 
       <div className="panel">
         <h2>Estado</h2>
