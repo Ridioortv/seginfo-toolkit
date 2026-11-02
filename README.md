@@ -155,9 +155,10 @@ En la pantalla de entrada: **¿Olvidaste tu contrasena?** -> email -> link de un
 contrasena**. Ya adentro: **Seguridad de la cuenta -> Cambiar contrasena**. Detalle y topes en
 `backend/services/auth-service/app/password_reset.py`.
 
-Para dejar el correo andando (Gmail con clave de aplicacion) corre, desde la raiz del repo:
-`powershell -ExecutionPolicy Bypass -File tools\configurar-correo.ps1`. Manda un mail de prueba, guarda
-`SMTP_*` en `.env` y reinicia auth-service; si el envio falla no toca el `.env`.
+Para dejar el correo andando (Gmail con clave de aplicacion) hay un script que manda un mail de prueba, guarda
+`SMTP_*` en `.env` y reinicia auth-service; si el envio falla no toca el `.env`. En Windows:
+`powershell -ExecutionPolicy Bypass -File tools\configurar-correo.ps1`. En Linux Mint: `./configurar-correo.sh`.
+Solo reciben el mail los usuarios que tienen contrasena (los que entran solo con Google no).
 
 ## Operacion
 
