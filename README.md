@@ -155,6 +155,10 @@ En la pantalla de entrada: **¿Olvidaste tu contrasena?** -> email -> link de un
 contrasena**. Ya adentro: **Seguridad de la cuenta -> Cambiar contrasena**. Detalle y topes en
 `backend/services/auth-service/app/password_reset.py`.
 
+Para dejar el correo andando (Gmail con clave de aplicacion) corre, desde la raiz del repo:
+`powershell -ExecutionPolicy Bypass -File tools\configurar-correo.ps1`. Manda un mail de prueba, guarda
+`SMTP_*` en `.env` y reinicia auth-service; si el envio falla no toca el `.env`.
+
 ## Operacion
 
 Ver [`docs/runbook.md`](./docs/runbook.md) para procedimientos operativos
