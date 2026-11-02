@@ -57,3 +57,4 @@ Thumbs.db
 # Respaldos de la base (tools/respaldar.*)
 backups/
 *.dump
+pruebas/resultados/
