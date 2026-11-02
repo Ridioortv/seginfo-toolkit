@@ -16,7 +16,7 @@
 param(
     [string]$SmtpHost = "smtp.gmail.com",
     [int]$Puerto = 587,
-    [string]$Usuario = "tecnoros@gmail.com",
+    [string]$Usuario = "tecnorosar@gmail.com",
     [string]$Desde = "",
     [switch]$SinReiniciar
 )
