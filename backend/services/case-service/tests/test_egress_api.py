@@ -4,6 +4,7 @@ import asyncio
 import json
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -52,9 +53,15 @@ def report(service, isolated=False, dests=(), **kw):
             "allowlist": [], "interval_seconds": 60, "destinations": list(dests), **kw}
 
 
+def _hace(dias):
+    # Relativo a HOY: con fechas fijas la prueba vencia sola (el estado solo cuenta destinos
+    # de los ultimos RECENT_DAYS dias; con "2026-10-02" fallaba desde el 1/11/2026).
+    return (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+
+
 def dest(host, count=1, blocked=0, kind="http", purposes=()):
-    return {"host": host, "kind": kind, "count": count, "blocked": blocked, "first_seen": "2026-10-01T00:00:00+00:00",
-            "last_seen": "2026-10-02T00:00:00+00:00", "purposes": list(purposes)}
+    return {"host": host, "kind": kind, "count": count, "blocked": blocked, "first_seen": _hace(2),
+            "last_seen": _hace(1), "purposes": list(purposes)}
 
 
 def send(client, service, **kw):

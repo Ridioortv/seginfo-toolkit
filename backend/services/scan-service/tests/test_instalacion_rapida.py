@@ -185,9 +185,16 @@ CON_BUILD = [f"{s}-service" for s in SIMPLES + PROPIOS] + ["frontend"]
 def test_cada_servicio_construido_tiene_imagen_con_version(nombre):
     b = _bloque((RAIZ / "docker-compose.yml").read_text(encoding="utf-8"), nombre)
     assert not re.search(r"(?m)^    build:", b)
-    m = re.search(r"^    image: \$\{TERO_REGISTRY:-ghcr\.io/ridioortv\}/tero-([a-z-]+):\$\{TERO_VERSION:-local\}$", b, flags=re.M)
+    m = re.search(r"^    image: \$\{TERO_REGISTRY:-ghcr\.io/ridioortv\}/tero-([a-z-]+):\$\{TERO_VERSION:-([0-9A-Za-z.]+)\}$", b, flags=re.M)
     assert m, f"{nombre} no tiene image: ghcr.io/<org>/tero-<servicio>:${{TERO_VERSION}}"
     assert m.group(1) == nombre
+    # Repo principal: default "local" (los lanzadores exportan TERO_VERSION).
+    # Paquete Linux Mint: nadie exporta TERO_VERSION, asi que el default fijo
+    # TIENE que ser el del archivo VERSION (si no, `docker compose pull` baja otra version).
+    version = (RAIZ / "VERSION").read_text(encoding="utf-8").strip()
+    assert m.group(2) in ("local", version), (
+        f"{nombre}: TERO_VERSION por defecto es {m.group(2)!r} pero VERSION dice {version!r}"
+    )
 
 
 def test_los_agentes_remotos_reusan_la_imagen_de_scan_service():
@@ -202,6 +209,9 @@ def test_version_del_repo_tiene_formato_semver():
 
 def test_workflow_de_publicacion_seguro_y_sin_acciones_de_terceros():
     wf = RAIZ / ".github" / "workflows" / "publicar-imagenes.yml"
+    if not wf.exists():
+        # El paquete Linux Mint no publica imagenes: el workflow vive en el repo principal.
+        pytest.skip("sin workflow de publicacion en este paquete (vive en el repo principal)")
     texto = wf.read_text(encoding="utf-8")
     assert re.search(r"^  packages: write$", texto, flags=re.M)
     assert re.search(r"tags: \[\"v\*\"\]", texto)
