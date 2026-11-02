@@ -3,4 +3,4 @@
 # reglas PROPIAS (rules/semgrep/), nunca a 'auto'/'p/...'.
 # Vive en un venv aislado (/opt/semgrep-venv, ver Dockerfile) para que sus
 # dependencias no choquen con las del servicio. pip-audit en CI lo revisa tambien.
-semgrep==1.179.0
+semgrep==1.183.0
