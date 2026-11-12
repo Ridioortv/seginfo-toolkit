@@ -6,8 +6,8 @@ los clientes las **bajan** en lugar de compilarlas.
 
 | Qué | Dónde |
 |---|---|
-| Versión de las imágenes | archivo `VERSION` (ej. `1.0.0`) |
-| Nombre de las imágenes | `ghcr.io/ridioortv/tero-auth-service:1.0.0`, `tero-scan-service`, `tero-frontend`, `tero-base`... (variables `TERO_REGISTRY` y `TERO_VERSION`) |
+| Versión de las imágenes | archivo `VERSION` (ej. `1.1.0`) |
+| Nombre de las imágenes | `ghcr.io/ridioortv/tero-auth-service:1.1.0`, `tero-scan-service`, `tero-frontend`, `tero-base`... (variables `TERO_REGISTRY` y `TERO_VERSION`) |
 | Quién las publica | `.github/workflows/publicar-imagenes.yml` |
 | Imagen base común | `backend/Dockerfile.base` (13 servicios simples heredan de ella; `scan-service` y `coderepo-service` tienen su propio Dockerfile) |
 
