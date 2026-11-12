@@ -21,14 +21,17 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -133,9 +136,7 @@ func main() {
 	fmt.Println()
 	fmt.Println("Levantando los servicios...")
 	fmt.Println()
-	if err := runStreaming("docker", "compose", "up", "-d"); err != nil {
-		fatal("\n'docker compose up' fallo: %v\n\nRevisa el detalle de arriba para ver que servicio dio error.", err)
-	}
+	composeUpConReintentos()
 	if mode != modeDaily {
 		// Recien ahora (imagenes listas y contenedores creados) se recuerda la version.
 		_ = os.WriteFile(filepath.Join(projectDir, installedVersionFile), []byte(version+"\n"), 0o644)
@@ -520,6 +521,71 @@ func restrictToCurrentUser(path string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Printf("Aviso: no pude restringir los permisos de .env (%v): %s\n", err, strings.TrimSpace(string(out)))
 	}
+}
+
+// Cantidad de intentos y espera entre ellos cuando `docker compose up -d` corta porque un servicio
+// todavia no paso su chequeo de salud (arranque lento: se levantan ~30 contenedores a la vez, y
+// scan-service, ademas, baja la base de CVEs de trivy y las plantillas de nuclei).
+const (
+	maxIntentosUp         = 3
+	esperaEntreIntentosUp = 25 * time.Second
+)
+
+var reContenedorNoSano = regexp.MustCompile(`container (\S+) is unhealthy`)
+
+// esArranqueLento dice si la salida de `docker compose up` es el aviso de "un servicio todavia no
+// esta sano" (algo pasajero que se arregla esperando), y no un error de verdad (puerto ocupado, imagen
+// que falta, etc.).
+func esArranqueLento(salida string) bool {
+	s := strings.ToLower(salida)
+	return strings.Contains(s, "is unhealthy") || strings.Contains(s, "dependency failed to start")
+}
+
+// contenedorNoSano devuelve el nombre del contenedor que compose marco como "unhealthy" ("" si no hay).
+func contenedorNoSano(salida string) string {
+	if m := reContenedorNoSano.FindStringSubmatch(salida); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// composeUpConReintentos corre `docker compose up -d`. Si falla por un arranque lento lo reintenta
+// (es idempotente: lo que ya esta sano no se toca); recien cuando se agotan los intentos muestra el log
+// del contenedor que no se puso sano y corta.
+func composeUpConReintentos() {
+	for intento := 1; ; intento++ {
+		salida, err := runStreamingCapture("docker", "compose", "up", "-d")
+		if err == nil {
+			return
+		}
+		if !esArranqueLento(salida) {
+			fatal("\n'docker compose up' fallo: %v\n\nRevisa el detalle de arriba para ver que servicio dio error.", err)
+		}
+		if intento < maxIntentosUp {
+			fmt.Printf("\nUn servicio todavia no estaba sano (suele pasar mientras arrancan todos a la vez). Espero %d s y reintento (intento %d de %d)...\n\n",
+				int(esperaEntreIntentosUp/time.Second), intento+1, maxIntentosUp)
+			time.Sleep(esperaEntreIntentosUp)
+			continue
+		}
+		if c := contenedorNoSano(salida); c != "" {
+			fmt.Printf("\n---- ultimas lineas del log de %s ----\n", c)
+			cmd := exec.Command("docker", "logs", "--tail", "50", c)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stdout
+			_ = cmd.Run()
+		}
+		fatal("\n'docker compose up' fallo %d veces porque un servicio no se puso sano: %v\n\nMira el log de arriba. Si dice 'password authentication failed' la clave de Postgres del .env no coincide con la de la base ya creada.", maxIntentosUp, err)
+	}
+}
+
+// runStreamingCapture corre el comando mostrando su salida en pantalla y tambien la devuelve, para poder analizarla.
+func runStreamingCapture(name string, args ...string) (string, error) {
+	var buf bytes.Buffer
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+	err := cmd.Run()
+	return buf.String(), err
 }
 
 func runStreaming(name string, args ...string) error {

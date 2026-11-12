@@ -355,3 +355,20 @@ func TestCanCompileHereSoloConCodigoFuente(t *testing.T) {
 		t.Fatal("con docker-compose.dev.yml si se puede compilar")
 	}
 }
+
+func TestArranqueLentoSeDistingueDeUnErrorDeVerdad(t *testing.T) {
+	lento := " \u2718 Container tero-scan-service-1  Error dependency scan-service failed...\ndependency failed to start: container tero-scan-service-1 is unhealthy\n"
+	if !esArranqueLento(lento) {
+		t.Fatal("un servicio unhealthy es un arranque lento: hay que reintentar")
+	}
+	if got := contenedorNoSano(lento); got != "tero-scan-service-1" {
+		t.Fatalf("contenedor = %q", got)
+	}
+	puerto := "Error response from daemon: Bind for 127.0.0.1:8001 failed: port is already allocated"
+	if esArranqueLento(puerto) {
+		t.Fatal("un puerto ocupado NO es un arranque lento: no tiene sentido reintentar")
+	}
+	if contenedorNoSano(puerto) != "" {
+		t.Fatal("no deberia encontrar contenedor")
+	}
+}

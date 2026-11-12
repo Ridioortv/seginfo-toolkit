@@ -166,6 +166,17 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # El chequeo de salud de la imagen (curl con 3 s de espera y 5 intentos) era demasiado justo: mientras
+    # arrancan ~30 contenedores a la vez y scan-service baja la base de CVEs de trivy y las plantillas
+    # de nuclei, /health puede tardar mas de 3 s, el contenedor se marcaba "unhealthy" y `docker compose up`
+    # cortaba (los agentes dependen de que scan-service este sano). Aca se lo hace mas tolerante sin
+    # tocar la imagen. Los agentes siguen esperando a que este sano; solo se espera mas antes de darse por vencido.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -m 9 http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 120s
     ports:
       - "${BIND_ADDR:-127.0.0.1}:8003:8000"
 
