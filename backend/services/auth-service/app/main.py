@@ -311,7 +311,7 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
     user = await services.get_user_by_email(db, payload.email)
     role_name = user.role.name if user.role else services.SELF_SERVICE_ROLE
     # QR del MFA para vincular la cuenta en la misma pantalla de "Crear cuenta". Se entrega aca
-    # (y se confirma con REGISTER_MFA_CONFIRM, con un token de 30 min atado a esta cuenta) para
+    # (y se confirma con REGISTER_MFA_CONFIRM, con un token atado a esta cuenta, ver _setup_minutes()) para
     # no depender de iniciar sesion: si la suscripcion de la organizacion esta vencida el login
     # da 402 y antes el QR nunca llegaba a verse.
     secret, otpauth_url = await services.enroll_mfa(db, user)
@@ -324,17 +324,29 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
             secret=secret, otpauth_url=otpauth_url, qr_code_data_uri=services.mfa_qr_data_uri(otpauth_url),
         ),
         mfa_setup_token=mfa_setup_token_for(user.id, secret),
+        mfa_setup_expires_minutes=_setup_minutes(),
     )
 
 
-MFA_SETUP_TOKEN_MINUTES = 30
+def _setup_minutes() -> int:
+    """Cuanto tiene la persona para escanear el QR y confirmar el codigo al crear la cuenta.
+    Antes eran 30 min fijos y se quedaba corto (instalar la app, buscar el celular...). Ahora
+    120 por defecto, ajustable con MFA_SETUP_TOKEN_MINUTES (entre 5 y 1440 = 24 h)."""
+    try:
+        minutes = int(os.getenv("MFA_SETUP_TOKEN_MINUTES", "120"))
+    except ValueError:
+        minutes = 120
+    return max(5, min(minutes, 1440))
+
+
+MFA_SETUP_TOKEN_MINUTES = _setup_minutes()
 
 
 def mfa_setup_token_for(user_id: str, secret: str) -> str:
     """Token de "vincular MFA al registrarse": atado al usuario y a ESTE secreto (si se vuelve
     a enrolar, el anterior deja de servir)."""
     return create_token(
-        user_id, timedelta(minutes=MFA_SETUP_TOKEN_MINUTES),
+        user_id, timedelta(minutes=_setup_minutes()),
         {"type": "mfa_setup", "msf": password_reset.fingerprint(secret)},
     )
 
@@ -359,7 +371,7 @@ async def register_mfa_confirm(
         or claims.get("msf") != password_reset.fingerprint(user.mfa_secret)
     ):
         raise invalid
-    if not await services.confirm_mfa(db, user, payload.totp_code.replace(" ", "")):
+    if not await services.confirm_mfa(db, user, payload.totp_code.replace(" ", ""), window=services.SETUP_TOTP_WINDOW):
         raise HTTPException(status_code=400, detail="Codigo TOTP invalido")
     await services.record_audit_event(db, user.email, "auth.mfa.enabled_at_registration")
     await db.commit()
@@ -440,6 +452,13 @@ async def forgot_password(
         await db.commit()
         background_tasks.add_task(_email_reset_link, user.email, user.id)
     return MessageOut(message=FORGOT_PASSWORD_MESSAGE)
+
+
+@app.get("/auth/password/recovery-info")
+async def password_recovery_info():
+    """Para que la pantalla "Olvide mi contrasena" sepa si esta instalacion puede mandar mails.
+    No depende de ninguna cuenta (no revela quien existe): solo dice si hay SMTP configurado."""
+    return {"email_enabled": password_reset.smtp_configured(), "expires_minutes": password_reset.RESET_TOKEN_MINUTES}
 
 
 @app.post("/auth/password/reset", response_model=MessageOut)
@@ -609,7 +628,7 @@ async def mfa_confirm(payload: MfaVerifyRequest, claims: dict = Depends(get_curr
     # con un codigo adivinado en vez del real.
     await _enforce_rate_limit(f"mfa_confirm:user:{claims['sub']}", limit=10)
     user = await db.get(services.User, claims["sub"])
-    ok = await services.confirm_mfa(db, user, payload.totp_code)
+    ok = await services.confirm_mfa(db, user, payload.totp_code, window=services.SETUP_TOTP_WINDOW)
     await db.commit()
     if not ok:
         raise HTTPException(status_code=400, detail="Codigo TOTP invalido")
@@ -827,7 +846,7 @@ async def admin_mfa_confirm_user(
     if user.is_platform_admin and not claims.get("platform_admin"):
         raise HTTPException(status_code=403, detail="No podes administrar una cuenta de administrador de plataforma")
     await _enforce_rate_limit(f"admin_mfa_confirm:{claims.get('sub')}", limit=10)
-    if not await services.confirm_mfa(db, user, payload.totp_code.strip()):
+    if not await services.confirm_mfa(db, user, payload.totp_code.strip(), window=services.SETUP_TOTP_WINDOW):
         raise HTTPException(status_code=400, detail="El codigo no coincide. Revisa la hora del telefono y proba con el codigo nuevo.")
     await services.record_audit_event(db, claims.get("sub", ""), "user.mfa_confirm_by_admin", user.email)
     await db.commit()

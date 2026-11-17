@@ -140,12 +140,14 @@ export async function requestBlockedPaymentLink(payToken: string, provider: "pay
 // usuario que exista en toda la base queda como admin automaticamente. No
 // devuelve tokens (a diferencia de login/loginWithGoogle): Login.tsx llama
 // a login() con las mismas credenciales justo despues. SI devuelve el QR del
-// MFA (mfa_setup) y un token de 30 min (mfa_setup_token) para vincularlo con
+// MFA (mfa_setup) y un token (mfa_setup_token, 2 h por defecto) para vincularlo con
 // confirmRegistrationMfa() sin necesidad de haber iniciado sesion -- asi el
 // QR se ve en "Crear cuenta" aunque el login falle (ej. 402 por suscripcion).
 export interface RegisterOut {
   mfa_setup: MfaEnrollOut;
   mfa_setup_token: string;
+  // Minutos que dura el paso de vincular el MFA (por defecto 120, ver MFA_SETUP_TOKEN_MINUTES).
+  mfa_setup_expires_minutes?: number;
 }
 
 export async function register(email: string, password: string, fullName: string): Promise<RegisterOut> {
@@ -189,6 +191,12 @@ export async function mfaConfirm(totpCode: string): Promise<void> {
 // Siempre responde igual exista o no el email (el servidor no revela quien tiene cuenta).
 export async function forgotPassword(email: string): Promise<void> {
   await authApi.post("/auth/password/forgot", { email });
+}
+
+// Si esta instalacion puede mandar mails (SMTP). No revela nada de ninguna cuenta.
+export async function passwordRecoveryInfo(): Promise<{ email_enabled: boolean; expires_minutes: number }> {
+  const { data } = await authApi.get<{ email_enabled: boolean; expires_minutes: number }>("/auth/password/recovery-info");
+  return data;
 }
 
 export async function resetPassword(token: string, newPassword: string): Promise<void> {

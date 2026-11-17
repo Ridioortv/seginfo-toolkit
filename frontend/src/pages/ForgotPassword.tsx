@@ -1,7 +1,7 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
 import AuthShell from "../components/AuthShell";
-import { forgotPassword } from "../services/api";
+import { forgotPassword, passwordRecoveryInfo } from "../services/api";
 import { FORGOT_PASSWORD_MESSAGE } from "../utils/password";
 import { connectionErrorDetail } from "../utils/errors";
 
@@ -14,6 +14,14 @@ export default function ForgotPassword() {
   const [sent, setSent] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // null = todavia no se sabe (o el servidor no contesto): no se muestra ningun aviso.
+  const [emailEnabled, setEmailEnabled] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    passwordRecoveryInfo()
+      .then((info) => setEmailEnabled(info.email_enabled))
+      .catch(() => setEmailEnabled(null));
+  }, []);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -34,6 +42,23 @@ export default function ForgotPassword() {
       <form className="login-card" onSubmit={handleSubmit}>
         <h1>¿Olvidaste tu contrasena?</h1>
         <p>Escribi tu email y te mandamos un link para elegir una contrasena nueva.</p>
+
+        {emailEnabled === false && (
+          <div className="empty-hint" role="note">
+            <p>
+              En esta instalacion el envio de mails no esta configurado, asi que no te va a llegar ningun link. Pedile
+              a un administrador que te genere uno desde Usuarios y roles (Restablecer contrasena).
+            </p>
+            <p>
+              Si administras el servidor, podes generarlo desde la carpeta de TERO Security con este comando:
+            </p>
+            <p>
+              <code className="mono" style={{ userSelect: "all", wordBreak: "break-all" }}>
+                docker compose exec auth-service python -m app.cli_password tu@email.com
+              </code>
+            </p>
+          </div>
+        )}
 
         {sent ? (
           <>

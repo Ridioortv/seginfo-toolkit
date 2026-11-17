@@ -60,6 +60,10 @@ export default function MfaSetupCard({
         height={220}
         style={{ background: "#fff", padding: 8, borderRadius: 8, display: "block", margin: "12px auto" }}
       />
+      <p className="empty-hint">
+        Sin apuro: este paso queda abierto un par de horas. El codigo de la app cambia cada 30 segundos; si no
+        coincide, espera al siguiente y escribilo de nuevo. No cierres ni recargues esta pagina hasta confirmar.
+      </p>
       <p className="empty-hint">Si no podes escanear, agrega la cuenta a mano con esta clave (tipo: basado en tiempo):</p>
       <p>
         <code className="mono" style={{ userSelect: "all", wordBreak: "break-all" }}>

@@ -273,6 +273,7 @@ class RegisterResponse(UserOut):
     (sin depender de poder iniciar sesion todavia, p. ej. si la suscripcion esta vencida)."""
     mfa_setup: MfaEnrollResponse | None = None
     mfa_setup_token: str | None = None
+    mfa_setup_expires_minutes: int | None = None
 
 
 class RegisterMfaConfirmRequest(BaseModel):

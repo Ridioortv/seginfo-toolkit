@@ -556,8 +556,14 @@ def mfa_qr_data_uri(otpauth_url: str) -> str:
     return "data:image/svg+xml;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-async def confirm_mfa(db: AsyncSession, user: User, totp_code: str) -> bool:
-    if not user.mfa_secret or not pyotp.TOTP(user.mfa_secret).verify(totp_code, valid_window=1):
+# Al VINCULAR el MFA (no al iniciar sesion) se acepta un codigo de hasta 2 pasos de 30 s hacia
+# atras o adelante (~1 min de margen): la persona recien instalo la app, el reloj del celular
+# puede estar un poco corrido y el codigo cambia mientras lo tipea. El login sigue con 1.
+SETUP_TOTP_WINDOW = 2
+
+
+async def confirm_mfa(db: AsyncSession, user: User, totp_code: str, window: int = 1) -> bool:
+    if not user.mfa_secret or not pyotp.TOTP(user.mfa_secret).verify(totp_code, valid_window=window):
         return False
     user.mfa_enabled = True
     await db.flush()
