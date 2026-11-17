@@ -100,3 +100,21 @@ describe("plantillas", () => {
     }
   });
 });
+
+describe("entidades HTML en el diccionario", () => {
+  it("ninguna clave ni valor usa &amp; (el DOM trae '&', asi que la clave nunca coincidia)", () => {
+    // En JSX, `ATT&amp;CK` llega al navegador como "ATT&CK": una clave con "&amp;" jamas se encuentra y
+    // el titulo quedaba sin traducir en los 3 idiomas.
+    for (const [lang, dict] of Object.entries({ en, zh, ru })) {
+      for (const [k, v] of Object.entries(dict)) {
+        expect(k, `${lang}: clave con entidad`).not.toMatch(/&(amp|lt|gt|quot|#\d+);/);
+        expect(v, `${lang}: valor con entidad (${k})`).not.toMatch(/&(amp|lt|gt|quot|#\d+);/);
+      }
+    }
+  });
+
+  it("los titulos del panel con ATT&CK se traducen", () => {
+    expect(translate("Cobertura MITRE ATT&CK", "en")).toBe("MITRE ATT&CK coverage");
+    expect(translate("Brechas de deteccion MITRE ATT&CK", "ru")).toBe(ru["Brechas de deteccion MITRE ATT&CK"]);
+  });
+});

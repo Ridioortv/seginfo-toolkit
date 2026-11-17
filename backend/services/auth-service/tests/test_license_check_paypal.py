@@ -207,3 +207,23 @@ def test_get_payment_links_only_asks_enabled_gateways(monkeypatch):
     _patch_http(monkeypatch, handler)
     assert asyncio.run(lc.get_payment_links("a@b.com")) == {"mercadopago": "https://mp.test/ok"}
     assert seen == ["/license/KEY1/mercadopago/subscription-link"]
+
+
+def test_payment_link_waits_long_enough_for_a_sleeping_central_server(monkeypatch):
+    """El servidor central (plan gratis) tarda ~50 s en despertar: con 20 s el primer
+    clic despues de un rato sin uso fallaba y el siguiente andaba."""
+    seen = {}
+    real = httpx.AsyncClient
+
+    def factory(*a, **kw):
+        seen["timeout"] = kw.get("timeout")
+        kw["transport"] = httpx.MockTransport(
+            lambda r: httpx.Response(200, json={"subscription_id": "I-1", "approval_url": "https://p.test/ok"})
+        )
+        return real(*a, **kw)
+
+    monkeypatch.setattr(lc.httpx, "AsyncClient", factory)
+    monkeypatch.setattr(lc, "LICENSE_SERVER_URL", "https://lic.test")
+    monkeypatch.setattr(lc, "LICENSE_KEY", "KEY1")
+    assert asyncio.run(lc.get_payment_link("a@b.com")) == "https://p.test/ok"
+    assert seen["timeout"] >= 50

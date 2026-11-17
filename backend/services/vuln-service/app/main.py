@@ -2,6 +2,7 @@
 y CISA KEV, y expone el workflow de triage (confirmar, falso positivo,
 riesgo aceptado, remediado). Ver app/enrichment.py para el detalle de las
 fuentes de datos, todas de solo lectura."""
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,14 +10,18 @@ from prometheus_client import Counter, make_asgi_app
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.shared.database import get_db, engine, Base
+from backend.shared.database import get_db, engine, Base, SessionLocal, wait_for_database
 from backend.shared.logging import configure_logging
+from backend.shared import egress
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
+from backend.shared.db_errors import install_db_error_handlers
+from backend.shared.service_auth import require_service_token
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
-from app.schemas import IngestRequest, IngestResponse, TriageRequest, VulnerabilityOut, VulnerabilityStatsOut
+from app.models import VulnStatus
+from app.schemas import IngestRequest, IngestResponse, RiskAcceptanceRequest, TicketResolvedRequest, TriageRequest, VulnerabilityOut, VulnerabilityStatsOut
 from app.dependencies import get_current_claims, require_role
-from app import services
+from app import closure, services
 
 logger = configure_logging("vuln-service")
 vulns_ingested_total = Counter("vulns_ingested_total", "Hallazgos ingeridos", ["scanner_type"])
@@ -25,6 +30,7 @@ vulns_triaged_total = Counter("vulns_triaged_total", "Vulnerabilidades triadas",
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await wait_for_database()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(text(
@@ -33,11 +39,23 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             f"UPDATE vulnerabilities SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
         ))
+        for column, ddl in (
+            ("remediated_at", "TIMESTAMP WITH TIME ZONE"), ("closure_status", "VARCHAR(20) DEFAULT ''"),
+            ("closure_detail", "TEXT DEFAULT ''"), ("closure_scan_job_id", "VARCHAR(36)"),
+            ("closure_requested_at", "TIMESTAMP WITH TIME ZONE"), ("closure_checked_at", "TIMESTAMP WITH TIME ZONE"),
+            ("closure_attempts", "INTEGER DEFAULT 0"), ("verified_at", "TIMESTAMP WITH TIME ZONE"),
+        ):
+            await conn.execute(text(f"ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS {column} {ddl}"))
+        await conn.execute(text("UPDATE vulnerabilities SET closure_status = '' WHERE closure_status IS NULL"))
+        await conn.execute(text("UPDATE vulnerabilities SET closure_attempts = 0 WHERE closure_attempts IS NULL"))
+    closure_task = asyncio.create_task(closure.loop(SessionLocal))
     logger.info("vuln-service iniciado")
     yield
+    closure_task.cancel()
 
 
 app = FastAPI(title="TERO Security Vulnerability Service", version="0.1.0", lifespan=lifespan)
+egress.install("vuln-service", app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -45,6 +63,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
+install_db_error_handlers(app)  # 409/422 claros en vez de 500 ante datos que la base rechaza
 app.mount("/metrics", make_asgi_app())
 
 
@@ -95,17 +114,58 @@ async def list_vulnerabilities(
     asset_id: str | None = None,
     min_priority: float | None = None,
     scan_job_id: str | None = None,
+    closure_status: str | None = None,
     claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ):
     return await services.list_vulnerabilities(
-        db, org_id_from_claims(claims), status_filter, severity, asset_id, min_priority, scan_job_id
+        db, org_id_from_claims(claims), status_filter, severity, asset_id, min_priority, scan_job_id, closure_status
     )
 
 
 @app.get("/vulnerabilities/stats", response_model=VulnerabilityStatsOut)
 async def stats(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
     return await services.get_stats(db, org_id_from_claims(claims))
+
+
+@app.get("/vulnerabilities/posture")
+async def posture(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
+    """Vulnerabilidades abiertas hoy por severidad y explotadas activamente (lo usa Cumplimiento)."""
+    return await services.get_posture(db, org_id_from_claims(claims))
+
+
+@app.get("/vulnerabilities/executive")
+async def executive(days: int = 30, claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
+    """Abiertas hoy, flujo del periodo vs el anterior y exposicion por activo (lo usa el tablero ejecutivo)."""
+    return await services.get_executive(db, org_id_from_claims(claims), days)
+
+
+@app.get("/vulnerabilities/closure/stats")
+async def closure_stats(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
+    """Cierres verificados vs declarados y MTTR real (hasta el cierre verificado) vs declarado."""
+    return await closure.stats(db, org_id_from_claims(claims))
+
+
+@app.post("/vulnerabilities/{vuln_id}/verify-closure", response_model=VulnerabilityOut)
+async def verify_closure(
+    vuln_id: str,
+    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Repite el escaneo que la encontro para comprobar que de verdad se corrigio (o reintenta una verificacion
+    que no pudo completarse). Solo para vulnerabilidades marcadas como remediadas."""
+    vuln = await services.get_vulnerability(db, vuln_id, org_id_from_claims(claims))
+    if vuln is None:
+        raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
+    if vuln.status != VulnStatus.remediated:
+        raise HTTPException(status_code=409, detail="Solo se verifica el cierre de vulnerabilidades marcadas como remediadas")
+    if vuln.closure_status == "pending" and vuln.closure_scan_job_id:
+        raise HTTPException(status_code=409, detail="Ya hay un re-escaneo de verificacion en curso")
+    closure.request_manual(vuln)
+    await closure.step(db, vuln, closure.get_client())  # pide el re-escaneo ya; el ciclo de fondo lo sigue
+    await db.commit()
+    await db.refresh(vuln)
+    return vuln
 
 
 @app.get("/vulnerabilities/{vuln_id}", response_model=VulnerabilityOut)
@@ -156,8 +216,77 @@ async def triage(
     vuln = await services.get_vulnerability(db, vuln_id, org_id_from_claims(claims))
     if vuln is None:
         raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
-    vuln = await services.triage_vulnerability(db, vuln, payload, claims.get("sub", ""))
+    if payload.status == VulnStatus.accepted_risk and services.accept_risk_needs_exception(vuln):
+        raise HTTPException(
+            status_code=409,
+            detail="Aceptar el riesgo de una vulnerabilidad alta o critica requiere una excepcion aprobada: "
+                   "pedila en Confianza y evidencia -> Excepciones.",
+        )
+    vuln = await services.triage_vulnerability(db, vuln, payload, (claims.get("email") or claims.get("sub", "")))
     await db.commit()
     vulns_triaged_total.labels(new_status=payload.status.value).inc()
     logger.info("vulnerabilidad triada", extra={"vuln_id": vuln_id, "status": payload.status.value, "actor": claims.get("sub")})
     return vuln
+
+
+# --- Servicio a servicio: las usa case-service para el flujo de excepciones de riesgo -------------------------------
+
+@app.get("/internal/vulnerabilities/{vuln_id}")
+async def internal_get_vulnerability(vuln_id: str, claims: dict = Depends(require_service_token), db: AsyncSession = Depends(get_db)):
+    vuln = await services.get_vulnerability(db, vuln_id, org_id_from_claims(claims))
+    if vuln is None:
+        raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
+    return {"id": vuln.id, "title": vuln.title, "severity": vuln.severity.value, "status": vuln.status.value,
+            "cve_id": vuln.cve_id or "", "asset_id": vuln.asset_id or "",
+            # Lo que necesita integration-service para armar el ticket (Jira, ServiceNow...).
+            "description": (vuln.description or "")[:3000], "cvss_score": vuln.cvss_score, "is_kev": bool(vuln.is_kev),
+            "port": vuln.port, "service": vuln.service or "", "package": vuln.package or "",
+            "installed_version": vuln.installed_version or "", "fixed_version": vuln.fixed_version or "",
+            "remediation_steps": list(vuln.remediation_steps)[:10]}
+
+
+@app.post("/internal/vulnerabilities/{vuln_id}/ticket-resolved")
+async def internal_ticket_resolved(
+    vuln_id: str, payload: TicketResolvedRequest, claims: dict = Depends(require_service_token),
+    db: AsyncSession = Depends(get_db),
+):
+    """El ticket externo (Jira/ServiceNow) de esta vulnerabilidad se resolvio. Pasa a "remediada" (lo que declara el
+    equipo) y de ahi arranca solo la verificacion con un nuevo escaneo: que el ticket diga "Hecho" no la da por corregida.
+    Solo mueve una vulnerabilidad abierta o confirmada; en cualquier otro estado no toca nada y lo informa."""
+    vuln = await services.get_vulnerability(db, vuln_id, org_id_from_claims(claims))
+    if vuln is None:
+        raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
+    current = vuln.status.value
+    if current not in ("open", "confirmed"):
+        return {"id": vuln.id, "status": current, "changed": False}
+    note = (f"Ticket {payload.ticket_key} resuelto en {payload.provider}. " + payload.note).strip()[:1000]
+    vuln = await services.triage_vulnerability(db, vuln, TriageRequest(status=VulnStatus.remediated, note=note),
+                                               payload.actor or claims.get("sub", ""))
+    await db.commit()
+    vulns_triaged_total.labels(new_status="remediated").inc()
+    return {"id": vuln.id, "status": vuln.status.value, "changed": True, "closure_status": vuln.closure_status}
+
+
+@app.post("/internal/vulnerabilities/{vuln_id}/risk-acceptance")
+async def internal_risk_acceptance(
+    vuln_id: str, payload: RiskAcceptanceRequest, claims: dict = Depends(require_service_token),
+    db: AsyncSession = Depends(get_db),
+):
+    """accept: open/confirmed -> accepted_risk. reopen: accepted_risk -> open (vencio o se revoco la excepcion)."""
+    vuln = await services.get_vulnerability(db, vuln_id, org_id_from_claims(claims))
+    if vuln is None:
+        raise HTTPException(status_code=404, detail="Vulnerabilidad no encontrada")
+    current = vuln.status.value
+    if payload.action == "accept":
+        if current not in ("open", "confirmed"):
+            raise HTTPException(status_code=409, detail=f"La vulnerabilidad esta en estado {current}: solo se acepta una abierta o confirmada")
+        target = VulnStatus.accepted_risk
+    else:
+        if current != "accepted_risk":
+            raise HTTPException(status_code=409, detail=f"La vulnerabilidad esta en estado {current}, no hay riesgo aceptado que reabrir")
+        target = VulnStatus.open
+    vuln = await services.triage_vulnerability(db, vuln, TriageRequest(status=target, note=payload.note),
+                                               payload.actor or claims.get("sub", ""))
+    await db.commit()
+    vulns_triaged_total.labels(new_status=target.value).inc()
+    return {"id": vuln.id, "status": vuln.status.value}

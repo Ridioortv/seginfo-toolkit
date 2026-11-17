@@ -1,9 +1,18 @@
 // TERO Security - Iniciar.exe
 //
 // Launcher para Windows que levanta toda la plataforma TERO Security
-// (12 microservicios + Postgres/Redis/OpenSearch) con Docker Compose y
+// (15 microservicios + Postgres/Redis/OpenSearch) con Docker Compose y
 // abre el dashboard en el navegador. No reemplaza a Docker: sigue
 // haciendo falta tener Docker Desktop instalado en la PC.
+//
+// Las imagenes NO se compilan en la PC del cliente: se bajan ya armadas del registro privado
+// (GHCR), o se cargan de tero-imagenes-<version>.tar.zst si ese archivo esta junto al programa.
+// Solo la primera vez o al cambiar de version; el arranque de todos los dias es `docker compose up -d`.
+//
+// Opciones (desde una terminal o un acceso directo):
+//
+//	--compilar     compila las imagenes en esta PC (en tandas de 3) en vez de bajarlas
+//	--actualizar   vuelve a bajar/cargar las imagenes aunque la version ya este instalada
 //
 // Pensado para vivir en la raiz del repo (junto a docker-compose.yml) y
 // ejecutarse con doble click. Ver launcher/README.md para como
@@ -12,14 +21,17 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -49,9 +61,32 @@ var services = []service{
 	{"report-service", "http://localhost:8009/health"},
 	{"notification-service", "http://localhost:8010/health"},
 	{"integration-service", "http://localhost:8011/health"},
+	{"threatintel-service", "http://localhost:8012/health"},
+	{"asm-service", "http://localhost:8013/health"},
+	{"cloud-service", "http://localhost:8014/health"},
+	{"coderepo-service", "http://localhost:8015/health"},
 }
 
 func main() {
+	compile, force := false, false
+	for _, arg := range os.Args[1:] {
+		switch arg {
+		case "--compilar":
+			compile = true
+		case "--actualizar":
+			force = true
+		case "--ayuda", "-h", "--help":
+			fmt.Println("TERO Security - Iniciar.exe [--compilar] [--actualizar]")
+			fmt.Println("  --compilar    compila las imagenes en esta PC (mas lento que bajarlas)")
+			fmt.Println("  --actualizar  vuelve a bajar/cargar las imagenes aunque ya esten instaladas")
+			return
+		default:
+			fmt.Printf("Opcion desconocida: %s (usa --ayuda)\n", arg)
+			os.Exit(2)
+		}
+	}
+	started := time.Now()
+
 	fmt.Println("========================================")
 	fmt.Println(" TERO Security - iniciando la plataforma")
 	fmt.Println("========================================")
@@ -67,14 +102,44 @@ func main() {
 	ensureDockerInstalled()
 	ensureDockerRunning()
 	ensureEnvFile(projectDir)
+	ensureMapCount()
+
+	// La version de las imagenes (archivo VERSION) llega a docker-compose.yml por TERO_VERSION.
+	version := effectiveVersion(projectDir)
+	_ = os.Setenv("TERO_VERSION", version)
+	installed := readTrimmed(filepath.Join(projectDir, installedVersionFile))
+	mode := decideMode(compile, force, version, installed, missingImages(composeImages()))
 
 	fmt.Println()
-	fmt.Println("Levantando los servicios con Docker Compose (puede tardar varios")
-	fmt.Println("minutos la primera vez, porque construye cada imagen)...")
-	fmt.Println()
+	switch mode {
+	case modeFirst:
+		fmt.Printf("Primera instalacion de TERO Security %s: voy a conseguir las imagenes (una sola vez).\n", version)
+	case modeUpdate:
+		if installed == "" {
+			installed = "?"
+		}
+		fmt.Printf("Actualizando TERO Security %s -> %s: voy a conseguir las imagenes nuevas.\n", installed, version)
+	case modeMissing:
+		fmt.Println("[!] Faltan imagenes de Docker en esta PC (se borraron?). Las consigo de nuevo.")
+	case modeCompile:
+		fmt.Println("Modo --compilar: construyo las imagenes en esta PC (mas lento que bajarlas).")
+	case modeDaily:
+		fmt.Printf("TERO Security %s ya esta instalado: arranque rapido (sin bajar ni compilar nada).\n", version)
+	}
 
-	if err := runStreaming("docker", "compose", "up", "-d", "--build"); err != nil {
-		fatal("\n'docker compose up' fallo: %v\n\nRevisa el detalle de arriba para ver que servicio dio error.", err)
+	if mode == modeDaily {
+		warnLowDisk(projectDir)
+	} else {
+		prepareImages(projectDir, version, mode)
+	}
+
+	fmt.Println()
+	fmt.Println("Levantando los servicios...")
+	fmt.Println()
+	composeUpConReintentos()
+	if mode != modeDaily {
+		// Recien ahora (imagenes listas y contenedores creados) se recuerda la version.
+		_ = os.WriteFile(filepath.Join(projectDir, installedVersionFile), []byte(version+"\n"), 0o644)
 	}
 
 	// Los contenedores tienen restart:unless-stopped, asi que si alguno
@@ -84,7 +149,7 @@ func main() {
 	// que damos varios minutos de margen antes de declarar que algo
 	// esta realmente roto.
 	fmt.Println()
-	fmt.Println("Esperando a que los 11 microservicios respondan (puede tardar un par")
+	fmt.Println("Esperando a que los 15 microservicios respondan (puede tardar un par")
 	fmt.Println("de minutos mientras Postgres/Redis/OpenSearch terminan de arrancar y")
 	fmt.Println("los contenedores que se reinicien solos vuelven a levantar)...")
 	fmt.Println()
@@ -128,7 +193,7 @@ func main() {
 	fmt.Println()
 	fmt.Println("========================================")
 	if len(failed) == 0 && frontendOK {
-		fmt.Println(" TERO Security esta corriendo. Los 11 microservicios y el frontend")
+		fmt.Println(" TERO Security esta corriendo. Los 15 microservicios y el frontend")
 		fmt.Println(" respondieron correctamente.")
 		fmt.Println(" Dashboard: " + frontendURL)
 		fmt.Println()
@@ -143,11 +208,80 @@ func main() {
 		fmt.Println(" a correr este programa (docker compose up es idempotente).")
 	}
 	fmt.Println()
+	elapsed := time.Since(started).Round(time.Second)
+	fmt.Printf(" Tiempo total: %d min %d s\n", int(elapsed.Minutes()), int(elapsed.Seconds())%60)
+	fmt.Println()
 	fmt.Println(" Los servicios siguen funcionando en segundo plano aunque")
 	fmt.Println(" cierres esta ventana. Para pararlos, usa")
 	fmt.Println(" 'TERO Security - Detener.exe'.")
 	fmt.Println("========================================")
 	pause()
+}
+
+// warnLowDisk: en el arranque diario solo se avisa si queda muy poco disco (OpenSearch deja de
+// guardar logs al pasar el 95 % de uso).
+func warnLowDisk(projectDir string) {
+	if gb, where := minFreeDisk(projectDir); gb < envInt("TERO_AVISO_DISCO_GB", warnDiskGB) {
+		fmt.Printf("[!] Al disco (%s) le quedan solo %d GB libres. Si se llena, el SIEM deja de guardar logs. Libera espacio pronto.\n", where, gb)
+	}
+}
+
+// prepareImages: chequeos previos + conseguir las imagenes (offline, GHCR o compilando).
+func prepareImages(projectDir, version string, mode startMode) {
+	gb, where := minFreeDisk(projectDir)
+	if ok, msg := diskCheck(gb, envInt("TERO_MIN_DISCO_GB", minDiskGB), where); !ok {
+		fatal("%s", msg)
+	} else {
+		fmt.Println(msg)
+	}
+	if ok, msg := ramCheck(totalRAMGB(), envInt("TERO_MIN_RAM_GB", minRAMGB)); !ok {
+		fmt.Println("[!] " + msg)
+	} else {
+		fmt.Println(msg)
+	}
+
+	if mode == modeCompile {
+		if err := compileInBatches(); err != nil {
+			fatal("No pude compilar las imagenes: %v", err)
+		}
+		return
+	}
+	archive := findOfflineArchive(projectDir, version)
+	if archive != "" {
+		if err := loadOfflineArchive(archive); err != nil {
+			fatal("No pude cargar las imagenes del archivo offline: %v", err)
+		}
+		if len(missingImages(composeImages())) == 0 {
+			return
+		}
+		fmt.Println("[!] El archivo offline no traia todas las imagenes; bajo las que faltan.")
+	}
+	loginGHCRIfConfigured(projectDir)
+	fmt.Println()
+	fmt.Println("Bajando las imagenes (varios GB; depende de tu conexion)...")
+	result := pullImages()
+	if result != pullOK && canCompileHere() {
+		// Instalacion hecha desde el codigo fuente (hay docker-compose.dev.yml) y las imagenes
+		// no se pueden bajar (registro privado, sin login, sin internet): se compilan aca solas,
+		// sin tener que acordarse de pasar --compilar.
+		fmt.Println()
+		fmt.Println("No pude bajar las imagenes, pero esta carpeta tiene el codigo fuente:")
+		fmt.Println("las compilo en esta PC automaticamente (tarda varios minutos la primera vez).")
+		fmt.Println()
+		if err := compileInBatches(); err != nil {
+			fatal("No pude compilar las imagenes: %v", err)
+		}
+		return
+	}
+	switch result {
+	case pullOK:
+	case pullNeedsLogin:
+		explainLogin(version)
+		pause()
+		os.Exit(1)
+	default:
+		fatal("No pude bajar las imagenes. Revisa tu conexion a internet o usa el archivo offline (tero-imagenes-%s.tar.zst).\nTambien podes compilar con:  \"TERO Security - Iniciar.exe\" --compilar", version)
+	}
 }
 
 // waitForAllServices sondea el /health de cada servicio en paralelo
@@ -387,6 +521,71 @@ func restrictToCurrentUser(path string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		fmt.Printf("Aviso: no pude restringir los permisos de .env (%v): %s\n", err, strings.TrimSpace(string(out)))
 	}
+}
+
+// Cantidad de intentos y espera entre ellos cuando `docker compose up -d` corta porque un servicio
+// todavia no paso su chequeo de salud (arranque lento: se levantan ~30 contenedores a la vez, y
+// scan-service, ademas, baja la base de CVEs de trivy y las plantillas de nuclei).
+const (
+	maxIntentosUp         = 3
+	esperaEntreIntentosUp = 25 * time.Second
+)
+
+var reContenedorNoSano = regexp.MustCompile(`container (\S+) is unhealthy`)
+
+// esArranqueLento dice si la salida de `docker compose up` es el aviso de "un servicio todavia no
+// esta sano" (algo pasajero que se arregla esperando), y no un error de verdad (puerto ocupado, imagen
+// que falta, etc.).
+func esArranqueLento(salida string) bool {
+	s := strings.ToLower(salida)
+	return strings.Contains(s, "is unhealthy") || strings.Contains(s, "dependency failed to start")
+}
+
+// contenedorNoSano devuelve el nombre del contenedor que compose marco como "unhealthy" ("" si no hay).
+func contenedorNoSano(salida string) string {
+	if m := reContenedorNoSano.FindStringSubmatch(salida); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// composeUpConReintentos corre `docker compose up -d`. Si falla por un arranque lento lo reintenta
+// (es idempotente: lo que ya esta sano no se toca); recien cuando se agotan los intentos muestra el log
+// del contenedor que no se puso sano y corta.
+func composeUpConReintentos() {
+	for intento := 1; ; intento++ {
+		salida, err := runStreamingCapture("docker", "compose", "up", "-d")
+		if err == nil {
+			return
+		}
+		if !esArranqueLento(salida) {
+			fatal("\n'docker compose up' fallo: %v\n\nRevisa el detalle de arriba para ver que servicio dio error.", err)
+		}
+		if intento < maxIntentosUp {
+			fmt.Printf("\nUn servicio todavia no estaba sano (suele pasar mientras arrancan todos a la vez). Espero %d s y reintento (intento %d de %d)...\n\n",
+				int(esperaEntreIntentosUp/time.Second), intento+1, maxIntentosUp)
+			time.Sleep(esperaEntreIntentosUp)
+			continue
+		}
+		if c := contenedorNoSano(salida); c != "" {
+			fmt.Printf("\n---- ultimas lineas del log de %s ----\n", c)
+			cmd := exec.Command("docker", "logs", "--tail", "50", c)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stdout
+			_ = cmd.Run()
+		}
+		fatal("\n'docker compose up' fallo %d veces porque un servicio no se puso sano: %v\n\nMira el log de arriba. Si dice 'password authentication failed' la clave de Postgres del .env no coincide con la de la base ya creada.", maxIntentosUp, err)
+	}
+}
+
+// runStreamingCapture corre el comando mostrando su salida en pantalla y tambien la devuelve, para poder analizarla.
+func runStreamingCapture(name string, args ...string) (string, error) {
+	var buf bytes.Buffer
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+	err := cmd.Run()
+	return buf.String(), err
 }
 
 func runStreaming(name string, args ...string) error {

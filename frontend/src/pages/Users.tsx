@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { authApi, type MfaEnrollOut } from "../services/api";
+import { authApi, createPasswordResetLink, type MfaEnrollOut, type PasswordResetLinkOut } from "../services/api";
 import { useAuthStore } from "../store/auth";
 import type { AssignableRole, OrganizationOut, UserAdminOut } from "../types";
 import PageHeader from "../components/PageHeader";
@@ -92,6 +92,33 @@ export default function Users() {
     },
     onError: (e: unknown) => setError(connectionErrorDetail(e)),
   });
+
+  // Link para restablecer la contrasena de OTRA persona (vale 30 min, un solo uso): el admin se
+  // lo pasa cuando no hay mail configurado o no le llega. Si hay SMTP, tambien se lo manda.
+  const [resetLink, setResetLink] = useState<(PasswordResetLinkOut & { email: string }) | null>(null);
+  const [copied, setCopied] = useState(false);
+  const makeResetLink = useMutation({
+    mutationFn: async (v: { userId: string; email: string }) => ({
+      ...(await createPasswordResetLink(orgId, v.userId)),
+      email: v.email,
+    }),
+    onSuccess: (r) => {
+      setError(null);
+      setCopied(false);
+      setResetLink(r);
+    },
+    onError: (e: unknown) => setError(connectionErrorDetail(e)),
+  });
+
+  async function copyResetLink() {
+    if (!resetLink) return;
+    try {
+      await navigator.clipboard.writeText(resetLink.reset_url);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }
 
   const createUser = useMutation({
     mutationFn: async () =>
@@ -224,7 +251,22 @@ export default function Users() {
             {created && <p>{created}</p>}
           </div>
 
-          {linking && (
+          {resetLink && (
+        <div className="panel">
+          <h2>{`Link para restablecer la contrasena de ${resetLink.email}`}</h2>
+          <p className="empty-hint">
+            {`Pasaselo a la persona: vale ${resetLink.expires_minutes} minutos y se puede usar una sola vez.`}
+            {resetLink.email_sent && " Tambien se lo mandamos por email."}
+          </p>
+          <p>
+            <code className="mono" style={{ userSelect: "all", wordBreak: "break-all" }}>{resetLink.reset_url}</code>
+          </p>
+          <button className="btn-secondary" onClick={copyResetLink}>{copied ? "Copiado" : "Copiar link"}</button>{" "}
+          <button className="btn-secondary" onClick={() => setResetLink(null)}>Cerrar</button>
+        </div>
+      )}
+
+      {linking && (
             <div className="panel">
               <h2>Vincular MFA de {linking.email}</h2>
               <p className="empty-hint">
@@ -327,6 +369,18 @@ export default function Users() {
                           >
                             {u.is_active ? "Desactivar" : "Activar"}
                           </button>
+                          {u.auth_provider === "local" && !isMe && (
+                            <>
+                              {" "}
+                              <button
+                                className="btn-secondary"
+                                disabled={makeResetLink.isPending}
+                                onClick={() => makeResetLink.mutate({ userId: u.id, email: u.email })}
+                              >
+                                Restablecer contrasena
+                              </button>
+                            </>
+                          )}
                         </td>
                       </tr>
                     );

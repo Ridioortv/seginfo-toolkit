@@ -1,5 +1,7 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Login from "./pages/Login";
+import ForgotPassword from "./pages/ForgotPassword";
+import ResetPassword from "./pages/ResetPassword";
 import Layout from "./components/Layout";
 import ProtectedRoute from "./components/ProtectedRoute";
 import Dashboard from "./pages/Dashboard";
@@ -11,6 +13,10 @@ import Siem from "./pages/Siem";
 import Surface from "./pages/Surface";
 import Cloud from "./pages/Cloud";
 import CodeRepos from "./pages/CodeRepos";
+import Trust from "./pages/Trust";
+import Executive from "./pages/Executive";
+import Partner from "./pages/Partner";
+import Governance from "./pages/Governance";
 import Soar from "./pages/Soar";
 import Cases from "./pages/Cases";
 import PurpleTeam from "./pages/PurpleTeam";
@@ -23,6 +29,7 @@ import Security from "./pages/Security";
 import Billing from "./pages/Billing";
 import Users from "./pages/Users";
 import SsoCallback from "./pages/SsoCallback";
+import VendorQuestionnaire from "./pages/VendorQuestionnaire";
 import { useLangStore } from "./i18n";
 
 export default function App() {
@@ -33,11 +40,16 @@ export default function App() {
     <BrowserRouter key={lang}>
       <Routes>
         <Route path="/login" element={<Login />} />
+        {/* Publicas: "Olvide mi contrasena" y el link del mail para elegir la nueva. */}
+        <Route path="/olvide-mi-contrasena" element={<ForgotPassword />} />
+        <Route path="/restablecer" element={<ResetPassword />} />
         {/* Fuera de ProtectedRoute a proposito: llega directo desde el
             proveedor de identidad externo (redirect de auth-service), sin
             tokens todavia -- los guarda ella misma antes de redirigir
             adentro de la app. Ver app/main.py::oidc_callback. */}
         <Route path="/sso/callback" element={<SsoCallback />} />
+        {/* Publica: el proveedor responde el cuestionario de seguridad desde el link que recibio. */}
+        <Route path="/proveedor/:token" element={<VendorQuestionnaire />} />
         <Route element={<ProtectedRoute />}>
           <Route element={<Layout />}>
             <Route path="/" element={<Dashboard />} />
@@ -49,6 +61,10 @@ export default function App() {
             <Route path="/surface" element={<Surface />} />
             <Route path="/cloud" element={<Cloud />} />
             <Route path="/code-repos" element={<CodeRepos />} />
+            <Route path="/ai-governance" element={<Governance />} />
+            <Route path="/executive" element={<Executive />} />
+            <Route path="/partner" element={<Partner />} />
+            <Route path="/trust" element={<Trust />} />
             <Route path="/soar" element={<Soar />} />
             <Route path="/cases" element={<Cases />} />
             <Route path="/purple-team" element={<PurpleTeam />} />

@@ -1,0 +1,150 @@
+# Para COMPILAR las imagenes en la PC en vez de bajarlas (desarrollo o sin acceso al registro).
+# Se SUMA al compose de uso:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml build
+# Con los lanzadores:  "TERO Security - Iniciar.exe" --compilar   /   ./tero-iniciar.sh --compilar
+# (el uso normal es solo docker-compose.yml: `docker compose pull` + `up -d`)
+services:
+  tero-base:
+    # Imagen base comun de los 13 servicios backend simples (backend/Dockerfile.base).
+    # No es un servicio que corra: solo existe para que Compose la construya ANTES que las
+    # demas (additional_contexts: service:tero-base). Por eso va en un profile que nunca se
+    # activa para arrancar (`up` no la levanta).
+    profiles: ["build"]
+    image: ${TERO_REGISTRY:-ghcr.io/ridioortv}/tero-base:${TERO_VERSION:-local}
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.base
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: backend/services/auth-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
+
+  asset-service:
+    build:
+      context: .
+      dockerfile: backend/services/asset-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
+
+  scan-service:
+    build:
+      context: .
+      dockerfile: backend/services/scan-service/Dockerfile
+
+  remote-agent:
+    build:
+      context: .
+      dockerfile: backend/services/scan-service/Dockerfile
+
+  remote-agent-wan:
+    build:
+      context: .
+      dockerfile: backend/services/scan-service/Dockerfile
+
+  vuln-service:
+    build:
+      context: .
+      dockerfile: backend/services/vuln-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
+
+  siem-service:
+    build:
+      context: .
+      dockerfile: backend/services/siem-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
+
+  soar-service:
+    build:
+      context: .
+      dockerfile: backend/services/soar-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
+
+  case-service:
+    build:
+      context: .
+      dockerfile: backend/services/case-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
+
+  purple-service:
+    build:
+      context: .
+      dockerfile: backend/services/purple-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
+
+  report-service:
+    build:
+      context: .
+      dockerfile: backend/services/report-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: backend/services/notification-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
+
+  integration-service:
+    build:
+      context: .
+      dockerfile: backend/services/integration-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
+
+  threatintel-service:
+    build:
+      context: .
+      dockerfile: backend/services/threatintel-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
+
+  asm-service:
+    build:
+      context: .
+      dockerfile: backend/services/asm-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
+
+  cloud-service:
+    build:
+      context: .
+      dockerfile: backend/services/cloud-service/Dockerfile
+      additional_contexts:
+        tero-base: service:tero-base
+
+  coderepo-service:
+    build:
+      context: .
+      dockerfile: backend/services/coderepo-service/Dockerfile
+
+  frontend:
+    build:
+      context: ./frontend
+      # Las URLs/ID de Google se hornean en el bundle al construir (Vite). Los
+      # defaults del Dockerfile son el stack local; .env los sobreescribe.
+      args:
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8001}
+        VITE_ASSET_API_BASE_URL: ${VITE_ASSET_API_BASE_URL:-http://localhost:8002}
+        VITE_SCAN_API_BASE_URL: ${VITE_SCAN_API_BASE_URL:-http://localhost:8003}
+        VITE_VULN_API_BASE_URL: ${VITE_VULN_API_BASE_URL:-http://localhost:8004}
+        VITE_SIEM_API_BASE_URL: ${VITE_SIEM_API_BASE_URL:-http://localhost:8005}
+        VITE_SOAR_API_BASE_URL: ${VITE_SOAR_API_BASE_URL:-http://localhost:8006}
+        VITE_CASE_API_BASE_URL: ${VITE_CASE_API_BASE_URL:-http://localhost:8007}
+        VITE_PURPLE_API_BASE_URL: ${VITE_PURPLE_API_BASE_URL:-http://localhost:8008}
+        VITE_REPORT_API_BASE_URL: ${VITE_REPORT_API_BASE_URL:-http://localhost:8009}
+        VITE_NOTIFICATION_API_BASE_URL: ${VITE_NOTIFICATION_API_BASE_URL:-http://localhost:8010}
+        VITE_INTEGRATION_API_BASE_URL: ${VITE_INTEGRATION_API_BASE_URL:-http://localhost:8011}
+        VITE_THREATINTEL_API_BASE_URL: ${VITE_THREATINTEL_API_BASE_URL:-http://localhost:8012}
+        VITE_ASM_API_BASE_URL: ${VITE_ASM_API_BASE_URL:-http://localhost:8013}
+        VITE_CLOUD_API_BASE_URL: ${VITE_CLOUD_API_BASE_URL:-http://localhost:8014}
+        VITE_CODEREPO_API_BASE_URL: ${VITE_CODEREPO_API_BASE_URL:-http://localhost:8015}

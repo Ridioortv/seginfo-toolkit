@@ -6,10 +6,12 @@ from prometheus_client import make_asgi_app
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.shared.database import get_db, engine, Base
+from backend.shared.database import get_db, engine, Base, wait_for_database
 from backend.shared.logging import configure_logging
+from backend.shared import egress
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
+from backend.shared.db_errors import install_db_error_handlers
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import AssetCreate, AssetUpdate, AssetOut, AssetGroupCreate, AssetGroupOut
 from app.dependencies import get_current_claims, require_role
@@ -20,6 +22,7 @@ logger = configure_logging("asset-service")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await wait_for_database()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # Migracion para instalaciones existentes (create_all no altera
@@ -33,6 +36,7 @@ async def lifespan(app: FastAPI):
         await conn.execute(text(
             "ALTER TABLE asset_groups ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"
         ))
+        await conn.execute(text("ALTER TABLE assets ADD COLUMN IF NOT EXISTS business_unit VARCHAR(100) DEFAULT ''"))
         await conn.execute(text(
             f"UPDATE assets SET organization_id = '{DEFAULT_ORGANIZATION_ID}' WHERE organization_id IS NULL"
         ))
@@ -58,6 +62,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="TERO Security Asset Service", version="0.1.0", lifespan=lifespan)
+egress.install("asset-service", app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -65,6 +70,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
+install_db_error_handlers(app)  # 409/422 claros en vez de 500 ante datos que la base rechaza
 app.mount("/metrics", make_asgi_app())
 
 

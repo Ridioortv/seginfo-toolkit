@@ -1,4 +1,5 @@
 """Pydantic schemas for purple-service."""
+import re
 from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
@@ -36,6 +37,25 @@ class ExerciseCreate(BaseModel):
         # contra TODO el catalogo ATT&CK en vez de reportar 0 declaradas.
         if not v:
             raise ValueError("declared_technique_ids no puede estar vacio: hay que declarar al menos una tecnica")
+        if len(v) > 400:
+            raise ValueError("Demasiadas tecnicas declaradas (maximo 400)")
+        # Formato ATT&CK (T1566 o T1566.001). Antes se aceptaba cualquier texto
+        # ("T9999", "no-tecnica") y la cobertura lo ignoraba en silencio.
+        out: list[str] = []
+        for raw in v:
+            tid = (raw or "").strip().upper()
+            if not re.fullmatch(r"T\d{4}(\.\d{3})?", tid):
+                raise ValueError(f"'{raw}' no es un ID de tecnica ATT&CK valido (ej. T1566 o T1566.001)")
+            if tid not in out:
+                out.append(tid)
+        return out
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        v = v.strip()
+        if not v or len(v) > 255:
+            raise ValueError("El nombre del ejercicio es obligatorio (hasta 255 caracteres)")
         return v
 
 

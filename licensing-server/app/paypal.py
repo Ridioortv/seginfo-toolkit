@@ -15,11 +15,19 @@ Sin PAYPAL_CLIENT_ID/SECRET configurados, is_configured() es False y
 tanto /admin/clients/{key}/paypal-subscription-link como /webhooks/paypal
 devuelven 503 en vez de intentar llamar a una API que no tienen con que
 autenticarse."""
+import asyncio
 import base64
+import hashlib
+import logging
 import os
+import time
 from datetime import datetime, timezone
 
 import httpx
+
+from app import db
+
+logger = logging.getLogger("paypal")
 
 def _env(name: str, default: str = "") -> str:
     """Variable de entorno SIN espacios ni saltos de linea a los costados: al
@@ -37,6 +45,24 @@ PAYPAL_PLAN_ID = _env("PAYPAL_PLAN_ID")
 PAYPAL_RETURN_URL = _env("PAYPAL_RETURN_URL", "https://www.google.com/?sentinelops_subscribed=1") or "https://www.google.com/?sentinelops_subscribed=1"
 PAYPAL_PREFILL_EMAIL = _env("PAYPAL_PREFILL_EMAIL").lower() in ("1", "true", "yes")
 PAYPAL_CANCEL_URL = _env("PAYPAL_CANCEL_URL", "https://www.google.com/?sentinelops_cancelled=1") or "https://www.google.com/?sentinelops_cancelled=1"
+# Si el PAYPAL_PLAN_ID no existe en PayPal (404 INVALID_RESOURCE_ID: casi siempre
+# es un plan de sandbox usado con credenciales live o al reves, o un plan de
+# otra cuenta), el servidor puede crear solo el plan de USD 250 cada 30 dias,
+# guardarlo en la base y reutilizarlo. Por defecto SOLO en sandbox; en live hay
+# que pedirlo con PAYPAL_AUTO_CREATE_PLAN=1 (0 lo apaga tambien en sandbox).
+PAYPAL_AUTO_CREATE_PLAN = _env("PAYPAL_AUTO_CREATE_PLAN").lower()
+PAYPAL_PRICE_USD = _env("PAYPAL_PRICE_USD", "250") or "250"
+try:
+    PAYPAL_PERIOD_DAYS = int(_env("PAYPAL_PERIOD_DAYS", "30") or "30")
+except ValueError:
+    PAYPAL_PERIOD_DAYS = 30
+_known_missing_plans: set[str] = set()
+_plan_lock: tuple | None = None
+# Token de acceso en memoria, MUY corto: antes cada llamada a PayPal pedia uno nuevo
+# (un viaje extra por cada consulta), y con varios links viejos eso eran decenas de
+# segundos. 5 minutos como maximo para que un secret rotado deje de servir pronto.
+_TOKEN_TTL_MAX = 300
+_token_cache: dict = {}
 
 # Eventos de PayPal que representan un pago efectivamente recibido --
 # unicos que disparan una extension de la licencia. Todo lo demas
@@ -68,10 +94,121 @@ def is_configured() -> bool:
 
 
 def _base_url() -> str:
-    return "https://api-m.paypal.com" if PAYPAL_ENV in ("live", "production", "prod") else "https://api-m.sandbox.paypal.com"
+    return "https://api-m.paypal.com" if _is_live() else "https://api-m.sandbox.paypal.com"
+
+
+def _is_live() -> bool:
+    return PAYPAL_ENV in ("live", "production", "prod")
+
+
+def auto_create_plan_allowed() -> bool:
+    if PAYPAL_AUTO_CREATE_PLAN in ("0", "false", "no"):
+        return False
+    if PAYPAL_AUTO_CREATE_PLAN in ("1", "true", "yes"):
+        return True
+    return not _is_live()
+
+
+def _plan_setting_name() -> str:
+    # Un plan solo existe en SU entorno y SU cuenta: la clave incluye ambos.
+    who = hashlib.sha256(PAYPAL_CLIENT_ID.encode()).hexdigest()[:12]
+    return f"paypal_plan:{'live' if _is_live() else 'sandbox'}:{who}"
+
+
+def _stored_plan() -> str | None:
+    try:
+        return db.get_setting(_plan_setting_name())
+    except Exception:  # la base no puede impedir cobrar: sin plan guardado se crea otro
+        logger.warning("no se pudo leer el plan de PayPal guardado", exc_info=True)
+        return None
+
+
+def _get_plan_lock() -> asyncio.Lock:
+    """Un lock por event loop: dos links simultaneos no deben crear dos planes."""
+    global _plan_lock
+    loop = asyncio.get_running_loop()
+    if _plan_lock is None or _plan_lock[0] is not loop:
+        _plan_lock = (loop, asyncio.Lock())
+    return _plan_lock[1]
+
+
+def _is_missing_plan(resp: httpx.Response) -> bool:
+    """404 INVALID_RESOURCE_ID al crear la suscripcion = el plan_id no existe."""
+    if resp.status_code != 404:
+        return False
+    try:
+        details = resp.json().get("details") or []
+    except (ValueError, AttributeError):
+        return False
+    return any(isinstance(d, dict) and d.get("issue") == "INVALID_RESOURCE_ID" for d in details)
+
+
+def _missing_plan_error(plan_id: str, explicit: bool) -> str:
+    which = "el plan indicado" if explicit else "el plan configurado"
+    return (
+        f"PayPal no encontro {which} ({plan_id}) en el entorno {PAYPAL_ENV}. Los planes de sandbox y de live "
+        "son distintos y cada plan pertenece a la cuenta de PayPal que lo creo: tiene que ser un plan creado en "
+        f"{PAYPAL_ENV} con las mismas credenciales (PAYPAL_CLIENT_ID) que usa este servidor. Solucion: corre "
+        f"`python create_paypal_plan.py` con PAYPAL_ENV={PAYPAL_ENV} y pega el PAYPAL_PLAN_ID que imprime en "
+        "las variables del servidor, o define PAYPAL_AUTO_CREATE_PLAN=1 para que el servidor cree el plan solo."
+    )
+
+
+async def create_plan(client: httpx.AsyncClient, token: str, price: str, days: int) -> str:
+    """Crea el producto y el plan (price USD cada `days` dias, renovacion
+    automatica) y devuelve el plan_id. Lo usan create_paypal_plan.py y la
+    creacion automatica."""
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    base = _base_url()
+    r = await client.post(
+        f"{base}/v1/catalogs/products", headers=headers,
+        json={"name": "TERO Security", "type": "SERVICE", "category": "SOFTWARE"},
+    )
+    if r.status_code >= 400:
+        raise PayPalError(f"PayPal no dejo crear el plan (fallo el producto): {r.status_code} {r.text[:300]}")
+    product_id = r.json()["id"]
+    r = await client.post(
+        f"{base}/v1/billing/plans", headers=headers,
+        json={
+            "product_id": product_id,
+            "name": f"TERO Security USD {price} cada {days} dias",
+            "billing_cycles": [{
+                "frequency": {"interval_unit": "DAY", "interval_count": days},
+                "tenure_type": "REGULAR",
+                "sequence": 1,
+                "total_cycles": 0,
+                "pricing_scheme": {"fixed_price": {"value": price, "currency_code": "USD"}},
+            }],
+            "payment_preferences": {"auto_bill_outstanding": True, "payment_failure_threshold": 3},
+        },
+    )
+    if r.status_code >= 400:
+        raise PayPalError(f"PayPal no dejo crear el plan: {r.status_code} {r.text[:300]}")
+    return r.json()["id"]
+
+
+async def _provision_plan(client: httpx.AsyncClient, token: str, stale: str | None) -> str:
+    """Plan guardado en la base si sirve; si no (o si es el que acaba de fallar),
+    crea uno nuevo y lo guarda."""
+    async with _get_plan_lock():
+        stored = _stored_plan()
+        if stored and stored != stale and stored not in _known_missing_plans:
+            return stored
+        plan_id = await create_plan(client, token, PAYPAL_PRICE_USD, PAYPAL_PERIOD_DAYS)
+        try:
+            db.set_setting(_plan_setting_name(), plan_id)
+        except Exception:
+            logger.warning("no se pudo guardar el plan de PayPal creado (%s)", plan_id, exc_info=True)
+        logger.warning("PayPal: el plan configurado no existia; se creo el plan %s (USD %s / %s dias, %s)",
+                       plan_id, PAYPAL_PRICE_USD, PAYPAL_PERIOD_DAYS, PAYPAL_ENV)
+        return plan_id
 
 
 async def _get_access_token(client: httpx.AsyncClient) -> str:
+    cache_key = (_base_url(), PAYPAL_CLIENT_ID, hashlib.sha256(PAYPAL_CLIENT_SECRET.encode()).hexdigest()[:12])
+    cached = _token_cache.get(cache_key)
+    if cached and cached[1] > time.monotonic():
+        return cached[0]
     basic = base64.b64encode(f"{PAYPAL_CLIENT_ID}:{PAYPAL_CLIENT_SECRET}".encode()).decode()
     resp = await client.post(
         f"{_base_url()}/v1/oauth2/token",
@@ -89,7 +226,14 @@ async def _get_access_token(client: httpx.AsyncClient) -> str:
         )
     if resp.status_code >= 400:
         raise PayPalError(f"PayPal no entrego el token de acceso: HTTP {resp.status_code}")
-    return resp.json()["access_token"]
+    body = resp.json()
+    try:
+        ttl = min(float(body.get("expires_in", 0)) - 60, _TOKEN_TTL_MAX)
+    except (TypeError, ValueError):
+        ttl = 0.0
+    if ttl > 0:
+        _token_cache[cache_key] = (body["access_token"], time.monotonic() + ttl)
+    return body["access_token"]
 
 
 async def create_subscription_approval_link(
@@ -102,32 +246,46 @@ async def create_subscription_approval_link(
     BILLING.SUBSCRIPTION.ACTIVATED."""
     if not is_configured():
         raise PayPalError("PAYPAL_CLIENT_ID/PAYPAL_CLIENT_SECRET no configurados")
+    explicit = bool(plan_id)
     plan_id = plan_id or PAYPAL_PLAN_ID
-    if not plan_id:
+    if not explicit and plan_id in _known_missing_plans:
+        plan_id = _stored_plan() or ""
+    if not plan_id and not auto_create_plan_allowed():
         raise PayPalError("No hay plan_id (PAYPAL_PLAN_ID vacio y no se paso uno explicito)")
 
     async with httpx.AsyncClient(timeout=15) as client:
         token = await _get_access_token(client)
-        payload = {
-            "plan_id": plan_id,
-            "custom_id": license_key,
-            "application_context": {
-                "brand_name": "TERO Security",
-                "user_action": "SUBSCRIBE_NOW",
-                "return_url": PAYPAL_RETURN_URL,
-                "cancel_url": PAYPAL_CANCEL_URL,
-            },
-        }
-        # Por defecto NO se precarga el email del suscriptor: el email de login del
-        # cliente casi nunca es el de su cuenta PayPal, y si coincide con el de la
-        # cuenta que cobra PayPal rechaza el checkout con una pantalla de error generica.
-        if payer_email and PAYPAL_PREFILL_EMAIL:
-            payload["subscriber"] = {"email_address": payer_email}
-        resp = await client.post(
-            f"{_base_url()}/v1/billing/subscriptions",
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json=payload,
-        )
+        if not plan_id:
+            plan_id = await _provision_plan(client, token, None)
+        for attempt in range(3):
+            payload = {
+                "plan_id": plan_id,
+                "custom_id": license_key,
+                "application_context": {
+                    "brand_name": "TERO Security",
+                    "user_action": "SUBSCRIBE_NOW",
+                    "return_url": PAYPAL_RETURN_URL,
+                    "cancel_url": PAYPAL_CANCEL_URL,
+                },
+            }
+            # Por defecto NO se precarga el email del suscriptor: el email de login del
+            # cliente casi nunca es el de su cuenta PayPal, y si coincide con el de la
+            # cuenta que cobra PayPal rechaza el checkout con una pantalla de error generica.
+            if payer_email and PAYPAL_PREFILL_EMAIL:
+                payload["subscriber"] = {"email_address": payer_email}
+            resp = await client.post(
+                f"{_base_url()}/v1/billing/subscriptions",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json=payload,
+            )
+            if not _is_missing_plan(resp):
+                break
+            # El plan no existe en este entorno/cuenta. Un plan pedido a mano por el
+            # operador nunca se reemplaza; el configurado, solo si esta permitido.
+            if explicit or not auto_create_plan_allowed() or attempt == 2:
+                raise PayPalError(_missing_plan_error(plan_id, explicit))
+            _known_missing_plans.add(plan_id)
+            plan_id = await _provision_plan(client, token, plan_id)
         if resp.status_code >= 400:
             raise PayPalError(f"PayPal rechazo la creacion de la suscripcion: {resp.status_code} {resp.text[:500]}")
         body = resp.json()

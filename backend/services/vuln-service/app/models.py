@@ -4,7 +4,7 @@ soporta el workflow de triage (confirmar, marcar falso positivo, aceptar
 riesgo, marcar remediado)."""
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, DateTime, Enum as SAEnum, Float, Boolean, Text
+from sqlalchemy import String, DateTime, Enum as SAEnum, Float, Boolean, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from backend.shared.database import Base
 from app import remediation
@@ -67,6 +67,18 @@ class Vulnerability(Base):
     status: Mapped[VulnStatus] = mapped_column(SAEnum(VulnStatus, native_enum=False), default=VulnStatus.open)
     triage_note: Mapped[str] = mapped_column(Text, default="")
     triaged_by: Mapped[str] = mapped_column(String(255), default="")
+
+    # Cierre verificado (ver app/closure.py). Columnas separadas y no un valor nuevo del enum de estado: el enum
+    # no es nativo (VARCHAR del largo del valor mas largo) y agregar miembros rompe Postgres.
+    remediated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # "" | pending | verified | failed | inconclusive | unsupported
+    closure_status: Mapped[str] = mapped_column(String(20), default="", index=True)
+    closure_detail: Mapped[str] = mapped_column(Text, default="")
+    closure_scan_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    closure_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closure_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closure_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)

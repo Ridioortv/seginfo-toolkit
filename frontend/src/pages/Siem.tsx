@@ -6,6 +6,7 @@ import PageHeader from "../components/PageHeader";
 import { SeverityBadge, StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
 import { currentLocale } from "../i18n";
+import LogStorageWarning from "../components/LogStorageWarning";
 
 const SEVERITIES = ["critical", "high", "medium", "low", "info"];
 
@@ -206,6 +207,7 @@ export default function Siem() {
   return (
     <div>
       <PageHeader title="SIEM" subtitle="Alertas generadas por el motor de reglas Sigma sobre logs normalizados (ECS-lite)" />
+      <LogStorageWarning />
 
       <div className="cards-grid">
         <div className="stat-card">

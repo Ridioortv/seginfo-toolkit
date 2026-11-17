@@ -4,8 +4,15 @@ Codigo fuente (Go) de los dos ejecutables que viven en la raiz del repo:
 
 - `TERO Security - Iniciar.exe`: revisa que Docker Desktop este instalado y
   corriendo (intenta abrirlo si no lo esta), crea `.env` a partir de
-  `.env.example` si es la primera vez, corre
-  `docker compose up -d --build`, espera a que los 11 microservicios
+  `.env.example` si es la primera vez, **consigue las imagenes solo cuando hace falta**
+  (primera instalacion, version nueva en `VERSION`, o falta alguna: las baja de GHCR
+  con `docker compose pull`, o las carga de `tero-imagenes-<version>.tar.zst` si ese
+  archivo esta junto al programa; NO compila nada) y corre `docker compose up -d`.
+  El arranque de todos los dias es solo ese `up -d`. Antes de instalar revisa
+  el disco (minimo 25 GB libres: si no alcanza, avisa y sale), la RAM (avisa si hay menos
+  de 8 GB) y `vm.max_map_count` de OpenSearch. Opciones: `--compilar` (compila las
+  imagenes en la PC, en tandas de 3, con `docker-compose.dev.yml`) y `--actualizar`.
+  Despues espera a que los 15 microservicios
   backend Y el frontend respondan en su `/health` (o su URL, en el caso
   del frontend) -- no alcanza con que Docker diga que el contenedor
   arranco, porque uno puede arrancar y morirse enseguida -- y solo si

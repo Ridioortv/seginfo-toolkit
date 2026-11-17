@@ -45,6 +45,16 @@ export default function Organizations() {
     enabled: isPlatformAdmin,
   });
 
+  const setPartner = useMutation({
+    mutationFn: async (v: { id: string; value: boolean }) => (await authApi.put(`/auth/organizations/${v.id}/partner`, { is_partner: v.value })).data,
+    onSuccess: () => { setPartnerError(null); queryClient.invalidateQueries({ queryKey: ["organizations"] }); },
+    onError: (err) => {
+      const d = (err as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
+      setPartnerError(typeof d === "string" ? d : "No se pudo cambiar el rol de partner.");
+    },
+  });
+  const [partnerError, setPartnerError] = useState<string | null>(null);
+
   const createOrganization = useMutation({
     mutationFn: async () =>
       (
@@ -182,6 +192,7 @@ export default function Organizations() {
                   <th>Nombre</th>
                   <th>Slug</th>
                   <th>Activa</th>
+                  <th>Partner (MSSP)</th>
                   <th></th>
                 </tr>
               </thead>
@@ -192,6 +203,14 @@ export default function Organizations() {
                     <td className="mono">{org.slug}</td>
                     <td>{org.is_active ? "si" : "no"}</td>
                     <td>
+                      {org.parent_org_id ? <span className="empty-hint">cliente de un partner</span> : (
+                        <button className="btn-link" disabled={setPartner.isPending}
+                          onClick={() => setPartner.mutate({ id: org.id, value: !org.is_partner })}>
+                          {org.is_partner ? "Es partner (quitar)" : "Habilitar como partner"}
+                        </button>
+                      )}
+                    </td>
+                    <td>
                       <button className="btn-secondary" onClick={() => setSelectedOrgId(org.id)}>
                         Configurar SSO
                       </button>
@@ -200,7 +219,7 @@ export default function Organizations() {
                 ))}
                 {organizations.data.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="empty-hint">
+                    <td colSpan={5} className="empty-hint">
                       No hay organizaciones todavia (fuera de "default", que se crea sola con el primer usuario).
                     </td>
                   </tr>
@@ -209,6 +228,11 @@ export default function Organizations() {
             </table>
           )}
 
+          {partnerError && <p className="error-text"><span className="error-detail">{partnerError}</span></p>}
+          <p className="empty-hint">
+            Un partner (MSSP) administra a otras organizaciones desde su propia consola, con su marca. Solo un administrador de
+            plataforma puede habilitarlo.
+          </p>
           <h2 style={{ marginTop: 20 }}>Crear organizacion nueva</h2>
           <p className="empty-hint">
             Crea la empresa y su primer usuario admin en un solo paso. No hay auto-registro publico de organizaciones

@@ -75,3 +75,61 @@ async def check_rate_limit(key: str, limit: int, window_seconds: int) -> bool:
     except Exception:
         logger.warning("rate limiter: Redis no disponible, usando el contador en memoria del proceso")
         return _check_in_memory(key, limit, window_seconds)
+
+
+# --- Contador de FALLOS (para el login) --------------------------------------
+# check_rate_limit cuenta TODOS los intentos, incluso los exitosos: quien probaba
+# varias veces y despues escribia la contrasena correcta podia quedar afuera
+# ("Demasiados intentos") justo cuando acertaba. Para el login se cuentan solo
+# los intentos FALLIDOS, y un login correcto pone el contador de esa cuenta en 0.
+# Sigue habiendo tope contra la fuerza bruta (N fallos seguidos bloquean la
+# ventana), pero acertar nunca consume cupo.
+_fail_memory: dict[str, tuple[int, float]] = {}
+
+
+def _fail_memory_get(key: str) -> int:
+    count, expires = _fail_memory.get(key, (0, 0.0))
+    if expires <= time.time():
+        _fail_memory.pop(key, None)
+        return 0
+    return count
+
+
+async def failure_count(key: str) -> int:
+    """Fallos registrados para `key` en la ventana vigente (no suma nada)."""
+    try:
+        value = await _get_redis().get(f"ratelimit:fail:{key}")
+        return int(value or 0)
+    except Exception:
+        return _fail_memory_get(key)
+
+
+async def too_many_failures(key: str, limit: int) -> bool:
+    return await failure_count(key) >= limit
+
+
+async def register_failure(key: str, window_seconds: int = 300) -> None:
+    """Suma un fallo; la ventana arranca con el primero y se vence sola."""
+    try:
+        r = _get_redis()
+        redis_key = f"ratelimit:fail:{key}"
+        count = await r.incr(redis_key)
+        if count == 1:
+            await r.expire(redis_key, window_seconds)
+        return
+    except Exception:
+        logger.warning("rate limiter: Redis no disponible, usando el contador en memoria del proceso")
+    count = _fail_memory_get(key)
+    _, expires = _fail_memory.get(key, (0, time.time() + window_seconds))
+    _fail_memory[key] = (count + 1, expires if count else time.time() + window_seconds)
+    if len(_fail_memory) > _FALLBACK_MAX_KEYS:
+        _fail_memory.pop(next(iter(_fail_memory)))
+
+
+async def clear_failures(key: str) -> None:
+    """Un login correcto borra los fallos previos de esa cuenta."""
+    try:
+        await _get_redis().delete(f"ratelimit:fail:{key}")
+    except Exception:
+        pass
+    _fail_memory.pop(key, None)

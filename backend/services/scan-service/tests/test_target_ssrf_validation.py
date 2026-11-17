@@ -63,9 +63,25 @@ def test_scan_job_create_rejects_internal_service_name_for_nuclei():
         ScanJobCreate(scanner_type="nuclei", target="http://auth-service:8000/")
 
 
-def test_scan_job_create_allows_lan_target_for_nuclei():
-    job = ScanJobCreate(scanner_type="nuclei", target="192.168.1.5")
-    assert job.target == "192.168.1.5"
+def test_scan_job_create_rejects_lan_target_without_agent(monkeypatch):
+    # Un escaneo sin agente corre dentro de Docker y no llega a la LAN real: se rechaza
+    # con un mensaje que manda a usar un Agente LAN (antes se aceptaba y daba resultados vacios).
+    monkeypatch.delenv("SCAN_ALLOW_LAN_WITHOUT_AGENT", raising=False)
+    for target in ("192.168.1.5", "10.0.0.0/24", "http://172.16.4.2:8080/", "192.168.0.1"):
+        for scanner in ("nuclei", "zap"):
+            with pytest.raises(ValidationError, match="Agente LAN"):
+                ScanJobCreate(scanner_type=scanner, target=target)
+
+
+def test_scan_job_create_allows_public_targets_and_names(monkeypatch):
+    monkeypatch.delenv("SCAN_ALLOW_LAN_WITHOUT_AGENT", raising=False)
+    for target in ("8.8.8.8", "https://example.com", "scanme.nmap.org"):
+        assert ScanJobCreate(scanner_type="nuclei", target=target).target == target
+
+
+def test_lan_target_can_be_allowed_by_setting(monkeypatch):
+    monkeypatch.setenv("SCAN_ALLOW_LAN_WITHOUT_AGENT", "true")
+    assert ScanJobCreate(scanner_type="nuclei", target="192.168.1.5").target == "192.168.1.5"
 
 
 def test_scan_job_create_allows_trivy_image_named_like_internal_service():
@@ -170,3 +186,30 @@ def test_agent_scan_job_create_accepts_all_new_scanner_types():
     for scanner in ("zap", "semgrep", "gitleaks", "yara", "zeek", "falco"):
         job = AgentScanJobCreate(agent_id="agent-1", scanner_type=scanner, target="algo", api_key="k")
         assert job.scanner_type == scanner
+
+
+def test_schedule_lan_target_needs_an_agent(monkeypatch):
+    monkeypatch.delenv("SCAN_ALLOW_LAN_WITHOUT_AGENT", raising=False)
+    base = dict(name="n", scanner_type="nuclei", target="192.168.1.0/24", frequency="daily", hour=3)
+    with pytest.raises(ValidationError, match="Agente LAN"):
+        ScanScheduleCreate(**base)
+    ok = ScanScheduleCreate(**base, agent_id="a1", agent_api_key="k" * 20)
+    assert ok.target == "192.168.1.0/24"
+
+
+@pytest.mark.parametrize("target", [
+    "file:///etc/passwd", "gopher://example.com/x", "ftp://example.com", "dict://example.com:11211",
+    "FILE:///etc/hosts", "ldap://example.com",
+])
+def test_non_http_schemes_rejected_for_network_scanners(target):
+    """nuclei/zap solo hablan http(s): file:///etc/passwd pasaba el denylist
+    porque su 'host' queda vacio."""
+    with pytest.raises(ValueError):
+        reject_dangerous_network_target(target)
+    with pytest.raises(ValidationError):
+        ScanJobCreate(name="t", scanner_type="nuclei", target=target)
+
+
+@pytest.mark.parametrize("target", ["http://example.com/x", "https://example.com:8443/a?b=1", "example.com", "203.0.113.5"])
+def test_http_https_and_bare_hosts_still_accepted(target):
+    reject_dangerous_network_target(target)

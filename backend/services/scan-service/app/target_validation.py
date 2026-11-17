@@ -15,6 +15,7 @@ entrada (ScanJobCreate/ScanScheduleCreate/AgentScanJobCreate), asi que
 cualquier target que llegue a un driver o al agente remoto ya paso por
 aca."""
 import ipaddress
+import os
 import re
 import socket
 
@@ -166,6 +167,14 @@ def reject_dangerous_network_target(target: str) -> None:
     referencia de imagen de trivy ni al target de un agente remoto."""
     has_scheme = bool(_SCHEME_RE.match(target))
 
+    if has_scheme:
+        # nuclei/zap solo hablan http(s). "file:///etc/passwd", "gopher://..." o
+        # "ftp://..." no son un host de red: _host_only() los dejaba pasar
+        # (host vacio o inocuo) hasta el scanner.
+        scheme = target.split("://", 1)[0].lower()
+        if scheme not in ("http", "https"):
+            raise ValueError(f"el esquema '{scheme}://' no es valido para un escaneo de red: usa http:// o https://")
+
     if not has_scheme:
         # Target "pelado" (nuclei): puede ser un host, una IP o un
         # CIDR ("10.0.0.0/24") -- probarlo como red primero para que una
@@ -243,3 +252,35 @@ def resolved_target_error(target: str) -> str | None:
                 "(incluye el endpoint de metadata de cloud); no es un objetivo de escaneo valido"
             )
     return None
+
+
+def is_private_lan_target(target: str) -> bool:
+    """True si `target` (host, URL, IP o CIDR) apunta a una IP privada de LAN
+    (RFC1918/ULA). Solo IPs literales: un hostname no se resuelve aca."""
+    if not _SCHEME_RE.match(target):
+        try:
+            return bool(ipaddress.ip_network(target, strict=False).is_private)
+        except ValueError:
+            pass
+    host = _canonical_numeric_ipv4(_host_only(target))
+    try:
+        return bool(ipaddress.ip_address(host).is_private)
+    except ValueError:
+        return False
+
+
+def reject_lan_target_without_agent(target: str) -> None:
+    """Un escaneo SIN agente corre dentro de scan-service, en la red de Docker: no
+    llega a la LAN real del cliente (Docker Desktop la aisla detras de NAT), asi que
+    escanear alli una IP 192.168.x / 10.x / 172.16-31.x da resultados vacios o
+    enganosos. Se rechaza con un mensaje claro: para la LAN hay que usar un Agente
+    LAN. SCAN_ALLOW_LAN_WITHOUT_AGENT=true lo permite (laboratorio, o Linux donde
+    los contenedores si alcanzan la red)."""
+    if os.getenv("SCAN_ALLOW_LAN_WITHOUT_AGENT", "").strip().lower() in ("1", "true", "yes", "si"):
+        return
+    if is_private_lan_target(target):
+        raise ValueError(
+            f"'{target}' es una direccion de red local (LAN) y un escaneo sin agente no llega a la "
+            "red real: usa un Agente LAN (remote-agent) para escanearla. Para objetivos de internet "
+            "no hace falta agente."
+        )

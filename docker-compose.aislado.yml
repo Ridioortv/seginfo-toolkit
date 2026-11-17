@@ -1,0 +1,89 @@
+# --- Modo AISLADO (prueba de soberania) -------------------------------------------------------------
+# Se suma al compose de uso para que TERO NO pueda hablar con internet:
+#
+#   docker compose down
+#   docker compose -f docker-compose.yml -f docker-compose.aislado.yml up -d
+#
+# (down primero: Docker no cambia las opciones de una red que ya existe). Para volver al modo normal:
+#   docker compose -f docker-compose.yml -f docker-compose.aislado.yml down
+#   docker compose up -d
+#
+# Que hace, en dos capas:
+#   1. APLICACION: TERO_ISOLATED_MODE=1 en cada servicio. Toda salida a un destino externo (HTTP, SMTP, AWS,
+#      git) se frena ANTES de salir y queda anotada como "bloqueada". Excepciones: TERO_EGRESS_ALLOW en .env
+#      (hosts separados por coma, ej. el SMTP de la empresa o un espejo interno).
+#   2. RED: la red de TERO se crea sin traduccion de direcciones (enable_ip_masquerade=false): los contenedores
+#      siguen hablando entre si y vos seguis entrando por 127.0.0.1, pero los paquetes que salgan hacia
+#      internet no tienen como volver.
+#      EXCEPCION: scan-service tambien queda en una red normal ("escaneo"), porque sin ella no podria llegar a
+#      los equipos de tu red local para escanearlos. Ahi rige solo el modo aislado de la aplicacion; TERO lo
+#      informa asi en la pantalla de Soberania y en el atestado (TERO_NETWORK_EXCEPTIONS).
+#
+# La verdad la da la prueba: Confianza y evidencia -> Soberania -> "Probar salida a internet ahora" intenta
+# salir de verdad. Solo si falla en todos los destinos, el veredicto pasa a "Aislado y verificado".
+#
+# Que deja de funcionar a proposito: consultas a NVD/EPSS/CISA KEV, crt.sh, AbuseIPDB, clonado desde
+# GitHub, correo por un SMTP externo, SSO con Google/Microsoft, Slack/Teams/Jira en la nube. Lo local
+# (escaneos de tu red, SIEM, SOAR, casos, reportes) sigue igual. Trivy/nuclei necesitan su cache ya
+# descargada (volumenes trivy_cache / nuclei_templates).
+#
+# remote-agent no se toca: es un escaner que corre del lado de tus objetivos.
+
+x-aislado: &aislado
+  TERO_ISOLATED_MODE: "1"
+  TERO_EGRESS_ALLOW: ${TERO_EGRESS_ALLOW:-}
+
+services:
+  auth-service:
+    environment:
+      <<: *aislado
+  asset-service:
+    environment:
+      <<: *aislado
+  scan-service:
+    environment:
+      <<: *aislado
+    networks: [default, escaneo]
+  vuln-service:
+    environment:
+      <<: *aislado
+  siem-service:
+    environment:
+      <<: *aislado
+  soar-service:
+    environment:
+      <<: *aislado
+  case-service:
+    environment:
+      <<: *aislado
+      TERO_NETWORK_EXCEPTIONS: scan-service
+  purple-service:
+    environment:
+      <<: *aislado
+  report-service:
+    environment:
+      <<: *aislado
+  notification-service:
+    environment:
+      <<: *aislado
+  integration-service:
+    environment:
+      <<: *aislado
+  threatintel-service:
+    environment:
+      <<: *aislado
+  asm-service:
+    environment:
+      <<: *aislado
+  cloud-service:
+    environment:
+      <<: *aislado
+  coderepo-service:
+    environment:
+      <<: *aislado
+
+networks:
+  escaneo: {}
+  default:
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from backend.shared import custody
 from backend.shared.logging import configure_logging
 from backend.shared.service_auth import service_auth_headers
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
@@ -26,18 +27,34 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+DRILL_TAG = "tero-drill"
+
+
+def is_drill_rule(rule) -> bool:
+    return DRILL_TAG in [str(t).lower() for t in (rule.tags or [])]
+
+
 async def ingest_events(db: AsyncSession, os_client, payload) -> tuple[int, int]:
     organization_id = payload.organization_id or DEFAULT_ORGANIZATION_ID
+    documents = [normalize_event(event_in.model_dump(), organization_id) for event_in in payload.events]
+    return await ingest_documents(db, os_client, documents, organization_id)
+
+
+async def ingest_documents(db: AsyncSession, os_client, documents: list[dict], organization_id: str,
+                           evaluate: bool = True) -> tuple[int, int]:
+    """Indexa documentos ya normalizados (ECS-lite) y, si evaluate=True, los cruza con las reglas habilitadas.
+    Lo usan POST /logs/ingest (via ingest_events) y las integraciones que traen su propio formato (AntiEstafa)."""
     indexed = 0
     alerts_created = 0
 
-    rules_result = await db.execute(
-        select(SigmaRule).where(SigmaRule.organization_id == organization_id, SigmaRule.is_enabled.is_(True))
-    )
-    enabled_rules = list(rules_result.scalars().all())
+    enabled_rules: list[SigmaRule] = []
+    if evaluate:
+        rules_result = await db.execute(
+            select(SigmaRule).where(SigmaRule.organization_id == organization_id, SigmaRule.is_enabled.is_(True))
+        )
+        enabled_rules = list(rules_result.scalars().all())
 
-    for event_in in payload.events:
-        document = normalize_event(event_in.model_dump(), organization_id)
+    for document in documents:
         await opensearch_client.index_event(os_client, document)
         indexed += 1
 
@@ -50,8 +67,12 @@ async def ingest_events(db: AsyncSession, os_client, payload) -> tuple[int, int]
             if matched:
                 alert = await _create_alert(db, rule, document, organization_id)
                 alerts_created += 1
+                if is_drill_rule(rule):
+                    # Simulacro de TERO: es un ejercicio. Nunca se dispara respuesta automatica real (bloqueo de IP,
+                    # aislamiento...) ni se consulta inteligencia de amenazas externa por una IP de ejemplo.
+                    continue
                 await _enrich_alert_with_threat_intel(alert, document)
-                alert.soar_triggered = await _notify_soar(alert, organization_id)
+                alert.soar_triggered = await _notify_soar(alert, organization_id, rule.tags)
 
     await db.flush()
     return indexed, alerts_created
@@ -69,7 +90,24 @@ async def _create_alert(db: AsyncSession, rule: SigmaRule, event: dict, organiza
     await db.flush()
     await db.refresh(alert)
     logger.info("alerta generada", extra={"alert_id": alert.id, "rule": rule.name, "severity": rule.severity.value})
+    await custody.record_event(
+        "alert.created", service="siem-service", organization_id=organization_id, actor="siem-service",
+        subject_type="alert", subject_id=alert.id, refs=[f"alert:{alert.id}"],
+        payload={"rule": rule.name, "rule_id": rule.id, "severity": rule.severity.value,
+                 "event_sha256": custody.digest(event), **event_summary(event)},
+    )
     return alert
+
+
+def event_summary(event: dict) -> dict:
+    """Pocos campos identificatorios del evento (host, usuario, IPs) para la evidencia; el evento completo
+    no se copia a la cadena de custodia: se anota su huella SHA-256."""
+    pick = {
+        "host": (event.get("host") or {}).get("name"), "user": (event.get("user") or {}).get("name"),
+        "source_ip": (event.get("source") or {}).get("ip"), "dest_ip": (event.get("destination") or {}).get("ip"),
+        "action": (event.get("event") or {}).get("action"), "event_time": event.get("@timestamp"),
+    }
+    return {k: str(v)[:200] for k, v in pick.items() if v}
 
 
 def _extract_ips_from_event(event: dict) -> list[str]:
@@ -122,7 +160,7 @@ async def _enrich_alert_with_threat_intel(alert: Alert, event: dict) -> None:
         alert.threat_intel = malicious
 
 
-async def _notify_soar(alert: Alert, organization_id: str) -> bool:
+async def _notify_soar(alert: Alert, organization_id: str, rule_tags: list[str] | None = None) -> bool:
     """Best-effort: si soar-service no responde, la alerta ya quedo guardada
     igual; esto solo dispara la evaluacion automatica de playbooks. Devuelve
     True/False segun si la notificacion salio bien -- lo usa _create_alert
@@ -136,6 +174,9 @@ async def _notify_soar(alert: Alert, organization_id: str) -> bool:
         "severity": alert.severity.value,
         "event": alert.matched_event,
         "organization_id": organization_id,
+        # Tags de la regla que disparo: soar-service los usa para correr solo
+        # los playbooks cuyo rule_tags coincide (o los que no filtran por tags).
+        "rule_tags": list(rule_tags or []),
     }
     from backend.shared.security import create_access_token
 
@@ -266,9 +307,12 @@ async def seed_default_rules(db: AsyncSession, organization_id: str) -> list[Sig
 
 
 async def list_alerts(
-    db: AsyncSession, organization_id: str, status_filter: str | None = None, severity: str | None = None
+    db: AsyncSession, organization_id: str, status_filter: str | None = None, severity: str | None = None,
+    rule_id: str | None = None,
 ) -> list[Alert]:
     query = select(Alert).where(Alert.organization_id == organization_id)
+    if rule_id:
+        query = query.where(Alert.rule_id == rule_id)
     if status_filter:
         query = query.where(Alert.status == status_filter)
     if severity:
@@ -301,12 +345,19 @@ def _resolve_alert_update(
 
 
 async def update_alert(db: AsyncSession, alert: Alert, payload, actor: str) -> Alert:
+    previous_status = getattr(alert.status, "value", alert.status)
     alert.status = payload.status
     alert.notes, alert.acknowledged_by = _resolve_alert_update(
         alert.notes, alert.acknowledged_by, payload.status, payload.notes, actor
     )
     await db.flush()
     await db.refresh(alert)
+    await custody.record_event(
+        "alert.status_changed", service="siem-service", organization_id=alert.organization_id, actor=actor,
+        subject_type="alert", subject_id=alert.id, refs=[f"alert:{alert.id}"],
+        payload={"rule": alert.rule_name, "from": previous_status, "to": getattr(alert.status, "value", alert.status),
+                 "notes": (alert.notes or "")[:500]},
+    )
     return alert
 
 

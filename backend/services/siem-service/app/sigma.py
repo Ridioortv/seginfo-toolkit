@@ -57,6 +57,38 @@ def _safe_eval_condition(condition: str, selection_results: dict[str, bool]) -> 
     return bool(eval(code, {"__builtins__": {}}, dict(selection_results)))
 
 
+def validate_detection(detection: dict) -> dict:
+    """Valida la forma de `detection` al CREAR/EDITAR una regla. Antes la API
+    aceptaba cualquier JSON (condicion vacia, mal escrita o que nombraba un
+    selection inexistente): la regla quedaba "activa" pero evaluate_rule la
+    descartaba en silencio y nunca disparaba. Lanza ValueError con un mensaje
+    en castellano que explica que corregir."""
+    if not isinstance(detection, dict):
+        raise ValueError("La deteccion debe ser un objeto JSON")
+    condition = detection.get("condition")
+    if not isinstance(condition, str) or not condition.strip():
+        raise ValueError("Falta la 'condition' de la regla (ej. \"selection_a and selection_b\")")
+    if len(condition) > 500:
+        raise ValueError("La 'condition' es demasiado larga (maximo 500 caracteres)")
+    selections = {name: block for name, block in detection.items() if name != "condition"}
+    if not selections:
+        raise ValueError("La regla necesita al menos un bloque selection (ej. \"selection_a\": {\"campo\": \"valor\"})")
+    for name, block in selections.items():
+        if not isinstance(block, dict) or not block:
+            raise ValueError(f"El bloque '{name}' debe ser un objeto con al menos un campo")
+    try:
+        tree = ast.parse(condition, mode="eval")
+    except SyntaxError:
+        raise ValueError("La 'condition' esta mal escrita: usa solo nombres de selection con and / or / not")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            if node.id not in selections:
+                raise ValueError(f"La 'condition' usa '{node.id}', que no es un bloque selection de la regla")
+        elif not isinstance(node, _ALLOWED_CONDITION_NODES):
+            raise ValueError("La 'condition' solo admite nombres de selection con and / or / not")
+    return detection
+
+
 def evaluate_rule(event: dict, detection: dict) -> bool:
     """True si el evento cumple la `condition` de la regla."""
     condition = detection.get("condition", "")

@@ -23,3 +23,24 @@ docs
 infra
 *.exe
 STATUS.md
+
+# --- Menos cosas al daemon = build mas rapido ---------------------------------
+# (los tests de cada servicio NO se excluyen a proposito: los Dockerfiles los
+#  copian y `make test` / CI los corren dentro del contenedor)
+auditoria-seguridad
+linuxmint
+tools
+remote-agent
+licensing-server
+.venv
+**/.venv
+.mypy_cache
+.ruff_cache
+**/.pytest_cache
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.tar.zst
+*.bak
+*.log

@@ -15,10 +15,12 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.jobstores.base import JobLookupError
 
 from sqlalchemy import text
-from backend.shared.database import get_db, engine, Base, SessionLocal
+from backend.shared.database import get_db, engine, Base, SessionLocal, wait_for_database
 from backend.shared.logging import configure_logging
+from backend.shared import egress
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
+from backend.shared.db_errors import install_db_error_handlers
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import (
     ReportRequest,
@@ -30,6 +32,11 @@ from app.schemas import (
 from app.dependencies import get_current_claims, require_role
 from app import services
 from app.export import export_to_csv, export_to_pdf
+from app import executive_pdf
+import io
+import json
+import zipfile
+import httpx
 
 logger = configure_logging("report-service")
 reports_generated_total = Counter("report_generated_total", "Reportes generados", ["report_type"])
@@ -81,6 +88,7 @@ def _unregister_job(schedule_id: str) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await wait_for_database()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(text("ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS organization_id VARCHAR(36)"))
@@ -102,6 +110,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="TERO Security Report Service", version="0.1.0", lifespan=lifespan)
+egress.install("report-service", app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -109,6 +118,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
+install_db_error_handlers(app)  # 409/422 claros en vez de 500 ante datos que la base rechaza
 app.mount("/metrics", make_asgi_app())
 
 
@@ -126,7 +136,7 @@ async def generate_report(
 ):
     auth_header = request.headers.get("authorization")
     report = await services.generate_report(
-        db, payload.report_type, auth_header, claims.get("sub", ""), org_id_from_claims(claims)
+        db, payload.report_type, auth_header, (claims.get("email") or claims.get("sub", "")), org_id_from_claims(claims)
     )
     await db.commit()
     reports_generated_total.labels(report_type=payload.report_type).inc()
@@ -194,7 +204,7 @@ async def create_schedule(
     claims: dict = Depends(require_role("admin", "soc_manager")),
     db: AsyncSession = Depends(get_db),
 ):
-    schedule = await services.create_schedule(db, payload, claims.get("sub", ""), org_id_from_claims(claims))
+    schedule = await services.create_schedule(db, payload, (claims.get("email") or claims.get("sub", "")), org_id_from_claims(claims))
     await db.commit()
     _register_job(schedule)
     logger.info("regla de reporte programado creada", extra={"schedule_id": schedule.id})
@@ -237,3 +247,82 @@ async def delete_schedule(
     await services.delete_schedule(db, schedule)
     await db.commit()
     _unregister_job(schedule_id)
+
+
+# ----------------------------- informe ejecutivo (PDF + prueba firmada) -----------------------------
+
+CASE_URL = os.getenv("CASE_SERVICE_URL", "http://case-service:8000")
+AUTH_URL = os.getenv("AUTH_SERVICE_URL", "http://auth-service:8000")
+
+README_EXEC = """Informe ejecutivo de seguridad - paquete de verificacion
+
+  informe-ejecutivo.pdf     El informe para leer.
+  informe-ejecutivo.json    El mismo informe firmado digitalmente por TERO (Ed25519).
+  verificar_evidencia.py    Verificador independiente (solo biblioteca estandar de Python 3).
+
+Para comprobar que el informe no fue modificado, sin necesitar TERO:
+
+    python verificar_evidencia.py informe-ejecutivo.json
+
+Debe responder que la firma es valida. Compare la huella de la clave con la que le informo su proveedor.
+El informe no es una certificacion ni asegura el resultado de una auditoria.
+"""
+
+
+async def _brand_for(org_id: str) -> dict:
+    """Marca propia de la organizacion (nombre, color, logo) si la tiene; si no, la de TERO. Best-effort."""
+    from backend.shared.service_auth import service_auth_headers
+    try:
+        async with httpx.AsyncClient(timeout=6) as client:
+            resp = await client.get(f"{AUTH_URL}/internal/organizations/{org_id}/brand", headers=service_auth_headers("report-service", org_id))
+        if resp.status_code < 300:
+            return resp.json()
+    except (httpx.HTTPError, ValueError):
+        pass
+    return {}
+
+
+@app.get("/executive/pack")
+async def executive_pack(
+    request: Request,
+    days: int = 30,
+    format: str = "zip",
+    claims: dict = Depends(require_role("admin", "soc_manager")),
+):
+    """Pide a case-service el informe firmado (con el token de quien lo pide: se aplican sus roles y su organizacion), lo
+    dibuja en PDF y arma un paquete verificable: PDF + JSON firmado + verificador."""
+    days = max(7, min(int(days), 365))
+    headers = {"Authorization": request.headers.get("authorization", "")}
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(f"{CASE_URL}/executive/report", params={"days": days}, headers=headers)
+            if resp.status_code >= 300:
+                try:
+                    detail = resp.json().get("detail", "")
+                except ValueError:
+                    detail = ""
+                raise HTTPException(status_code=resp.status_code if resp.status_code < 500 else 502,
+                                    detail=detail or "No se pudo generar el informe en case-service")
+            attestation = resp.json()
+            verifier = b""
+            if format != "pdf":
+                v = await client.get(f"{CASE_URL}/custody/verifier", headers=headers)
+                verifier = v.content if v.status_code < 300 else b""
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="No pude comunicarme con case-service. Proba de nuevo en un momento.")
+    brand = await _brand_for(org_id_from_claims(claims))
+    pdf = executive_pdf.build_pdf(attestation, brand)
+    stamp = attestation["generated_at"][:10]
+    if format == "pdf":
+        return Response(content=pdf, media_type="application/pdf",
+                        headers={"Content-Disposition": f'attachment; filename="informe-ejecutivo-{stamp}.pdf"'})
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("informe-ejecutivo.pdf", pdf)
+        z.writestr("informe-ejecutivo.json", json.dumps(attestation, ensure_ascii=False, indent=2))
+        if verifier:
+            z.writestr("verificar_evidencia.py", verifier)
+        z.writestr("LEEME.txt", README_EXEC)
+    logger.info("informe ejecutivo generado", extra={"actor": claims.get("sub")})
+    return Response(content=out.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="informe-ejecutivo-{stamp}.zip"'})

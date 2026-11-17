@@ -228,6 +228,25 @@ async def create_subscription_approval_link(license_key: str, payer_email: str |
                 )
             resp = retry
         _raise_for_mp_status(resp, "crear la suscripcion")
+        retry_failure = ""
+        if resp.status_code == 400 and "real or test" in resp.text and "payer_email" in payload:
+            # Cobrador y pagador de distinto tipo (tipicamente credenciales de PRUEBA
+            # con el email REAL del cliente, o un MP_TEST_PAYER_EMAIL mal cargado).
+            # En vez de bloquear el pago, se reintenta UNA vez sin pagador: el
+            # comprador inicia sesion con su cuenta en el checkout. Si tampoco
+            # alcanza, se informa el diagnostico completo de abajo.
+            origin = "MP_TEST_PAYER_EMAIL" if MP_TEST_PAYER_EMAIL else "el email del modal"
+            logger.warning("Mercado Pago: el pagador %s (de %s) no es del mismo tipo que el cobrador; se reintenta sin pagador", payer_email, origin)
+            retry_payload = {k: v for k, v in payload.items() if k != "payer_email"}
+            retry = await client.post(f"{_API}/preapproval", headers=_headers(), json=retry_payload)
+            if retry.status_code < 400:
+                resp = retry
+            else:
+                logger.warning("Mercado Pago tampoco acepto la suscripcion sin pagador: %s %s", retry.status_code, retry.text[:300])
+                if "real or test" not in retry.text:
+                    # Otro motivo distinto del mismo cartel: se muestra (corto: el cliente on-prem
+                    # recorta el mensaje a 500 caracteres).
+                    retry_failure = f"{retry.status_code} {retry.text[:70]}"
         if resp.status_code == 400 and "real or test" in resp.text:
             origin = "MP_TEST_PAYER_EMAIL" if MP_TEST_PAYER_EMAIL else "el email del modal"
             sent = f"{payer_email} (de {origin})" if payer_email else "ninguno"
@@ -241,6 +260,7 @@ async def create_subscription_approval_link(license_key: str, payer_email: str |
                 "Con credenciales de prueba, define MP_TEST_PAYER_EMAIL en Render con el email del COMPRADOR de "
                 "prueba (test_user_<User ID del comprador>@testuser.com, del mismo pais que la vendedora). "
                 "En produccion usa credenciales reales y deja esa variable vacia."
+                + (f" Sin pagador: HTTP {retry_failure}" if retry_failure else "")
             )
         if resp.status_code >= 400:
             raise MercadoPagoError(f"Mercado Pago rechazo la creacion de la suscripcion: {resp.status_code} {resp.text[:500]}")

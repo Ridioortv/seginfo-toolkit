@@ -2,15 +2,16 @@
 enriquecimiento (CVSS/EPSS/KEV), calculo de prioridad y workflow de triage
 (confirmar / falso positivo / riesgo aceptado / remediado)."""
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import httpx
-from sqlalchemy import select, func
+from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from backend.shared import custody
 from backend.shared.logging import configure_logging
 from backend.shared.security import create_access_token
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID
 from app.models import Vulnerability, VulnStatus, VulnSeverity
-from app import enrichment
+from app import closure, enrichment
 
 logger = configure_logging("vuln-service")
 
@@ -143,8 +144,11 @@ async def ingest_findings(db: AsyncSession, payload, organization_id: str) -> tu
 async def _find_existing(
     db: AsyncSession, organization_id: str, asset_id: str | None, cve_id: str | None, title: str
 ) -> Vulnerability | None:
+    # Una vulnerabilidad "remediada" no se reutiliza, salvo mientras se verifica su cierre: el re-escaneo que
+    # la comprueba tambien la ingesta, y no debe crear un duplicado (closure.step la reabre si sigue ahi).
     query = select(Vulnerability).where(
-        Vulnerability.organization_id == organization_id, Vulnerability.status != VulnStatus.remediated
+        Vulnerability.organization_id == organization_id,
+        or_(Vulnerability.status != VulnStatus.remediated, Vulnerability.closure_status == "pending"),
     )
     if asset_id:
         query = query.where(Vulnerability.asset_id == asset_id)
@@ -187,6 +191,7 @@ async def list_vulnerabilities(
     asset_id: str | None = None,
     min_priority: float | None = None,
     scan_job_id: str | None = None,
+    closure_status: str | None = None,
 ) -> list[Vulnerability]:
     query = select(Vulnerability).where(Vulnerability.organization_id == organization_id)
     if status_filter:
@@ -197,6 +202,8 @@ async def list_vulnerabilities(
         query = query.where(Vulnerability.asset_id == asset_id)
     if min_priority is not None:
         query = query.where(Vulnerability.priority_score >= min_priority)
+    if closure_status:
+        query = query.where(Vulnerability.closure_status == closure_status)
     if scan_job_id:
         # Usado por la pagina de Escaneos para mostrar los resultados
         # enriquecidos (severidad/CVSS/EPSS/remediacion) de UN escaneo
@@ -217,13 +224,38 @@ async def get_vulnerability(db: AsyncSession, vuln_id: str, organization_id: str
     return vuln
 
 
+def accept_risk_needs_exception(vuln: Vulnerability) -> bool:
+    """Aceptar el riesgo de una vulnerabilidad ALTA o CRITICA no es una decision de una sola persona con un clic: exige una
+    excepcion aprobada (case-service, Confianza y evidencia -> Excepciones), con justificacion, controles compensatorios,
+    otra persona que apruebe y vencimiento. VULN_ACCEPT_RISK_REQUIRES_EXCEPTION=false lo desactiva (instalaciones de una
+    sola persona). Reafirmar un riesgo ya aceptado no cambia el estado y no pide excepcion."""
+    if os.getenv("VULN_ACCEPT_RISK_REQUIRES_EXCEPTION", "true").strip().lower() in ("0", "false", "no"):
+        return False
+    severity = getattr(vuln.severity, "value", vuln.severity)
+    status_ = getattr(vuln.status, "value", vuln.status)
+    return severity in ("critical", "high") and status_ != "accepted_risk"
+
+
 async def triage_vulnerability(db: AsyncSession, vuln: Vulnerability, payload, actor: str) -> Vulnerability:
+    previous_status = getattr(vuln.status, "value", vuln.status)
+    if payload.status == VulnStatus.remediated and previous_status != "remediated":
+        closure.mark_remediated(vuln)
+    elif payload.status != VulnStatus.remediated and previous_status == "remediated":
+        closure.clear_closure(vuln)
     vuln.status = payload.status
     vuln.triage_note = payload.note
     vuln.triaged_by = actor
     vuln.updated_at = _now()
     await db.flush()
     await db.refresh(vuln)
+    await custody.record_event(
+        "vuln.status_changed", service="vuln-service", organization_id=vuln.organization_id, actor=actor,
+        subject_type="vuln", subject_id=vuln.id,
+        refs=[f"vuln:{vuln.id}"] + ([f"asset:{vuln.asset_id}"] if vuln.asset_id else []),
+        payload={"title": vuln.title, "cve": vuln.cve_id or "", "severity": getattr(vuln.severity, "value", vuln.severity),
+                 "from": previous_status, "to": getattr(vuln.status, "value", vuln.status),
+                 "note": (vuln.triage_note or "")[:500]},
+    )
     return vuln
 
 
@@ -276,4 +308,83 @@ async def get_stats(db: AsyncSession, organization_id: str) -> dict:
         "by_severity": by_severity,
         "kev_count": kev_count,
         "avg_priority_score": round(float(avg_priority), 2),
+    }
+
+
+async def get_posture(db: AsyncSession, organization_id: str) -> dict:
+    """Lo abierto hoy, para el panel de cumplimiento: por severidad, explotadas activamente (KEV) y la mas vieja."""
+    rows = (await db.execute(
+        select(Vulnerability.severity, Vulnerability.is_kev, Vulnerability.created_at).where(
+            Vulnerability.organization_id == organization_id, Vulnerability.status.in_([VulnStatus.open, VulnStatus.confirmed])
+        )
+    )).all()
+    now = datetime.now(timezone.utc)
+    by_sev: dict[str, int] = {}
+    kev_open = 0
+    oldest = {"critical": 0.0, "high": 0.0}
+    for sev, kev, created in rows:
+        key = getattr(sev, "value", sev)
+        by_sev[key] = by_sev.get(key, 0) + 1
+        kev_open += 1 if kev else 0
+        if key in oldest and created is not None:
+            c = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+            oldest[key] = max(oldest[key], round((now - c).total_seconds() / 86400, 1))
+    return {"open_total": len(rows), "open_by_severity": by_sev, "open_kev": kev_open,
+            "oldest_open_days": oldest}
+
+
+EXPOSURE_WEIGHTS = {"critical": 10.0, "high": 5.0, "medium": 2.0, "low": 0.5, "info": 0.0}
+
+
+def _aware(dt: datetime | None) -> datetime | None:
+    return dt.replace(tzinfo=timezone.utc) if dt is not None and dt.tzinfo is None else dt
+
+
+async def get_executive(db: AsyncSession, organization_id: str, days: int = 30, now: datetime | None = None) -> dict:
+    """Numeros para el tablero ejecutivo: lo abierto hoy, el flujo del periodo (nuevas y remediadas) contra el periodo
+    anterior de la misma duracion, y la exposicion por activo. Todo sale de las marcas de tiempo reales de cada
+    vulnerabilidad (created_at / remediated_at); no hay estimaciones."""
+    now = now or datetime.now(timezone.utc)
+    days = max(7, min(int(days), 365))
+    cur_start, prev_start = now - timedelta(days=days), now - timedelta(days=2 * days)
+    rows = (await db.execute(select(Vulnerability).where(Vulnerability.organization_id == organization_id))).scalars().all()
+
+    def sev(v) -> str:
+        return getattr(v.severity, "value", v.severity)
+
+    def stat(v) -> str:
+        return getattr(v.status, "value", v.status)
+
+    open_rows = [v for v in rows if stat(v) in ("open", "confirmed")]
+    by_sev: dict[str, int] = {}
+    for v in open_rows:
+        by_sev[sev(v)] = by_sev.get(sev(v), 0) + 1
+
+    def window(lo: datetime, hi: datetime) -> dict:
+        created = [v for v in rows if (c := _aware(v.created_at)) and lo <= c < hi]
+        fixed = [v for v in rows if stat(v) == "remediated" and (r := _aware(v.remediated_at)) and lo <= r < hi]
+        ch = ("critical", "high")
+        return {"created": len(created), "remediated": len(fixed),
+                "created_critical_high": sum(1 for v in created if sev(v) in ch),
+                "remediated_critical_high": sum(1 for v in fixed if sev(v) in ch)}
+
+    assets: dict[str, dict] = {}
+    for v in open_rows:
+        key = v.asset_id or ""
+        a = assets.setdefault(key, {"asset_id": key, "critical": 0, "high": 0, "medium": 0, "low": 0, "kev": 0, "score": 0.0})
+        if sev(v) in a:
+            a[sev(v)] += 1
+        a["kev"] += 1 if v.is_kev else 0
+        a["score"] += EXPOSURE_WEIGHTS.get(sev(v), 0.0) * (1.5 if v.is_kev else 1.0)
+    top = sorted(assets.values(), key=lambda a: -a["score"])[:200]
+    for a in top:
+        a["score"] = round(a["score"], 1)
+    oldest = max(((now - c).days for v in open_rows if sev(v) in ("critical", "high") and (c := _aware(v.created_at))), default=0)
+    return {
+        "days": days, "generated_at": now.isoformat(),
+        "open": {"total": len(open_rows), "by_severity": by_sev, "kev": sum(1 for v in open_rows if v.is_kev),
+                 "critical_high": by_sev.get("critical", 0) + by_sev.get("high", 0), "oldest_critical_high_days": oldest,
+                 "accepted_risk": sum(1 for v in rows if stat(v) == "accepted_risk")},
+        "period": window(cur_start, now), "previous": window(prev_start, cur_start),
+        "exposure_weights": EXPOSURE_WEIGHTS, "by_asset": top,
     }

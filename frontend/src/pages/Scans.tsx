@@ -220,7 +220,7 @@ export default function Scans() {
   const [name, setName] = useState("");
   const [targetsText, setTargetsText] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
-  const [lastResult, setLastResult] = useState<{ ok: number; failed: number } | null>(null);
+  const [lastResult, setLastResult] = useState<{ ok: number; failed: number; reasons: string[] } | null>(null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadName, setUploadName] = useState("");
   // Panel "Analizar archivos con YARA (subir archivos)": uno o varios archivos.
@@ -486,7 +486,16 @@ export default function Scans() {
       );
       const ok = results.filter((r) => r.status === "fulfilled").length;
       const failed = results.length - ok;
-      return { ok, failed };
+      // Por que fallo cada uno (antes solo se veia "N fallaron" sin motivo: target no permitido,
+      // esquema invalido, etc.). Sin repetidos y como maximo 3 para no llenar la pantalla.
+      const reasons = [
+        ...new Set(
+          results
+            .filter((r): r is PromiseRejectedResult => r.status === "rejected")
+            .map((r) => connectionErrorDetail(r.reason))
+        ),
+      ].slice(0, 3);
+      return { ok, failed, reasons };
     },
     onSuccess: (summary) => {
       setLastResult(summary);
@@ -544,6 +553,12 @@ export default function Scans() {
         {lastResult && !formError && (
           <p className={lastResult.failed > 0 ? "error-text" : "empty-hint"}>
             {lastResult.failed > 0 ? `${lastResult.ok} escaneo(s) creado(s), ${lastResult.failed} fallaron.` : `${lastResult.ok} escaneo(s) creado(s).`}
+            {lastResult.failed > 0 &&
+              lastResult.reasons.map((reason) => (
+                <span key={reason} className="error-detail" style={{ display: "block" }}>
+                  {reason}
+                </span>
+              ))}
           </p>
         )}
       </div>

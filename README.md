@@ -137,6 +137,8 @@ Project documentation is written in Spanish.
 | [`docs/security.md`](docs/security.md) | Threat model (STRIDE) |
 | [`docs/security-hardening.md`](docs/security-hardening.md) | Hardening guide |
 | [`docs/runbook.md`](docs/runbook.md) | Operations: startup, common incidents, enabling real SOAR actions, backups |
+| [`docs/recuperar-contrasena.md`](docs/recuperar-contrasena.md) | Password recovery (with or without email) and MFA setup time |
+| [`docs/recuperar-contrasena.md`](docs/recuperar-contrasena.md) | Password recovery (with or without email) and MFA setup time |
 | [`STATUS.md`](STATUS.md) | Development status |
 
 ## License

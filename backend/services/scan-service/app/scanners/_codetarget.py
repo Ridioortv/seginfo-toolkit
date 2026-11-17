@@ -18,6 +18,9 @@ import os
 import re
 import shutil
 import tempfile
+from urllib.parse import urlsplit
+
+from backend.shared import egress
 
 _GIT_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 _CREDENTIALS_IN_URL_RE = re.compile(r"://[^\s@/]+@")
@@ -37,6 +40,10 @@ def _redact(text: str) -> str:
 async def clone_repo(url: str, dest_dir: str, timeout: int = 180, shallow: bool = False) -> str | None:
     """Clona `url` en `dest_dir`. Devuelve None si salio bien, o un
     mensaje de error corto (ya redactado) si fallo."""
+    try:
+        egress.guard(urlsplit(url).hostname or "", "git", "Clonar el repositorio a escanear")
+    except egress.EgressBlocked as exc:
+        return str(exc)
     cmd = ["git", "clone", "--single-branch"]
     if shallow:
         cmd += ["--depth", "1"]

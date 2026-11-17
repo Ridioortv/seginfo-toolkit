@@ -16,10 +16,12 @@ from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.jobstores.base import JobLookupError
 
 from sqlalchemy import text
-from backend.shared.database import get_db, engine, Base, SessionLocal
+from backend.shared.database import get_db, engine, Base, SessionLocal, wait_for_database
 from backend.shared.logging import configure_logging
+from backend.shared import egress
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
+from backend.shared.db_errors import install_db_error_handlers
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import (
     ScanJobCreate,
@@ -93,6 +95,7 @@ def _unregister_job(schedule_id: str) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await wait_for_database()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         for table in ("scan_schedules", "scan_jobs", "scan_agents", "agent_scan_jobs"):
@@ -217,6 +220,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="TERO Security Scan Service", version="0.1.0", lifespan=lifespan)
+egress.install("scan-service", app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -224,6 +228,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
+install_db_error_handlers(app)  # 409/422 claros en vez de 500 ante datos que la base rechaza
 app.mount("/metrics", make_asgi_app())
 
 
@@ -378,6 +383,12 @@ async def list_scans(
     return await services.list_scan_jobs(db, org_id_from_claims(claims), status_filter, scanner_type)
 
 
+@app.get("/scans/summary")
+async def scans_summary(claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
+    """Cuantos escaneos terminaron en los ultimos 30 dias y cuantos programados hay (lo usa Cumplimiento)."""
+    return await services.scan_summary(db, org_id_from_claims(claims))
+
+
 @app.get("/scans/{job_id}", response_model=ScanJobOut)
 async def get_scan(job_id: str, claims: dict = Depends(get_current_claims), db: AsyncSession = Depends(get_db)):
     job = await services.get_scan_job(db, job_id, org_id_from_claims(claims))
@@ -421,7 +432,9 @@ async def cancel_scan(
 
 @app.get("/scan-images", response_model=list[ImageInventoryItem])
 async def list_image_inventory(
-    claims: dict = Depends(require_role("admin", "soc_manager", "analyst")),
+    # Solo lectura, igual que GET /scans y /vulnerabilities: el menu le muestra esta pagina a
+    # todos los roles y un viewer recibia 403 ("No se pudo conectar con scan-service").
+    claims: dict = Depends(get_current_claims),
     db: AsyncSession = Depends(get_db),
 ):
     """Dashboard: una fila por imagen/archivo escaneado con trivy (el mas

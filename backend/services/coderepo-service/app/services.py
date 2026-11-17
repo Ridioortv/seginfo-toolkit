@@ -27,6 +27,7 @@ final. Mismo patron estructural que cloud-service/app/services.py."""
 import asyncio
 import json
 import os
+from urllib.parse import urlsplit
 import re
 import shutil
 import tempfile
@@ -37,6 +38,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.shared.crypto import decrypt_secret, encrypt_secret
+from backend.shared import egress
 from backend.shared.logging import configure_logging
 from backend.shared.ssrf_guard import UnsafeUrlError, validate_outbound_url
 from app.models import RepoScanStatus, RepoTarget, SecretFinding, SecretSeverity
@@ -309,6 +311,10 @@ async def _clone_repo(repo_url: str, branch: str, token: str | None, dest_dir: s
     unsafe = repo_url_safety_error(repo_url)
     if unsafe:
         raise RuntimeError(f"repo_url no permitido: {unsafe}")
+    try:
+        egress.guard(urlsplit(repo_url).hostname or "", "git", "Clonar el repositorio a escanear")
+    except egress.EgressBlocked as exc:
+        raise RuntimeError(str(exc))
     authenticated_url = build_authenticated_clone_url(repo_url, token)
     # -c core.symlinks=false: los symlinks del repo (atacante) se materializan
     # como archivos de texto planos, no como enlaces. -c http.followRedirects=false:
@@ -582,6 +588,16 @@ async def run_repo_scan(db: AsyncSession, target: RepoTarget) -> None:
 
             for item in secret_items:
                 await _create_secret_finding_if_needed(db, target, item)
+
+            # Gobernanza: procedencia (humano/IA) de los commits nuevos, hallazgos por commit y compuerta.
+            # Si esto falla, el escaneo de secretos/dependencias igual se completa (solo se avisa).
+            try:
+                from app import governance  # import local: governance importa este modulo indirectamente
+                async with db.begin_nested():  # SAVEPOINT: si falla, no contamina el resto del escaneo
+                    await governance.ingest_history(db, target, tmp_dir, secret_items)
+            except Exception as gov_exc:  # noqa: BLE001
+                tool_warnings.append(f"gobernanza: {type(gov_exc).__name__}")
+                logger.warning("fallo la ingesta de gobernanza", extra={"repo_target_id": target.id, "error": str(gov_exc)[:300]})
 
             # Contador del ULTIMO escaneo (no acumulado, ver app/models.py):
             # refleja lo DETECTADO en esta corrida, incluso si algunos

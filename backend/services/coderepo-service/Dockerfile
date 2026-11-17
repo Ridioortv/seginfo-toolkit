@@ -70,7 +70,7 @@ RUN chmod 711 /root \
     && chown -R sentinelops:sentinelops /app /root/.cache/trivy
 USER sentinelops
 
-HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
+HEALTHCHECK --start-period=90s --interval=10s --timeout=3s --retries=5 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

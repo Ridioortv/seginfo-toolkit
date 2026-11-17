@@ -1,7 +1,8 @@
 """Pydantic schemas for siem-service."""
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from app.models import RuleSeverity, AlertStatus
+from app.sigma import validate_detection
 
 
 class LogEventIn(BaseModel):
@@ -44,6 +45,11 @@ class SigmaRuleCreate(BaseModel):
     detection: dict = Field(..., description="Bloques selection_* + 'condition', ver app/sigma.py")
     is_enabled: bool = True
 
+    @field_validator("detection")
+    @classmethod
+    def _valid_detection(cls, v: dict) -> dict:
+        return validate_detection(v)
+
 
 class SigmaRuleUpdate(BaseModel):
     name: str | None = None
@@ -52,6 +58,11 @@ class SigmaRuleUpdate(BaseModel):
     tags: list[str] | None = None
     detection: dict | None = None
     is_enabled: bool | None = None
+
+    @field_validator("detection")
+    @classmethod
+    def _valid_detection(cls, v: dict | None) -> dict | None:
+        return None if v is None else validate_detection(v)
 
 
 class SigmaRuleOut(BaseModel):

@@ -91,12 +91,27 @@ def is_org_active(org: Organization) -> bool:
     agregar una verificacion cruzada contra auth-service en cada request
     de los otros 10 microservicios."""
     now = datetime.now(timezone.utc)
-    if org.subscription_expires_at <= now:
+    expires = org.subscription_expires_at
+    if expires.tzinfo is None:  # SQLite (tests) devuelve fechas sin zona; Postgres las devuelve con zona
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires <= now:
         return False
     if license_check.is_configured() and org.license_last_checked_at is not None:
-        if now - org.license_last_checked_at > timedelta(days=LICENSE_GRACE_DAYS):
+        checked = org.license_last_checked_at
+        if checked.tzinfo is None:
+            checked = checked.replace(tzinfo=timezone.utc)
+        if now - checked > timedelta(days=LICENSE_GRACE_DAYS):
             return False
     return True
+
+
+async def org_active(db: AsyncSession, org: Organization) -> bool:
+    """Un cliente de un partner esta activo mientras lo este su partner (la suscripcion se paga una sola vez); el resto, segun la suya."""
+    if org.parent_org_id:
+        parent = await get_organization_by_id(db, org.parent_org_id)
+        if parent is not None:
+            return is_org_active(parent)
+    return is_org_active(org)
 
 
 async def extend_subscription(db: AsyncSession, organization_id: str, days: int) -> Organization | None:
@@ -194,10 +209,14 @@ async def upsert_sso_config(
 # --- Usuarios ---
 
 async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
+    # Sin distinguir mayusculas: antes "Ana@x.com" y "ana@x.com" eran cuentas distintas. Si por datos
+    # viejos hubiera dos filas, se usa la mas antigua (nunca un error 500 por "mas de una fila").
     result = await db.execute(
-        select(User).options(selectinload(User.role)).where(User.email == email)
+        select(User).options(selectinload(User.role))
+        .where(func.lower(User.email) == (email or "").strip().lower())
+        .order_by(User.created_at).limit(1)
     )
-    return result.scalar_one_or_none()
+    return result.scalars().first()
 
 
 async def get_user_by_id(db: AsyncSession, user_id: str) -> User | None:
@@ -493,7 +512,7 @@ async def authenticate(db: AsyncSession, email: str, password: str, totp_code: s
 
 def issue_tokens(user: User, role_name: str) -> tuple[str, str]:
     return (
-        create_access_token(user.id, role_name, user.organization_id, user.is_platform_admin),
+        create_access_token(user.id, role_name, user.organization_id, user.is_platform_admin, email=user.email),
         create_refresh_token(user.id),
     )
 
@@ -537,8 +556,14 @@ def mfa_qr_data_uri(otpauth_url: str) -> str:
     return "data:image/svg+xml;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-async def confirm_mfa(db: AsyncSession, user: User, totp_code: str) -> bool:
-    if not user.mfa_secret or not pyotp.TOTP(user.mfa_secret).verify(totp_code, valid_window=1):
+# Al VINCULAR el MFA (no al iniciar sesion) se acepta un codigo de hasta 2 pasos de 30 s hacia
+# atras o adelante (~1 min de margen): la persona recien instalo la app, el reloj del celular
+# puede estar un poco corrido y el codigo cambia mientras lo tipea. El login sigue con 1.
+SETUP_TOTP_WINDOW = 2
+
+
+async def confirm_mfa(db: AsyncSession, user: User, totp_code: str, window: int = 1) -> bool:
+    if not user.mfa_secret or not pyotp.TOTP(user.mfa_secret).verify(totp_code, valid_window=window):
         return False
     user.mfa_enabled = True
     await db.flush()

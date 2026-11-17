@@ -8,7 +8,7 @@ import { StatusBadge } from "../components/Badge";
 import { connectionErrorDetail } from "../utils/errors";
 import { currentLocale } from "../i18n";
 
-type ChannelType = "email" | "slack_webhook" | "generic_webhook";
+type ChannelType = "email" | "slack_webhook" | "teams_webhook" | "generic_webhook";
 
 const CAN_MANAGE_CHANNELS = ["admin", "soc_manager"];
 
@@ -85,6 +85,8 @@ export default function Notifications() {
       ? "soc@tuempresa.com"
       : newType === "slack_webhook"
       ? "https://hooks.slack.com/services/..."
+      : newType === "teams_webhook"
+      ? "https://prod-00.westus.logic.azure.com/workflows/..."
       : "https://tu-endpoint.tuempresa.com/webhook";
 
   return (
@@ -165,6 +167,7 @@ export default function Notifications() {
             <input placeholder="Nombre del canal" value={newName} onChange={(e) => setNewName(e.target.value)} />
             <select value={newType} onChange={(e) => setNewType(e.target.value as ChannelType)}>
               <option value="slack_webhook">Slack (webhook)</option>
+              <option value="teams_webhook">Microsoft Teams (webhook)</option>
               <option value="generic_webhook">Webhook generico</option>
               <option value="email">Email (SMTP)</option>
             </select>

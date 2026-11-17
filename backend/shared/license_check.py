@@ -38,6 +38,7 @@ logger = logging.getLogger("license_check")
 # .strip(): un espacio o salto de linea colado al pegar el valor en el .env
 # rompia la URL o la firma sin ningun mensaje claro.
 LICENSE_SERVER_URL = os.getenv("LICENSE_SERVER_URL", "").strip().rstrip("/")
+PAYMENT_LINK_TIMEOUT = 55
 LICENSE_KEY = os.getenv("LICENSE_KEY", "").strip()
 LICENSE_SERVER_PUBLIC_KEY = os.getenv("LICENSE_SERVER_PUBLIC_KEY", "").strip()
 # Pasarelas de cobro de la suscripcion (cada 30 dias): PayPal (USD 250) y
@@ -188,7 +189,10 @@ async def get_payment_link(payer_email: str, provider: str = DEFAULT_PROVIDER) -
 
     url = f"{LICENSE_SERVER_URL}/license/{LICENSE_KEY}/{provider}/subscription-link"
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
+        # 55 s y no 20: el servidor central en un plan gratis duerme tras un rato sin uso y el
+        # primer pedido despues tarda ~50 s en despertarlo; con 20 s ese clic fallaba y el
+        # siguiente (ya despierto) andaba -- el "a veces anda" del boton de pago.
+        async with httpx.AsyncClient(timeout=PAYMENT_LINK_TIMEOUT) as client:
             resp = await client.post(url, json={"payer_email": payer_email})
             if resp.status_code == 503:
                 return None
@@ -209,9 +213,13 @@ async def get_payment_link(payer_email: str, provider: str = DEFAULT_PROVIDER) -
 
 
 async def get_payment_links(payer_email: str) -> dict[str, str]:
-    """Un link por cada pasarela disponible ({"paypal": url, "mercadopago": url}),
-    para el login bloqueado por falta de pago. Una pasarela que falla o no
-    esta configurada simplemente no aparece: el cliente paga con la otra."""
+    """Un link por cada pasarela disponible ({"paypal": url, "mercadopago": url}).
+    Una pasarela que falla o no esta configurada simplemente no aparece.
+
+    OJO: cada llamada CREA una suscripcion nueva en cada pasarela. El login
+    bloqueado ya NO la usa (generaba links que quedaban pagables y podian cobrar
+    dos veces): ahi el link se pide a demanda con get_payment_link, para la
+    pasarela que elige la persona."""
     async def _one(provider: str) -> tuple[str, str | None]:
         try:
             return provider, await get_payment_link(payer_email, provider)

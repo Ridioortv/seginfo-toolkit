@@ -1,5 +1,6 @@
 """Pydantic schemas for vuln-service."""
 from datetime import datetime
+from typing import Literal
 from pydantic import BaseModel, Field
 from app.models import VulnSeverity, VulnStatus
 
@@ -44,6 +45,21 @@ class TriageRequest(BaseModel):
     note: str = ""
 
 
+class RiskAcceptanceRequest(BaseModel):
+    """Lo usa case-service (flujo de excepciones de riesgo aprobadas) para aceptar o reabrir una vulnerabilidad."""
+    action: Literal["accept", "reopen"]
+    note: str = Field(default="", max_length=1000)
+    actor: str = Field(default="", max_length=255)
+
+
+class TicketResolvedRequest(BaseModel):
+    """Lo manda integration-service cuando el ticket externo de la vulnerabilidad se resolvio."""
+    ticket_key: str = Field(min_length=1, max_length=100)
+    provider: str = Field(default="", max_length=30)
+    note: str = Field(default="", max_length=500)
+    actor: str = Field(default="", max_length=255)
+
+
 class VulnerabilityOut(BaseModel):
     id: str
     cve_id: str | None
@@ -69,6 +85,12 @@ class VulnerabilityOut(BaseModel):
     triage_note: str
     triaged_by: str
     remediation_steps: list[str]
+    remediated_at: datetime | None = None
+    closure_status: str = ""
+    closure_detail: str = ""
+    closure_scan_job_id: str | None = None
+    closure_checked_at: datetime | None = None
+    verified_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

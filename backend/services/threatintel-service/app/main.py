@@ -12,10 +12,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.shared.database import get_db, engine, Base
+from backend.shared.database import get_db, engine, Base, wait_for_database
 from backend.shared.logging import configure_logging
+from backend.shared import egress
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
+from backend.shared.db_errors import install_db_error_handlers
 from app.schemas import IpReputationOut, LookupBatchRequest, LookupBatchResponse
 from backend.shared.service_auth import require_service_token
 from app.dependencies import get_current_claims
@@ -26,6 +28,7 @@ logger = configure_logging("threatintel-service")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await wait_for_database()
     async with engine.begin() as conn:
         # Tabla nueva (no existia antes de este servicio) -- a diferencia
         # del resto de los microservicios, no hace falta ninguna migracion
@@ -36,6 +39,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="TERO Security Threat Intel Service", version="0.1.0", lifespan=lifespan)
+egress.install("threatintel-service", app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -43,6 +47,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
+install_db_error_handlers(app)  # 409/422 claros en vez de 500 ante datos que la base rechaza
 app.mount("/metrics", make_asgi_app())
 
 

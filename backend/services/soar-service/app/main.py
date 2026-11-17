@@ -9,10 +9,12 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.shared.database import get_db, SessionLocal, engine, Base
+from backend.shared.database import get_db, SessionLocal, engine, Base, wait_for_database
 from backend.shared.logging import configure_logging
+from backend.shared import egress
 from backend.shared.cors import get_cors_origins
 from backend.shared.security_headers import SecurityHeadersMiddleware
+from backend.shared.db_errors import install_db_error_handlers
 from backend.shared.tenancy import DEFAULT_ORGANIZATION_ID, org_id_from_claims
 from app.schemas import (
     PlaybookCreate, PlaybookUpdate, PlaybookOut, PlaybookRunOut,
@@ -27,6 +29,7 @@ playbooks_triggered_total = Counter("soar_playbooks_triggered_total", "Playbooks
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await wait_for_database()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # A diferencia del resto de las tablas de este proyecto, playbooks
@@ -57,6 +60,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="TERO Security SOAR Service", version="0.1.0", lifespan=lifespan)
+egress.install("soar-service", app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_cors_origins(),
@@ -64,6 +68,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(SecurityHeadersMiddleware)
+install_db_error_handlers(app)  # 409/422 claros en vez de 500 ante datos que la base rechaza
 app.mount("/metrics", make_asgi_app())
 
 

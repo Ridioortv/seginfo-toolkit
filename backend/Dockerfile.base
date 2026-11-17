@@ -1,0 +1,30 @@
+# Imagen BASE comun de los servicios backend simples (todos menos scan-service y
+# coderepo-service, que traen herramientas propias y se quedan con su Dockerfile).
+#
+# Que trae: python:3.11-slim + las dependencias que TODOS comparten
+# (backend/requirements-base.txt) + backend/shared + el usuario no-root.
+# Cada servicio hereda de esta imagen y solo agrega lo suyo (sus pocas dependencias
+# extra, su app/ y sus tests/): asi las dependencias pesadas (cryptography, sqlalchemy,
+# asyncpg, pydantic...) se bajan y se guardan UNA vez en vez de 13.
+#
+# Contexto de build: la raiz del repo.
+#   docker build -f backend/Dockerfile.base -t tero-base .
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY backend/requirements-base.txt .
+RUN pip install --no-cache-dir -r requirements-base.txt
+
+COPY backend/shared ./backend/shared
+RUN touch backend/__init__.py
+
+ENV PYTHONPATH=/app
+
+# No corre como root dentro del contenedor (ver el motivo en cada servicio): UID/GID
+# fijos (1001) para que el build sea reproducible. Los servicios ponen `USER sentinelops`.
+RUN groupadd -r -g 1001 sentinelops && useradd -r -u 1001 -g sentinelops -M -s /usr/sbin/nologin sentinelops \
+    && chown -R sentinelops:sentinelops /app

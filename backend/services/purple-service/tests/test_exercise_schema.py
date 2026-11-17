@@ -25,3 +25,26 @@ class TestExerciseCreateRequiresDeclaredTechniques:
         # el mismo caso de lista vacia y debe rechazarse igual.
         with pytest.raises(ValidationError):
             ExerciseCreate(name="Ejercicio sin tecnicas")
+
+
+class TestTechniqueIdFormat:
+    """Se aceptaba cualquier texto como tecnica ("T9999", "no-tecnica") y la
+    cobertura lo ignoraba en silencio."""
+
+    def test_invalid_ids_rejected(self):
+        for bad in ("no-tecnica", "T99", "1566", "T1566.1", "T1566; drop"):
+            with pytest.raises(ValidationError):
+                ExerciseCreate(name="e", declared_technique_ids=[bad])
+
+    def test_ids_are_normalized_and_deduplicated(self):
+        ex = ExerciseCreate(name="e", declared_technique_ids=[" t1566 ", "T1566", "T1110.001"])
+        assert ex.declared_technique_ids == ["T1566", "T1110.001"]
+
+    def test_too_many_rejected(self):
+        with pytest.raises(ValidationError):
+            ExerciseCreate(name="e", declared_technique_ids=[f"T{1000+i}" for i in range(401)])
+
+    def test_blank_or_huge_name_rejected(self):
+        for bad in ("", "   ", "x" * 256):
+            with pytest.raises(ValidationError):
+                ExerciseCreate(name=bad, declared_technique_ids=["T1566"])
