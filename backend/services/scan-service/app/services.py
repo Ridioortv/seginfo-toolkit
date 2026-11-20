@@ -1080,15 +1080,22 @@ async def adopt_bootstrap_agents(db: AsyncSession, bootstrap_agents_raw: str, or
     organizacion. Pasa cuando ensure_bootstrap_agent los dejo en otra
     organizacion al arrancar (detect_primary_organization no siempre acierta
     -- ver su docstring) y entonces no aparecen en los desplegables de
-    escaneos remotos/programados. Solo se hace en instalaciones de UNA sola
-    organizacion (caso on-prem tipico): con varias, los agentes bootstrap
-    ejecutan jobs de todas y no se puede asumir de cual son. Devuelve True si
+    escaneos remotos/programados. Se hace si hay UNA sola organizacion (caso
+    on-prem tipico) o si la del admin es la mas antigua (la de quien instalo);
+    cualquier otra organizacion no los recibe. Devuelve True si
     cambio algo."""
     try:
         count = (await db.execute(text("SELECT count(*) FROM organizations"))).scalar_one()
+        if count != 1:
+            # Con varias organizaciones (ej. los testers crearon mas cuentas) los
+            # agentes bootstrap son infraestructura de quien instalo: pertenecen
+            # a la organizacion MAS ANTIGUA. Ninguna otra los adopta.
+            oldest = (
+                await db.execute(text("SELECT id FROM organizations ORDER BY created_at ASC, id ASC LIMIT 1"))
+            ).scalar_one_or_none()
+            if oldest is None or str(oldest) != str(organization_id):
+                return False
     except Exception:  # noqa: BLE001 -- sin tabla organizations no se puede saber: no tocar nada
-        return False
-    if count != 1:
         return False
     agents = await list_agents(db, organization_id)
     missing = missing_bootstrap_entries(agents, bootstrap_agents_raw)
