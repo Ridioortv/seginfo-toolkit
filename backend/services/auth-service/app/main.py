@@ -454,6 +454,15 @@ async def forgot_password(
     return MessageOut(message=FORGOT_PASSWORD_MESSAGE)
 
 
+@app.get("/auth/public-config")
+async def public_config():
+    """Configuracion publica que necesita la pantalla de entrada. Hoy: el Client ID de Google
+    (un identificador publico, no un secreto). Asi el boton "Continuar con Google" funciona con las
+    imagenes ya publicadas (el frontend se compila una sola vez) leyendo GOOGLE_CLIENT_ID del .env,
+    sin tener que recompilar el frontend con VITE_GOOGLE_CLIENT_ID en cada instalacion."""
+    return {"google_client_id": GOOGLE_CLIENT_ID or None}
+
+
 @app.get("/auth/password/recovery-info")
 async def password_recovery_info():
     """Para que la pantalla "Olvide mi contrasena" sepa si esta instalacion puede mandar mails.

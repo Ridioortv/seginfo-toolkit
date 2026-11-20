@@ -193,6 +193,12 @@ export async function forgotPassword(email: string): Promise<void> {
   await authApi.post("/auth/password/forgot", { email });
 }
 
+// Configuracion publica del servidor para la pantalla de entrada (Client ID de Google).
+export async function publicConfig(): Promise<{ google_client_id: string | null }> {
+  const { data } = await authApi.get<{ google_client_id: string | null }>("/auth/public-config");
+  return data;
+}
+
 // Si esta instalacion puede mandar mails (SMTP). No revela nada de ninguna cuenta.
 export async function passwordRecoveryInfo(): Promise<{ email_enabled: boolean; expires_minutes: number }> {
   const { data } = await authApi.get<{ email_enabled: boolean; expires_minutes: number }>("/auth/password/recovery-info");
