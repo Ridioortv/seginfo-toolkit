@@ -133,3 +133,11 @@ def test_consola_no_inventa_cuentas_ni_links_para_google(env, monkeypatch):
     c, Session = env
     monkeypatch.setattr(cli_password, "SessionLocal", Session)
     assert asyncio.run(cli_password.generar_link("nadie@acme.com"))[0] == 1
+
+
+def test_public_config_expone_el_client_id_de_google_sin_recompilar(env, monkeypatch):
+    c, _ = env
+    monkeypatch.setattr(main, "GOOGLE_CLIENT_ID", "")
+    assert c.get("/auth/public-config").json() == {"google_client_id": None}
+    monkeypatch.setattr(main, "GOOGLE_CLIENT_ID", "123-abc.apps.googleusercontent.com")
+    assert c.get("/auth/public-config").json() == {"google_client_id": "123-abc.apps.googleusercontent.com"}

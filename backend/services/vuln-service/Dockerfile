@@ -5,6 +5,8 @@
 #   docker build -f backend/services/vuln-service/Dockerfile -t vuln-service .
 ARG BASE_IMAGE=tero-base
 FROM ${BASE_IMAGE}
+# La base termina como no-root: se vuelve a root solo para instalar dependencias (abajo se vuelve a sentinelops).
+USER root
 
 # requirements.txt sigue listando TODAS las dependencias (lo usan pip-audit y CI), pero pip
 # salta las que la base ya instalo: solo baja las propias de este servicio.

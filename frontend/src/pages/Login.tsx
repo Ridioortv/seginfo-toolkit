@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  confirmRegistrationMfa, login, loginWithGoogle, mfaStatus, register, requestBlockedPaymentLink, type MfaEnrollOut,
+  confirmRegistrationMfa, login, loginWithGoogle, mfaStatus, publicConfig, register, requestBlockedPaymentLink, type MfaEnrollOut,
 } from "../services/api";
 import MfaSetupCard from "../components/MfaSetupCard";
 import { useAuthStore } from "../store/auth";
@@ -13,7 +13,9 @@ import { LanguageSwitcher, useLangStore, type Lang } from "../i18n";
 
 const GOOGLE_LOCALES: Record<Lang, string> = { es: "es", en: "en", zh: "zh_CN", ru: "ru" };
 
-const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
+// Client ID de Google compilado en el frontend (opcional): si no esta, se le pregunta al servidor
+// (GET /auth/public-config) para que las imagenes publicadas funcionen sin recompilar.
+const BUILD_GOOGLE_CLIENT_ID = (import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined) || undefined;
 
 // Mismo criterio que en services/api.ts (serviceUrl): la URL base de
 // auth-service en runtime, no en build-time, para no duplicar la logica
@@ -121,8 +123,22 @@ export default function Login() {
     window.location.href = `${AUTH_BASE_URL}/auth/oidc/${encodeURIComponent(orgSlug.trim())}/login?cs=${encodeURIComponent(cs)}`;
   }
 
+  const [googleClientId, setGoogleClientId] = useState<string | undefined>(BUILD_GOOGLE_CLIENT_ID);
   useEffect(() => {
-    if (!GOOGLE_CLIENT_ID || !googleButtonRef.current) return;
+    if (BUILD_GOOGLE_CLIENT_ID) return;
+    let cancelled = false;
+    publicConfig()
+      .then((cfg) => {
+        if (!cancelled && cfg.google_client_id) setGoogleClientId(cfg.google_client_id);
+      })
+      .catch(() => undefined); // sin respuesta: simplemente no se muestra el boton
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!googleClientId || !googleButtonRef.current) return;
 
     async function handleGoogleCredential(response: { credential: string }) {
       setLoading(true);
@@ -145,7 +161,7 @@ export default function Login() {
     const tryInit = () => {
       if (window.google?.accounts?.id && googleButtonRef.current) {
         window.google.accounts.id.initialize({
-          client_id: GOOGLE_CLIENT_ID,
+          client_id: googleClientId,
           callback: handleGoogleCredential,
         });
         window.google.accounts.id.renderButton(googleButtonRef.current, {
@@ -161,7 +177,7 @@ export default function Login() {
       }
     };
     tryInit();
-  }, [navigate, setTokens, lang]);
+  }, [navigate, setTokens, lang, googleClientId]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -412,7 +428,7 @@ export default function Login() {
           </button>
         </p>
 
-        {mode === "login" && GOOGLE_CLIENT_ID && (
+        {mode === "login" && googleClientId && (
           <div className="google-signin-wrap">
             <div className="divider"><span>o</span></div>
             <div ref={googleButtonRef} />

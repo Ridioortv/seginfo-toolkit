@@ -2294,5 +2294,6 @@ const dict: Record<string, string> = {
  "Info": "Info",
  "Owner": "Owner",
  "Timeline:": "Timeline:",
+ "Verificado por TERO:": "Verified by TERO:",
 };
 export default dict;

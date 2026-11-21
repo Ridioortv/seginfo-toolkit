@@ -17,8 +17,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Trivy (CVEs conocidos en imagenes de contenedor / filesystems): script
 # oficial de aquasecurity, instala el binario mas reciente en
 # /usr/local/bin.
-RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
-    | sh -s -- -b /usr/local/bin
+# Version FIJA y descarga directa del release (antes: script `install.sh` de la rama main, que
+# consulta GitHub para saber la "ultima" version y fallaba en la integracion continua). Se verifica
+# el sha256 contra el archivo de checksums del mismo release. Para actualizar: cambiar TRIVY_VERSION.
+ARG TRIVY_VERSION=0.76.2
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in amd64) t=64bit ;; arm64) t=ARM64 ;; *) echo "arquitectura no soportada" >&2; exit 1 ;; esac; \
+    base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"; \
+    f="trivy_${TRIVY_VERSION}_Linux-${t}.tar.gz"; \
+    curl -fsSL --retry 5 --retry-delay 3 -o "/tmp/$f" "$base/$f"; \
+    curl -fsSL --retry 5 --retry-delay 3 -o /tmp/trivy_checksums.txt "$base/trivy_${TRIVY_VERSION}_checksums.txt"; \
+    (cd /tmp && grep " $f\$" trivy_checksums.txt | sha256sum -c -); \
+    tar -xzf "/tmp/$f" -C /usr/local/bin trivy; \
+    rm -f "/tmp/$f" /tmp/trivy_checksums.txt; \
+    trivy --version
 
 # Baja la base de datos de CVEs UNA VEZ en build-time (no en cada escaneo:
 # ver app/scanners/trivy.py, que corre con --skip-db-update). Se persiste

@@ -28,3 +28,7 @@ ENV PYTHONPATH=/app
 # fijos (1001) para que el build sea reproducible. Los servicios ponen `USER sentinelops`.
 RUN groupadd -r -g 1001 sentinelops && useradd -r -u 1001 -g sentinelops -M -s /usr/sbin/nologin sentinelops \
     && chown -R sentinelops:sentinelops /app
+
+# La imagen base termina como usuario no-root. Los servicios que heredan de ella pasan a root
+# solo para instalar sus dependencias y vuelven a sentinelops antes del CMD.
+USER sentinelops

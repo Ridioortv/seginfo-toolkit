@@ -6,15 +6,15 @@ los clientes las **bajan** en lugar de compilarlas.
 
 | Qué | Dónde |
 |---|---|
-| Versión de las imágenes | archivo `VERSION` (ej. `1.1.1`) |
-| Nombre de las imágenes | `ghcr.io/ridioortv/tero-auth-service:1.1.1`, `tero-scan-service`, `tero-frontend`, `tero-base`... (variables `TERO_REGISTRY` y `TERO_VERSION`) |
+| Versión de las imágenes | archivo `VERSION` (ej. `1.1.2`) |
+| Nombre de las imágenes | `ghcr.io/ridioortv/tero-auth-service:1.1.2`, `tero-scan-service`, `tero-frontend`, `tero-base`... (variables `TERO_REGISTRY` y `TERO_VERSION`) |
 | Quién las publica | `.github/workflows/publicar-imagenes.yml` |
 | Imagen base común | `backend/Dockerfile.base` (13 servicios simples heredan de ella; `scan-service` y `coderepo-service` tienen su propio Dockerfile) |
 
 ## Publicar una versión
 
-1. Subir `VERSION` (ej. `1.1.1`) y mergear a `main`.
-2. `git tag v1.1.1 && git push origin v1.1.1` (o *Actions → Publicar imagenes → Run workflow* con `1.1.1`).
+1. Subir `VERSION` (ej. `1.1.2`) y mergear a `main`.
+2. `git tag v1.1.2 && git push origin v1.1.2` (o *Actions → Publicar imagenes → Run workflow* con `1.1.2`).
    El workflow falla si la versión pedida no coincide con `VERSION`.
 3. Compose construye primero `tero-base` y después los demás; todo se sube con `docker compose push`.
 4. La primera vez, en GitHub → *Packages* → cada paquete → **Package settings**: dejarlo **Private** y, si hace

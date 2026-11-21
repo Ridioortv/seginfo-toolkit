@@ -143,12 +143,29 @@ def test_pines_de_la_base_coinciden_con_los_del_servicio(s):
     assert not distintos, f"{s}-service pinea distinto que la base: {distintos}"
 
 
+SERVICES_DIR = Path(__file__).resolve().parents[2]
+
+
 def test_la_base_instala_backend_shared_y_crea_el_usuario():
     df = (RAIZ / "backend" / "Dockerfile.base").read_text(encoding="utf-8")
     assert "FROM python:3.11-slim" in df
     assert "COPY backend/shared ./backend/shared" in df
     assert "useradd" in df and "-u 1001" in df
-    assert "USER " not in df.replace("USER sentinelops", ""), "la base no fija USER: lo hace cada servicio"
+    # La base termina como no-root (Trivy DS-0002); los servicios pasan a root solo para el pip install.
+    ultimas = [l.strip() for l in df.splitlines() if l.strip().startswith("USER ")]
+    assert ultimas and ultimas[-1] == "USER sentinelops", "la base debe terminar en USER sentinelops"
+    assert "USER root" not in df
+
+
+def test_los_servicios_vuelven_a_no_root_despues_de_instalar():
+    base = SERVICES_DIR
+    for dockerfile in sorted(base.glob("*/Dockerfile")):
+        texto = dockerfile.read_text(encoding="utf-8")
+        if "FROM ${BASE_IMAGE}" not in texto:
+            continue
+        usuarios = [l.strip() for l in texto.splitlines() if l.strip().startswith("USER ")]
+        assert usuarios[0] == "USER root", f"{dockerfile.parent.name}: necesita root para pip install"
+        assert usuarios[-1] == "USER sentinelops", f"{dockerfile.parent.name}: debe terminar como no-root"
 
 
 def _bloque(compose: str, nombre: str) -> str:
