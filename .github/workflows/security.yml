@@ -69,7 +69,7 @@ jobs:
             # requirements-semgrep.txt) se audita tal cual, sin volver a resolver: eso sigue
             # revisando cada paquete que se instala, uno por uno.
             extra=""
-            if grep -q '^# pip-audit: lock completo' "$f"; then extra="--no-deps"; fi
+            if grep -q '^# pip-audit: lock completo' "$f"; then extra="--no-deps --disable-pip"; fi
             pip-audit -r "$f" $extra --progress-spinner off || status=1
           done
           exit $status
