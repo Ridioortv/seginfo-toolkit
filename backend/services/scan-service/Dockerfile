@@ -44,16 +44,20 @@ RUN set -eux; \
 RUN mkdir -p /root/.cache/trivy && trivy image --download-db-only --cache-dir /root/.cache/trivy
 
 # Nuclei (deteccion basada en plantillas): no tiene paquete apt ni script
-# de instalacion propio como el de trivy, asi que se resuelve la ultima
-# release de GitHub en build-time (para no hardcodear una version que
-# quede vieja) y se descarga el binario ya compilado para linux_amd64.
-RUN NUCLEI_VERSION=$(curl -s https://api.github.com/repos/projectdiscovery/nuclei/releases/latest \
-        | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'].lstrip('v'))") \
-    && curl -sSL -o /tmp/nuclei.zip \
-        "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_amd64.zip" \
-    && unzip -o /tmp/nuclei.zip -d /usr/local/bin nuclei \
-    && chmod +x /usr/local/bin/nuclei \
-    && rm /tmp/nuclei.zip
+# de instalacion propio como el de trivy. Version FIJA (ARG NUCLEI_VERSION) y descarga directa del
+# release, verificada con el sha256 del archivo de checksums del mismo release. Antes se consultaba
+# la API de GitHub ("latest"), que rechaza las consultas anonimas desde la integracion continua
+# (KeyError 'tag_name') y rompia la publicacion de imagenes. Para actualizar: cambiar la version.
+ARG NUCLEI_VERSION=3.11.1
+RUN set -eux; \
+    base="https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}"; \
+    f="nuclei_${NUCLEI_VERSION}_linux_amd64.zip"; \
+    curl -fsSL --retry 5 --retry-delay 3 -o "/tmp/$f" "$base/$f"; \
+    curl -fsSL --retry 5 --retry-delay 3 -o /tmp/nuclei_checksums.txt "$base/nuclei_${NUCLEI_VERSION}_checksums.txt"; \
+    (cd /tmp && grep " $f\$" nuclei_checksums.txt | sha256sum -c -); \
+    unzip -o "/tmp/$f" -d /usr/local/bin nuclei; \
+    chmod +x /usr/local/bin/nuclei; \
+    rm -f "/tmp/$f" /tmp/nuclei_checksums.txt
 
 # NUCLEI_TEMPLATES_DIR fijo (en vez de dejar que nuclei elija por defecto
 # via XDG, que puede variar entre versiones) para que el volumen nombrado
@@ -91,20 +95,22 @@ RUN cd /tmp \
 
 # OWASP ZAP (DAST pasivo, Apache 2.0): necesita un JRE -- default-jre-
 # headless se instala aparte (no en el apt-get de mas arriba, para que
-# quede clara la relacion 1 a 1 con este paso). El tarball "Linux" de la
-# ultima release de GitHub se resuelve dinamicamente (el nombre del
-# asset trae la version en el medio, ej. "ZAP_2.16.1_Linux.tar.gz") en
-# vez de hardcodear una URL que quede vieja.
+# quede clara la relacion 1 a 1 con este paso). Version FIJA (ARG ZAP_VERSION) con el sha256 que
+# publica el proyecto en las notas del release (antes se consultaba la API de GitHub "latest", que
+# rechaza consultas anonimas desde la integracion continua). Para actualizar: cambiar version y sha256.
 RUN apt-get update && apt-get install -y --no-install-recommends default-jre-headless \
     && rm -rf /var/lib/apt/lists/*
-RUN ZAP_ASSET_URL=$(curl -s https://api.github.com/repos/zaproxy/zaproxy/releases/latest \
-        | python3 -c "import sys, json; d=json.load(sys.stdin); print(next(a['browser_download_url'] for a in d['assets'] if a['name'].endswith('_Linux.tar.gz')))") \
-    && curl -sSL -o /tmp/zap.tar.gz "$ZAP_ASSET_URL" \
-    && mkdir -p /opt/zap \
-    && tar -xzf /tmp/zap.tar.gz -C /opt/zap --strip-components=1 \
-    && chmod +x /opt/zap/zap.sh \
-    && ln -s /opt/zap/zap.sh /usr/local/bin/zap.sh \
-    && rm /tmp/zap.tar.gz
+ARG ZAP_VERSION=2.17.0
+ARG ZAP_SHA256=efe799aaa3627db683b43f00c9c210aea0b75c00cc8f0a0f0434d12bb3ddde5a
+RUN set -eux; \
+    curl -fsSL --retry 5 --retry-delay 3 -o /tmp/zap.tar.gz \
+        "https://github.com/zaproxy/zaproxy/releases/download/v${ZAP_VERSION}/ZAP_${ZAP_VERSION}_Linux.tar.gz"; \
+    echo "${ZAP_SHA256}  /tmp/zap.tar.gz" | sha256sum -c -; \
+    mkdir -p /opt/zap; \
+    tar -xzf /tmp/zap.tar.gz -C /opt/zap --strip-components=1; \
+    chmod +x /opt/zap/zap.sh; \
+    ln -s /opt/zap/zap.sh /usr/local/bin/zap.sh; \
+    rm -f /tmp/zap.tar.gz
 # Directorio de configuracion/estado de ZAP (ver app/scanners/zap.py,
 # ZAP_HOME_DIR) -- tiene que existir y ser escribible por el usuario
 # no-root 'sentinelops' (chown mas abajo, junto con el resto).
