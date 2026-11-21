@@ -65,7 +65,12 @@ jobs:
           for f in backend/requirements-base.txt backend/services/*/requirements*.txt licensing-server/requirements.txt remote-agent/requirements.txt; do
             [ -f "$f" ] || continue
             echo "== $f =="
-            pip-audit -r "$f" --progress-spinner off || status=1
+            # Un lock completo (todas las dependencias con version exacta, ver el encabezado de
+            # requirements-semgrep.txt) se audita tal cual, sin volver a resolver: eso sigue
+            # revisando cada paquete que se instala, uno por uno.
+            extra=""
+            if grep -q '^# pip-audit: lock completo' "$f"; then extra="--no-deps"; fi
+            pip-audit -r "$f" $extra --progress-spinner off || status=1
           done
           exit $status
 

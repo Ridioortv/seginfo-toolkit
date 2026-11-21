@@ -174,7 +174,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # como "semgrep"): sus dependencias no se mezclan con las del servicio.
 COPY backend/services/scan-service/requirements-semgrep.txt .
 RUN python -m venv /opt/semgrep-venv \
-    && /opt/semgrep-venv/bin/pip install --no-cache-dir -r requirements-semgrep.txt \
+    && /opt/semgrep-venv/bin/pip install --no-cache-dir --no-deps -r requirements-semgrep.txt \
     && ln -s /opt/semgrep-venv/bin/semgrep /usr/local/bin/semgrep \
     && semgrep --version
 
