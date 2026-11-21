@@ -28,8 +28,10 @@ RUN set -eux; \
     curl -fsSL --retry 5 --retry-delay 3 -o "/tmp/$f" "$base/$f"; \
     curl -fsSL --retry 5 --retry-delay 3 -o /tmp/trivy_checksums.txt "$base/trivy_${TRIVY_VERSION}_checksums.txt"; \
     (cd /tmp && grep " $f\$" trivy_checksums.txt | sha256sum -c -); \
-    tar -xzf "/tmp/$f" -C /usr/local/bin trivy; \
-    rm -f "/tmp/$f" /tmp/trivy_checksums.txt; \
+    mkdir /tmp/trivy-x; \
+    tar -xzf "/tmp/$f" -C /tmp/trivy-x; \
+    install -m 0755 "$(find /tmp/trivy-x -maxdepth 2 -type f -name trivy | head -n 1)" /usr/local/bin/trivy; \
+    rm -rf "/tmp/$f" /tmp/trivy_checksums.txt /tmp/trivy-x; \
     trivy --version
 
 # Baja la base de datos de CVEs UNA VEZ en build-time (no en cada escaneo:
@@ -174,7 +176,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # como "semgrep"): sus dependencias no se mezclan con las del servicio.
 COPY backend/services/scan-service/requirements-semgrep.txt .
 RUN python -m venv /opt/semgrep-venv \
-    && /opt/semgrep-venv/bin/pip install --no-cache-dir -r requirements-semgrep.txt \
+    && /opt/semgrep-venv/bin/pip install --no-cache-dir --no-deps -r requirements-semgrep.txt \
     && ln -s /opt/semgrep-venv/bin/semgrep /usr/local/bin/semgrep \
     && semgrep --version
 
