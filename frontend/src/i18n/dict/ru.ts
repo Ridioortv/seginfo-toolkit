@@ -2354,5 +2354,6 @@ const dict: Record<string, string> = {
  "Personas": "Персонал",
  "Subcontratistas": "Субподрядчики",
  "ISO/IEC 27001": "ISO/IEC 27001",
+ "Verificado por TERO:": "Проверено TERO:",
 };
 export default dict;

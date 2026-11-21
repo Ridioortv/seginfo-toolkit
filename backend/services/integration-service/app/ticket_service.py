@@ -90,7 +90,7 @@ async def _service_get(url: str, org: str) -> dict:
 def build_vulnerability_ticket(v: dict) -> tuple[str, str, str]:
     sev = v.get("severity", "medium")
     title = f"[TERO][{SEVERITY_LABEL.get(sev, sev)}] {v.get('title', 'Vulnerabilidad')}"
-    lines = [f"Vulnerabilidad detectada por TERO Security.", "",
+    lines = ["Vulnerabilidad detectada por TERO Security.", "",
              f"Severidad: {SEVERITY_LABEL.get(sev, sev)}" + (" - EXPLOTADA ACTIVAMENTE (lista KEV)" if v.get("is_kev") else "")]
     if v.get("cve_id"):
         lines.append(f"CVE: {v['cve_id']}")

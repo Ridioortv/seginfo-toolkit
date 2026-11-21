@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Login from "./pages/Login";
 import ForgotPassword from "./pages/ForgotPassword";
@@ -5,31 +6,31 @@ import ResetPassword from "./pages/ResetPassword";
 import Layout from "./components/Layout";
 import ProtectedRoute from "./components/ProtectedRoute";
 import Dashboard from "./pages/Dashboard";
-import Assets from "./pages/Assets";
-import Scans from "./pages/Scans";
-import ImageInventory from "./pages/ImageInventory";
-import Vulnerabilities from "./pages/Vulnerabilities";
-import Siem from "./pages/Siem";
-import Surface from "./pages/Surface";
-import Cloud from "./pages/Cloud";
-import CodeRepos from "./pages/CodeRepos";
-import Trust from "./pages/Trust";
-import Executive from "./pages/Executive";
-import Partner from "./pages/Partner";
-import Governance from "./pages/Governance";
-import Soar from "./pages/Soar";
-import Cases from "./pages/Cases";
-import PurpleTeam from "./pages/PurpleTeam";
-import Reports from "./pages/Reports";
-import Notifications from "./pages/Notifications";
-import Integrations from "./pages/Integrations";
-import Help from "./pages/Help";
-import Organizations from "./pages/Organizations";
-import Security from "./pages/Security";
-import Billing from "./pages/Billing";
-import Users from "./pages/Users";
-import SsoCallback from "./pages/SsoCallback";
-import VendorQuestionnaire from "./pages/VendorQuestionnaire";
+const Assets = lazy(() => import("./pages/Assets"));
+const Scans = lazy(() => import("./pages/Scans"));
+const ImageInventory = lazy(() => import("./pages/ImageInventory"));
+const Vulnerabilities = lazy(() => import("./pages/Vulnerabilities"));
+const Siem = lazy(() => import("./pages/Siem"));
+const Surface = lazy(() => import("./pages/Surface"));
+const Cloud = lazy(() => import("./pages/Cloud"));
+const CodeRepos = lazy(() => import("./pages/CodeRepos"));
+const Trust = lazy(() => import("./pages/Trust"));
+const Executive = lazy(() => import("./pages/Executive"));
+const Partner = lazy(() => import("./pages/Partner"));
+const Governance = lazy(() => import("./pages/Governance"));
+const Soar = lazy(() => import("./pages/Soar"));
+const Cases = lazy(() => import("./pages/Cases"));
+const PurpleTeam = lazy(() => import("./pages/PurpleTeam"));
+const Reports = lazy(() => import("./pages/Reports"));
+const Notifications = lazy(() => import("./pages/Notifications"));
+const Integrations = lazy(() => import("./pages/Integrations"));
+const Help = lazy(() => import("./pages/Help"));
+const Organizations = lazy(() => import("./pages/Organizations"));
+const Security = lazy(() => import("./pages/Security"));
+const Billing = lazy(() => import("./pages/Billing"));
+const Users = lazy(() => import("./pages/Users"));
+const SsoCallback = lazy(() => import("./pages/SsoCallback"));
+const VendorQuestionnaire = lazy(() => import("./pages/VendorQuestionnaire"));
 import { useLangStore } from "./i18n";
 
 export default function App() {
@@ -38,6 +39,8 @@ export default function App() {
   const lang = useLangStore((s) => s.lang);
   return (
     <BrowserRouter key={lang}>
+      {/* Cada pagina se descarga recien al abrirla (antes todo iba en un solo archivo de 1,4 MB). */}
+      <Suspense fallback={<div className="loading" style={{ padding: 24 }}>Cargando...</div>}>
       <Routes>
         <Route path="/login" element={<Login />} />
         {/* Publicas: "Olvide mi contrasena" y el link del mail para elegir la nueva. */}
@@ -79,6 +82,7 @@ export default function App() {
           </Route>
         </Route>
       </Routes>
+      </Suspense>
     </BrowserRouter>
   );
 }
